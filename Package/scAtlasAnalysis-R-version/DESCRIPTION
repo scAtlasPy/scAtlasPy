@@ -1,0 +1,24 @@
+Package: scAtlas
+Type: Package
+Title: Single-cell Atlas Data Management
+Version: 0.1.0
+Description: Efficient management and analysis of single-cell atlas data
+    using DuckDB backend. Provides S3-based API for filtering, normalization,
+    and transformation operations.
+Authors@R: person("Author", "Author", role = c("aut", "cre"),
+    email = "author@example.com")
+License: MIT
+Encoding: UTF-8
+LazyData: true
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3
+Imports:
+    DBI (>= 1.1.0),
+    duckdb (>= 0.8.0),
+    Matrix (>= 1.5.0),
+    parallel,
+    jsonlite
+Suggests:
+    hdf5r,
+    testthat
+SystemRequirements: DuckDB (>= 0.8.0)

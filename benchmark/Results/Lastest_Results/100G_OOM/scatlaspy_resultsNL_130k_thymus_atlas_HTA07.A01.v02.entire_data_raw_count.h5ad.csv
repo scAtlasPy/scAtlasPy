@@ -1,0 +1,22 @@
+Operator,Time (s),Peak Memory (MiB),peak_delta,Dataset
+filter_cells_max_genes_6000,2.4451,18628.43,19.3,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_cells_min_counts_500,2.4591,20504.73,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_cells_max_counts_40000,2.6783,20369.02,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_genes_min_cells_3,12.6198,20471.55,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_genes_max_cells_1000000,11.644,20320.99,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_genes_min_counts_10,13.3824,20415.34,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+filter_genes_max_counts_100000,12.6323,20350.35,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+log1p,23.3727,20501.82,12.82,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+scale,68.8692,64879.98,44228.37,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+expm1,44.1178,20697.32,141.84,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+sqrt,23.4112,23899.07,3496.46,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+pca,0.0,20520.05,-20520.05,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+sequential_iteration,22.9006,20206.75,10.71,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_gene_names,3.3387,20477.89,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_1gene,0.044,20531.23,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_2genes,0.0713,20476.0,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_3genes,0.1072,16371.03,-0.66,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_gene_names_count,0.038,20425.71,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_1gene_count,0.0375,20306.97,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_2genes_count,0.0554,20605.15,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad
+query_by_expression_3genes_count,0.0666,16463.4,0.0,130k_thymus_atlas_HTA07.A01.v02.entire_data_raw_count.h5ad

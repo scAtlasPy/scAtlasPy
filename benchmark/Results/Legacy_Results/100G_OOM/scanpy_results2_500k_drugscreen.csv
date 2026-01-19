@@ -1,0 +1,10 @@
+Operation,Time (s),Peak Memory (MiB)
+Filter Cells (min_genes),13.5835,63749.27
+Filter Genes (min_cells),17.4953,76597.84
+Log1p Transform (sc.pp.log1p),1.3479,63941.68
+Scale Data (sc.pp.scale),OOM,OOM
+Sequential Iteration,0.0549,13112.88
+Shuffled Sequential Iteration,0.1012,13117.59
+PCA (sc.pp.pca),487.8316,26096.07
+Query by 4 Gene Names,9.8289,13616.69
+Query by Gene Expression,1.5501,13295.63

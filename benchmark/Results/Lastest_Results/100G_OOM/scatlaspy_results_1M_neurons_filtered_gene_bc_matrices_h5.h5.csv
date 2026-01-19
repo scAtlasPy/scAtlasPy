@@ -1,0 +1,23 @@
+Operator限制32GB,Time (s),Peak Memory (MiB),peak_delta,Dataset
+filter_cells_min_genes_200,4.4702,33569.11,0.06,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_cells_max_genes_6000,3.708,33638.26,0.07,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_cells_min_counts_500,3.778,33854.45,0.07,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_cells_max_counts_40000,2.7148,33871.69,0.07,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_genes_min_cells_3,9.439,33955.71,0.07,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_genes_max_cells_1000000,9.8319,33910.88,0.06,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_genes_min_counts_10,9.266,34389.91,0.06,1M_neurons_filtered_gene_bc_matrices_h5.h5
+filter_genes_max_counts_100000,9.2005,33664.16,0.07,1M_neurons_filtered_gene_bc_matrices_h5.h5
+log1p,131.2536,45177.52,11453.46,1M_neurons_filtered_gene_bc_matrices_h5.h5
+scale,4920.8589,46303.88,11919.76,1M_neurons_filtered_gene_bc_matrices_h5.h5
+expm1,247.6188,84236.23,12019.26,1M_neurons_filtered_gene_bc_matrices_h5.h5
+sqrt,538.4123,46198.12,12524.83,1M_neurons_filtered_gene_bc_matrices_h5.h5
+pca,0.0,33985.81,-33985.81,1M_neurons_filtered_gene_bc_matrices_h5.h5
+sequential_iteration,104.7578,33824.47,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_gene_names,31.8314,33621.53,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_1gene,0.3584,33394.71,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_2genes,0.5532,34049.3,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_3genes,0.7756,34024.09,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_gene_names_count,0.1383,33186.44,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_1gene_count,0.277,34055.79,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_2genes_count,0.3849,33589.0,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
+query_by_expression_3genes_count,0.4199,33899.39,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5

@@ -1,0 +1,21 @@
+Operator,Time (s),Peak Memory (MiB),Dataset
+filter_cells_min_genes_200,0.4435,1082.56,20k_PBMC.h5
+filter_cells_max_genes_6000,0.4293,1082.25,20k_PBMC.h5
+filter_cells_min_counts_500,0.2222,1082.44,20k_PBMC.h5
+filter_cells_max_counts_40000,0.2192,1082.64,20k_PBMC.h5
+filter_genes_min_cells_3,0.5627,1264.84,20k_PBMC.h5
+filter_genes_max_cells_1000000,0.5615,1273.15,20k_PBMC.h5
+filter_genes_min_counts_10,0.3642,1082.35,20k_PBMC.h5
+filter_genes_max_counts_100000,0.3938,1082.49,20k_PBMC.h5
+log1p,0.0449,1082.95,20k_PBMC.h5
+scale,3.7166,9761.42,20k_PBMC.h5
+expm1,0.0552,1082.86,20k_PBMC.h5
+sqrt,0.0962,1082.66,20k_PBMC.h5
+pca,17.7432,1083.04,20k_PBMC.h5
+query_by_gene_names,0.4698,1083.12,20k_PBMC.h5
+query_by_expression_1gene,0.0578,1082.83,20k_PBMC.h5
+query_by_expression_2genes,0.1092,1082.6,20k_PBMC.h5
+query_by_expression_3genes,0.1621,1082.82,20k_PBMC.h5
+sequential_iteration,0.9256,1082.76,20k_PBMC.h5
+shuffled_iteration,0.6726,1135.57,20k_PBMC.h5
+random_minibatch_iteration,5.4115,1082.67,20k_PBMC.h5

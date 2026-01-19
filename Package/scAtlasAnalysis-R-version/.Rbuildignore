@@ -1,0 +1,15 @@
+^.*\.Rproj$
+^\.Rproj\.user$
+^\.github$
+^README\.Rmd$
+^\.Rhistory$
+^\.RData$
+^\.git$
+^.*\.pyc$
+^.*\.pyo$
+^.*\.py~
+^\.pytest_cache$
+^__pycache__$
+^.gitignore$
+^CODE_OF_CONDUCT\.md$
+^CONTRIBUTING\.md$

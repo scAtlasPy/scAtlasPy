@@ -1,0 +1,21 @@
+Operation,Time (s),Peak Memory (MiB)
+Filter Cells (min_genes=200),0.4586,2150.73
+Filter Cells (max_genes=6000),0.4507,2543.06
+Filter Cells (min_counts=500),0.2224,2717.0
+Filter Cells (max_counts=40000),0.2351,3082.85
+Filter Genes (min_cells=3),0.6811,3553.28
+Filter Genes (max_cells=1_000_000),0.719,3864.19
+Filter Genes (min_counts=10),0.4163,3605.39
+Filter Genes (max_counts=100000),0.3898,3012.76
+Log1p Transform (sc.pp.log1p),0.0463,2736.11
+Scale Data (sc.pp.scale),4.0539,11093.28
+"Expm1 Transform (safe, inplace on X)",0.0603,1310.31
+Sqrt Transform (sc.pp.sqrt),0.1212,1473.03
+Sequential Iteration,0.0025,714.33
+Shuffled Sequential Iteration,0.0062,714.43
+Random Minibatch Iteration (10000 batches),5.642,722.76
+PCA (sc.pp.pca),17.6054,1191.04
+Query by 4 Gene Names,0.4805,788.97
+"Query by Gene Expression (1 gene, top 100)",0.0519,779.1
+"Query by Gene Expression (2 genes, top 100)",0.1035,779.36
+"Query by Gene Expression (3 genes, top 100)",0.1569,779.36
