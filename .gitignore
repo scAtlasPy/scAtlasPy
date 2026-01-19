@@ -1,0 +1,42 @@
+# Python 字节码缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# 数据文件 (大数据不适合上传)
+*.h5ad
+*.h5
+*.hdf
+*.h5seurat
+*.sasql
+*.db
+*.wal
+*.tmp
+*.zip
+
+docs/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# R
+.Rhistory
+.Rprofile
+renv/
+
+# 临时文件
+*.log
+*.tmp
+*.bak
+*~
