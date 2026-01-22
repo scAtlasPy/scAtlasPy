@@ -5,6 +5,5 @@ from . import io
 from . import plots as pl
 
 from .data import Atlas
-from .io import get_df,get_adata
 
 
