@@ -42,6 +42,4 @@ jobs: # 一个workflow可以有多个jobs
 
     - name: Testing... # step 5 执行这一行，
       run: |
-#        python tests/test_single_process.py
         python Package/python-version-scAtlasAnalysis/test/multi_process/single_process.py
-#        E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\multi_process\single_process.py
