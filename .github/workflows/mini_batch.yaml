@@ -25,12 +25,12 @@ jobs: # 一个workflow可以有多个jobs
 #        ls -la
 #        realpath .
 
-    - name: Set up Python 3.10.19  # step3 # cache缓存加速，每当要配置python和各种依赖包时，默认是要
+    - name: Set up Python 3.10  # step3 # cache缓存加速，每当要配置python和各种依赖包时，默认是要
     #从网络下载的，每次都下载会很慢
     # 打开缓存可以让下次执行时直接从本地缓存安装
       uses: actions/setup-python@v5
       with:
-        python-version: '3.10.19'
+        python-version: '3.10'
         cache: 'pip'
         cache-dependency-path: './requirements.txt'
     # 缓存依赖的path
