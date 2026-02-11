@@ -361,13 +361,47 @@ class CSRBatchFetcherMT:
 # main
 # ======================================================
 if __name__ == "__main__":
-    fetcher = CSRBatchFetcherMT( # 初始化， 完成indptr数组的获取
-        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
-        batch_size=2048,
-        fetch_rows=2048 * 2000,
-        n_producers=1,
-    )
-    fetcher.run()
+
+    for i in range(20):
+        print(f"do {i}", flush=True)  # print 默认是有缓冲区的，缓冲区满了才会有一次真实的向stdout输出内容
+        # flush=True的意思是 不需要等缓冲区满，每次都立即输出
+
+    import os
+
+    path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql"]
+    for e in path:
+        if os.path.exists(e):
+            print(e)
+            # fetcher = CSRBatchFetcherMT(  # 初始化， 完成indptr数组的获取
+            #     db_path=e,
+            #     batch_size=2048,
+            #     fetch_rows=2048 * 2000,
+            #     n_producers=1,
+            # )
+            # fetcher.run()
+
+    # print("running")
+    # fetcher = CSRBatchFetcherMT( # 初始化， 完成indptr数组的获取
+    #     # db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+    #     # db_path=r"/home/hanxu/test_ddb/experimental_script_xuhan/test_409600.sasql",
+    #     db_path=r"/mnt/data/test_409600.sasql",
+    #     db_path=e,
+    #     batch_size=2048,
+    #     fetch_rows=2048 * 2000,
+    #     n_producers=1,
+    # )
+    # fetcher.run()
+    # print(flush=True)
+
+    # fetcher = CSRBatchFetcherMT(  # 初始化， 完成indptr数组的获取
+    #     db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+    #     batch_size=2048,
+    #     fetch_rows=2048 * 2000,
+    #     n_producers=1,
+    # )
+    # fetcher.run()
+
+
     # todo
     #   构建COO格式，转CSR， 35 b/s
     #   不转CSR, 55 b/s
