@@ -372,13 +372,13 @@ if __name__ == "__main__":
     for e in path:
         if os.path.exists(e):
             print(e)
-            # fetcher = CSRBatchFetcherMT(  # 初始化， 完成indptr数组的获取
-            #     db_path=e,
-            #     batch_size=2048,
-            #     fetch_rows=2048 * 2000,
-            #     n_producers=1,
-            # )
-            # fetcher.run()
+            fetcher = CSRBatchFetcherMT(  # 初始化， 完成indptr数组的获取
+                db_path=e,
+                batch_size=2048,
+                fetch_rows=2048 * 2000,
+                n_producers=1,
+            )
+            fetcher.run()
 
     # print("running")
     # fetcher = CSRBatchFetcherMT( # 初始化， 完成indptr数组的获取
