@@ -276,7 +276,7 @@ if __name__ == "__main__":
         r"C:\Bio-Science\BioData\test_409600.sasql",
         r"E:\data\test_409600.sasql"
     ]:
-        if os.path.exist(data_path):
+        if os.path.exists(data_path):
             print("found a data path in ruuner")
             print(data_path,flush=True)
             break
