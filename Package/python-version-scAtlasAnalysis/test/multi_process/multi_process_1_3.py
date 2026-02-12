@@ -1,3 +1,5 @@
+
+import os
 import duckdb
 import numpy as np
 import multiprocessing as mp
@@ -268,8 +270,20 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 # 测试入口
 # ==================================================
 if __name__ == "__main__":
+
+    for data_path in [
+        
+    ]:
+        if os.path.exist(data_path):
+            print("found a data path in ruuner")
+            print(data_path,flush=True)
+            break
+    else:
+        print(f"using local database")
+        data_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"
+
     fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
-        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+        db_path=data_path,
         batch_size=2048,
         producer_num=1,
         slot_num=1,  # 循环池大小

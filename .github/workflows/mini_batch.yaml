@@ -5,6 +5,7 @@ on: [push] # 触发条件 触发workflow
 jobs: # 一个workflow可以有多个jobs
   test_minibatch_job: # test_minibatch_job 第一个（目前只有一个）job，job的名字
     strategy:
+      fail-fast: false
       matrix:
         runner: [amax, linux02, win , zsp-win] # 12相同，xh zsp 不同
 
