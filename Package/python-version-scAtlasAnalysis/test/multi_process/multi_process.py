@@ -6,7 +6,7 @@ import time
 import scipy.sparse as sp
 
 # ==================================================
-# todo 多进程 + 共享内存 ； 当前 最快 120 -190 b/s
+# todo 错误代码 多进程 + 共享内存 ； 当前 最快 120 -190 b/s
 # ==================================================
 class CSRBatchFetcherMP_SharedMemNoQueue:
     """
@@ -101,7 +101,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
             "SELECT indices, data FROM X_CSR_data"
         ).fetch_record_batch(rows_per_batch=self.fetch_rows)
 
-        for rb in rbr:
+        for rid,rb in enumerate(rbr):  # todo 有10个for，如何保证1 拿到 1 ， 2拿到 2
             # 🔹 获取全局 seq_id
             with self.global_seq.get_lock():
                 # 抢全局 seq_id（并发核心）
@@ -111,6 +111,9 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
                 self.global_seq.value += 1
                 # 每个 batch：拿到一个 唯一、严格递增的编号：
                 # 不会重复 ； 不会跳号
+            print(f"日志统计数量！！！")
+            print(f"当前的 rid 是 {rid}")
+            print(f"当前的 seq_id 是 { seq_id }")
 
             indices = rb.column(0).to_numpy()
             data = rb.column(1).to_numpy()
@@ -182,6 +185,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 
             slot = self.batch_idx % self.shm_pool_size
             # 获取 slot编号； 环形缓冲
+            # slot = 0 = self.batch_idx
             flag = self.shm_flags[slot] # 当前的 slot 是否为空 的 标识
             # flag = 1 有数据
 
@@ -193,6 +197,8 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
                 indices = np.ndarray(shm_idx.size // np.int32().nbytes, dtype=np.int32, buffer=shm_idx.buf)
                 data = np.ndarray(shm_val.size // np.float32().nbytes, dtype=np.float32, buffer=shm_val.buf)
                 # 将共享内存 shm_idx 中的 数据 零拷贝 给 indices
+                # shm_val --> data , 给了多少数据
+
                 # indices.ndarray ──►  shm_idx.buf (共享内存)
                 #  self.pool_indices = np.empty(0, dtype=np.int32)
                 #  self.pool_data = np.empty(0, dtype=np.float32)
@@ -278,7 +284,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 # ==================================================
 if __name__ == "__main__":
     fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
-        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_204800.sasql",
         batch_size=2048,
         fetch_rows=2048 * 2000,
         n_producers=10,
@@ -301,3 +307,4 @@ if __name__ == "__main__":
 # [Producer-1] done, last_written batch: 397
 # [Producer-5] done, last_written batch: 398
 # [Producer-2] done, last_written batch: 399
+# 会有2个p 在等同一个 slot ，

@@ -7,7 +7,7 @@ import scipy.sparse as sp
 
 # ==================================================
 # todo 正确代码 ： 多进程 + 共享内存 ； 当前 最快 50 b/s 左右
-#
+#       多进程的 producer，每个进程都读取全部的fetch_record_batch，然后只取需要的 batch，冗余！
 # ==================================================
 class CSRBatchFetcherMP_SharedMemNoQueue:
     """
@@ -111,9 +111,8 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
         ).fetch_record_batch(rows_per_batch=self.fetch_size)
 
         for rid, rb in enumerate(result):
-            if rid % self.slot_num == pid: # 该进程 要 该批次
+            if rid % self.slot_num == pid: # 该进程 要 该批次 ；将数据库中的数据 ——> 共享内存中
 
-                # todo 将 数据库 中的数据 ——> 共享内存中
                 indices = rb.column(0).to_numpy()
                 data = rb.column(1).to_numpy()
 
@@ -134,7 +133,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
                     time.sleep(0.0001) # todo 可改进
                 wait_end = time.time()
                 if wait_end - wait_start > 0.01: # 如果 Producer 等待超过 10 ms，输出调试语句
-                    print(f"[Producer-{pid}] 等待slot_{slot_id} 的时间为 {wait_end - wait_start:.4f}s")
+                    print(f"[Producer-{pid}] wait slot_{slot_id} 的时间为 {wait_end - wait_start:.4f}s")
 
                 # 🔹 将数据库中读取到的 indices + data 写入共享内存 shm_idx + shm_val ，（唯一一次 内存copy）
                 np.ndarray(indices.shape, dtype=indices.dtype, buffer=shm_idx.buf)[:] = indices
@@ -196,6 +195,9 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
                 print(f"[Consumer] : 已完成 batch_id = {self.batch_idx}，nnz={need}")
 
                 self.batch_idx = self.batch_idx + 1  # batch id 顺序增加
+                with self.total_batches.get_lock(): # 拿到 Value 自带的互斥锁
+                    self.total_batches.value += 1 # 统计总完成 batch 数（多进程安全）
+
 
             # todo data 数量不够， 存 数据
             else: # self.pool_data.size < need 私有内存池中的data 数量不够
@@ -232,14 +234,14 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     def run(self):
         t0 = time.time()
 
-        # todo 3. 多进程 ，producer 生产者，从 X_CSR_data 提取出 indices, data 写入共享内存
+        # todo 多进程 ，producer 生产者，从 X_CSR_data 提取出 indices, data 写入共享内存
         producers = []
         for i in range(self.producer_num):
             p = mp.Process(target=self._producer, args=(i,))
             p.start()
             producers.append(p)
 
-        # todo 4. 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data ， 并与 indptr构建 CSR
+        # todo 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data ， 并与 indptr构建 CSR
         consumer_p = mp.Process(target=self._consumer)
         consumer_p.start()
 
@@ -257,9 +259,9 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 
         dt = time.time() - t0
         print("\n[Done]")
-        print(f"Total batches: {400}")
+        print(f"Total batches: {self.total_batches.value}")
         print(f"Time: {dt:.2f}s")
-        print(f"batch/s: {400 / dt:.2f}")
+        print(f"batch/s: {self.total_batches.value / dt:.2f}")
 
 
 # ==================================================
@@ -273,19 +275,9 @@ if __name__ == "__main__":
         slot_num=10,  # 循环池大小
     )
     fetcher.run()
-# todo
-#  一些bug： 后续解决
-#    情况1： producer_num=1,会卡住， [Consumer] batch 217, nnz=1525607, elapsed=5.61s, batch/s=38.69 不继续
-# 当 producer_num = 1：
-# producer 只能顺序写 batch
-# seq_id = 0,1,2,...
-# consumer 严格顺序消费 batch_idx = 0,1,2,...
 
 
-# todo
-#    情况2：producer_num > slot_num, 会卡住
-# [Consumer] batch 394, nnz=1662575, elapsed=2.53s, batch/s=155.50
-# [Producer-0] done, last_written batch: 396
-# [Producer-1] done, last_written batch: 397
-# [Producer-5] done, last_written batch: 398
-# [Producer-2] done, last_written batch: 399
+# producer_num=1     60 b/s
+
+# 1️⃣ producer_num=1，DuckDB threads=10  60 b/s 没优化
+#

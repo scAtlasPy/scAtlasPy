@@ -7,7 +7,7 @@ import scipy.sparse as sp
 
 # ==================================================
 # todo 优化1 ： 修改 self.pool_data = np.concatenate([self.pool_data, data])
-#       没什么用， 开始慢，后来快，整体慢 
+#       没什么用， 开始慢，后来快，整体慢
 # todo 正确代码 ： 多进程 + 共享内存 ； 当前 最快 50 b/s 左右
 #       多进程的 producer，每个进程都读取全部的fetch_record_batch，然后只取需要的 batch，冗余！
 # ==================================================

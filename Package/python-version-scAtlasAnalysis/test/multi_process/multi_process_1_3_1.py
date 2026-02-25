@@ -4,9 +4,11 @@ import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
 import time
 import scipy.sparse as sp
+from multiprocessing import Semaphore
 
 # ==================================================
 # todo 每个 producer 只扫描自己的连续行 90-100 b/s
+#   修改 busy-wait为信号量（Semaphore）来减少 CPU 空转。 时间几乎一样
 # ==================================================
 class CSRBatchFetcherMP_SharedMemNoQueue:
     """
@@ -51,7 +53,17 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
         self.shm_data_pool = []      # 存 data
         self.shm_flags = []         # 0=空 没数据, 1 = 非空 有数据
         self.shm_to_unlink = []     # 进程结束统一释放
+
+        # 🔹 初始化 Semaphore
+        self.shm_empty_sem = []
+        self.shm_full_sem = []
+
         for i in range(slot_num):
+
+            # 🔹 新增 semaphore
+            self.shm_empty_sem.append(Semaphore(1))  # 初始可写
+            self.shm_full_sem.append(Semaphore(0))  # 初始不可读
+
             shm_idx = SharedMemory(create=True, size=max_nnz * np.int32().nbytes)
             # indices 专用共享内存； 创建一块 系统级共享内存 # 大小 = max_nnz × 4 bytes
             shm_val = SharedMemory(create=True, size=max_nnz * np.float32().nbytes) # data 专用共享内存
@@ -135,16 +147,14 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
             shm_val = self.shm_data_pool[slot_id]
             flag = self.shm_flags[slot_id]
 
-            wait_start = time.time()
-            while flag.value != 0:
-                time.sleep(0.0001)
-            wait_end = time.time()
-            if wait_end - wait_start > 0.01:
-                print(f"[Producer-{pid}] wait slot_{slot_id} 的时间为 {wait_end - wait_start:.4f}s")
+            # 等待 slot 可写
+            self.shm_empty_sem[slot_id].acquire()  # 阻塞直到可写
 
             np.ndarray(indices.shape, dtype=indices.dtype, buffer=shm_idx.buf)[:] = indices
             np.ndarray(data.shape, dtype=data.dtype, buffer=shm_val.buf)[:] = data
+
             flag.value = 1
+            self.shm_full_sem[slot_id].release()  # 通知 consumer
 
             print(f"[Producer-{pid}] : Done 将 fetch 批次 rid = {rid} 写入 slot_{slot_id}, nnz={len(indices)}")
 
@@ -210,9 +220,8 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 
                 flag = self.shm_flags[slot_id]  # 当前的 slot 是否为空 的 标识
 
-                if flag.value == 0: # 当前 slot 没数据，等待
-                    time.sleep(0.0001)
-                    continue
+                # 阻塞等待 slot 有数据
+                self.shm_full_sem[slot_id].acquire()
 
                 # if flag.value == 1: # 当前 slot 有数据，可读
                 shm_idx = self.shm_indices_pool[slot_id] # 共享内存 gene_id
@@ -227,6 +236,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
                 self.pool_data = np.concatenate([self.pool_data, data])
 
                 flag.value = 0  # 释放 slot（置空）， 告诉producer， 该slot的数据已经读取完毕
+                self.shm_empty_sem[slot_id].release()  # 释放 slot
                 print(f"[Consumer] : 已读取 slot_{slot_id}的数据")
 
                 slot_id = (slot_id + 1) % self.slot_num  # 拿下一块数据
@@ -285,15 +295,15 @@ if __name__ == "__main__":
     import os
 
     path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql",
-          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_409600.sasql"]
+          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"]
     for e in path:
         if os.path.exists(e):
             print(e)
             fetcher = CSRBatchFetcherMP_SharedMemNoQueue(  # 初始化， 完成indptr数组的获取
                 db_path=e,
                 batch_size=2048,
-                producer_num=10,
-                slot_num=10,  # 循环池大小
+                producer_num=1,
+                slot_num=1,  # 循环池大小
             )
             fetcher.run()
 

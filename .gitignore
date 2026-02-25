@@ -21,6 +21,9 @@ build/
 *.tmp
 *.zip
 *.importing
+*.sasql
+*.parquet
+*.duckdb
 
 # IDE
 .idea/

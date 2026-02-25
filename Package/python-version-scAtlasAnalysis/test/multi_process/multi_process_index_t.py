@@ -334,6 +334,13 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
             p.start()
             producers.append(p)
 
+        # # 🔹 修改：多线程 producer
+        # producers = []
+        # for i in range(self.producer_num):
+        #     t = threading.Thread(target=self._producer, args=(i,))
+        #     t.start()
+        #     producers.append(t)
+
         # todo 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data ， 并与 indptr构建 CSR
         consumer_p = mp.Process(target=self._consumer)
         consumer_p.start()

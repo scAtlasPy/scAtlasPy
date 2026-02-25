@@ -6,12 +6,14 @@ from multiprocessing.shared_memory import SharedMemory
 import time
 import scipy.sparse as sp
 
-def prepare_partition_index_only_p(db_path, producer_num = 10, fetch_size = 6793163):
+# 预计算索引
+def prepare_partition_index(db_path, producer_num = 5, thread_num = 5, fetch_size = 6793163):
     """
     为 read_func_use_index 版本准备分区字段和索引
 
-    1. 添加 thread_id 列（如果不存在）
+    1. 添加 proc_id, thread_id 列（如果不存在）
     2. 按 block 分片规则填充
+    3. 创建复合索引 (proc_id, thread_id)
     """
 
     conn = duckdb.connect(db_path)
@@ -21,7 +23,12 @@ def prepare_partition_index_only_p(db_path, producer_num = 10, fetch_size = 6793
     # 添加列（如果不存在）
     conn.execute("""
         ALTER TABLE X_CSR_data
-        ADD COLUMN IF NOT EXISTS pid_only INTEGER;
+        ADD COLUMN IF NOT EXISTS pt_pid INTEGER;
+    """)
+
+    conn.execute("""
+        ALTER TABLE X_CSR_data
+        ADD COLUMN IF NOT EXISTS pt_tid INTEGER;
     """)
 
     print("Step 2: 填充分区字段...")
@@ -30,10 +37,13 @@ def prepare_partition_index_only_p(db_path, producer_num = 10, fetch_size = 6793
     conn.execute(f"""
         UPDATE X_CSR_data
         SET
-            pid_only = (id // {fetch_size}) % {producer_num}
+            pt_tid = (id // {fetch_size}) % {thread_num},
+            pt_pid = ((id // {fetch_size}) // {thread_num}) % {producer_num};
     """)
 
     conn.close()
+
+    print("✅ 分区字段和索引准备完成")
 
 # producer 使用索引分片 ，120b/s 左右
 class CSRBatchFetcherMP_SharedMemNoQueue:
@@ -126,44 +136,59 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
         conn.close()
         return [int(r[0]) for r in rows]
 
-    # todo 4. 多进程 ，producer 生产者，从 X_CSR_data 提取出 indices, data 写入共享内存
+    # -----------------------------
+    # todo 4. 多进程+多线程 ，producer 生产者，从 X_CSR_data 提取出 indices, data 写入共享内存
+    # -----------------------------
     def _producer(self, pid):
-
-        conn = duckdb.connect(self.db_path, read_only=True)
-
-        query = f"""
-            SELECT indices, data
-            FROM X_CSR_data
-            WHERE pid_only = {pid};
         """
+        每个进程 pid 内，再启动多线程处理不同 tid
+        """
+        threads = []
 
-        result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
+        def thread_worker(tid):
+            conn = duckdb.connect(self.db_path, read_only=True)
 
-        for rid, rb in enumerate(result):
-            slot_id = pid  # 每个 producer 写入自己的 slot
+            query = f"""
+                SELECT indices, data
+                FROM X_CSR_data
+                WHERE pt_pid = {pid}
+                    AND pt_tid = {tid}
+            """
+            result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
 
-            indices = rb.column(0).to_numpy()
-            data = rb.column(1).to_numpy()
+            for rid, rb in enumerate(result):
+                slot_id = pid  # 每个进程写自己的 slot
+                indices = rb.column(0).to_numpy()
+                data = rb.column(1).to_numpy()
+                shm_idx = self.shm_indices_pool[slot_id]
+                shm_val = self.shm_data_pool[slot_id]
+                flag = self.shm_flags[slot_id]
 
-            shm_idx = self.shm_indices_pool[slot_id]
-            shm_val = self.shm_data_pool[slot_id]
-            flag = self.shm_flags[slot_id]
+                wait_start = time.time()
+                while flag.value != 0:
+                    time.sleep(0.0001)
+                wait_end = time.time()
+                if wait_end - wait_start > 0.01:
+                    print(f"[Producer-{pid}-Thread-{tid}] wait slot_{slot_id} {wait_end - wait_start:.4f}s")
 
-            wait_start = time.time()
-            while flag.value != 0:
-                time.sleep(0.0001)
-            wait_end = time.time()
-            if wait_end - wait_start > 0.01:
-                print(f"[Producer-{pid}] wait slot_{slot_id} 的时间为 {wait_end - wait_start:.4f}s")
+                np.ndarray(indices.shape, dtype=indices.dtype, buffer=shm_idx.buf)[:] = indices
+                np.ndarray(data.shape, dtype=data.dtype, buffer=shm_val.buf)[:] = data
+                flag.value = 1
 
-            np.ndarray(indices.shape, dtype=indices.dtype, buffer=shm_idx.buf)[:] = indices
-            np.ndarray(data.shape, dtype=data.dtype, buffer=shm_val.buf)[:] = data
-            flag.value = 1
+                print(f"[Producer-{pid}-Thread-{tid}] : Done rid={rid} 写入 slot_{slot_id}, nnz={len(indices)}")
 
-            print(f"[Producer-{pid}] : Done 将 fetch 批次 rid = {rid} 写入 slot_{slot_id}, nnz={len(indices)}")
+            conn.close()
+
+        # 启动多线程，处理 tid 0 ~ thread_num-1
+        for tid in range(self.producer_num):  # 🔹 原先 pid 对应 tid，这里每进程内再开线程
+            t = threading.Thread(target=thread_worker, args=(tid,))
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join()
 
         print(f"[Producer-{pid}] 进程完成")
-        conn.close()
 
     # -----------------------------
     # todo 5. 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data + indptr构建 CSR
@@ -368,13 +393,14 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 # 测试入口
 if __name__ == "__main__":
 
-    # 建立索引
-    # prepare_partition_index_only_p(db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql")
+    # # 建立索引
+    # prepare_partition_index(
+    #     db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql")
 
     fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
         db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
         batch_size=2048,
-        producer_num=10,
-        slot_num=10,  # 循环池大小
+        producer_num=5,
+        slot_num=25,  # 循环池大小
     )
     fetcher.run()

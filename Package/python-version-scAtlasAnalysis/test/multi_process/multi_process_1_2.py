@@ -6,6 +6,7 @@ import time
 import scipy.sparse as sp
 
 # ==================================================
+# conn.execute("PRAGMA threads=10")
 # todo 正确代码 ： 多进程 + 共享内存 ； 当前 最快 50 b/s 左右
 #       多进程的 producer，每个进程都读取全部的fetch_record_batch，然后只取需要的 batch，冗余！
 # ==================================================
@@ -73,6 +74,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     def _prepare_indptr(self):
         # 🔹 读取 indptr
         conn = duckdb.connect(self.db_path, read_only=True)
+        conn.execute("PRAGMA threads=10")
 
         fetch_record_indptr = (conn.execute("SELECT indptr FROM X_CSR_indptr")
                                .fetch_record_batch (rows_per_batch=self.batch_size))
@@ -87,6 +89,7 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     # todo 3. SQL 预计算 batch_nnz
     def _prepare_batch_nnz_sql(self):
         conn = duckdb.connect(self.db_path, read_only=True)
+        conn.execute("PRAGMA threads=10")
         query = f"""
         WITH t AS (
             SELECT indptr, ROW_NUMBER() OVER () AS rn
@@ -106,6 +109,8 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     def _producer(self, pid):
 
         conn = duckdb.connect(self.db_path, read_only=True)
+        conn.execute("PRAGMA threads=10")
+
         result = conn.execute(
             "SELECT indices, data FROM X_CSR_data"
         ).fetch_record_batch(rows_per_batch=self.fetch_size)
@@ -151,6 +156,8 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     def _consumer(self):
 
         conn = duckdb.connect(self.db_path, read_only=True)
+        conn.execute("PRAGMA threads=10")
+
         global_indptr_offset = 0 # 取indptr的全局偏移量
         slot_id = 0 # 从 第0个slot开始拿数据
         t_start = time.time() # 时间统计
