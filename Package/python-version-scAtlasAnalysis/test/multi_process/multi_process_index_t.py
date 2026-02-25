@@ -1,13 +1,41 @@
 import duckdb
 import numpy as np
 import multiprocessing as mp
+import threading  # 🔹 修改：导入 threading
 from multiprocessing.shared_memory import SharedMemory
 import time
 import scipy.sparse as sp
 
-# ==================================================
-# todo 每个 producer 只扫描自己的连续行 90-100 b/s
-# ==================================================
+def prepare_partition_index_only_p(db_path, producer_num = 10, fetch_size = 6793163):
+    """
+    为 read_func_use_index 版本准备分区字段和索引
+
+    1. 添加 thread_id 列（如果不存在）
+    2. 按 block 分片规则填充
+    """
+
+    conn = duckdb.connect(db_path)
+
+    print("Step 1: 添加列（如果不存在）...")
+
+    # 添加列（如果不存在）
+    conn.execute("""
+        ALTER TABLE X_CSR_data
+        ADD COLUMN IF NOT EXISTS pid_only INTEGER;
+    """)
+
+    print("Step 2: 填充分区字段...")
+
+    # 按你原有的 block 分片规则填充
+    conn.execute(f"""
+        UPDATE X_CSR_data
+        SET
+            pid_only = (id // {fetch_size}) % {producer_num}
+    """)
+
+    conn.close()
+
+# producer 使用索引分片 ，120b/s 左右
 class CSRBatchFetcherMP_SharedMemNoQueue:
     """
     多进程 Arrow 解包 + 单进程 CSR batch
@@ -35,15 +63,9 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
         self.total_batches = mp.Value('i', 0)
         self.batch_num = len(self.batch_nnz)
 
-        # todo === 每个 producer 只扫描自己的连续行 ===
-        conn = duckdb.connect(self.db_path, read_only=True)
-        self.total_rows = conn.execute("SELECT COUNT(*) FROM X_CSR_data").fetchone()[0] # 细胞总数
-        conn.close()
-        # 每个 producer 处理的连续行数
-        self.rows_per_producer = self.total_rows // self.producer_num
-
         max_nnz = max(self.batch_nnz)  # 🔹 动态计算最大 nnz ，所有批次最大的 nzz 数量
         self.fetch_size = max_nnz #  fetch_record_batch ，每次的读取数量
+        print(f"max_nnz = {max_nnz}")
 
         # 🔹 共享内存池
         self.slot_num = slot_num # 共享内存池 槽位slot个数
@@ -109,18 +131,10 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 
         conn = duckdb.connect(self.db_path, read_only=True)
 
-        # 每个 producer 读取自己的连续 range
-        start_row = pid * self.rows_per_producer  # 起点
-
-        if pid == self.producer_num - 1:
-            end_row = self.total_rows # 最后一个 producer 处理到末尾
-        else:
-            end_row = (pid + 1) * self.rows_per_producer # 终点
-
         query = f"""
-        SELECT indices, data
-        FROM X_CSR_data
-        WHERE id >= {start_row} AND id < {end_row}
+            SELECT indices, data
+            FROM X_CSR_data
+            WHERE pid_only = {pid};
         """
 
         result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
@@ -157,81 +171,154 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     def _consumer(self):
 
         conn = duckdb.connect(self.db_path, read_only=True)
-        global_indptr_offset = 0 # 取indptr的全局偏移量
-        slot_id = 0 # 从 第0个slot开始拿数据
-        t_start = time.time() # 时间统计
+        global_indptr_offset = 0
+        slot_id = 0
 
-        while self.batch_idx < self.batch_num :
+        t_start = time.time()
 
-            need = self.batch_nnz[self.batch_idx]  # 当前 batch 需要的 nnz 数量
+        # ============================
+        # 🔥 新增：时间统计变量
+        # ============================
+        wait_slot_time = 0.0
 
-            # todo data 数量够， 取 数据
-            if self.pool_data.size >= need: # 私有内存池中的data 数量足够
+        read_shm_time1 = 0.0
+        read_shm_time2 = 0.0
 
-                # 从内存pool中获取 need 个 数据
-                vals = self.pool_data[:need]  # csr三元组 1 — data
-                cols = self.pool_indices[:need]  # csr三元组 2 — gene_id
+        build_csr_time1 = 0.0
+        build_csr_time2 = 0.0
+        build_csr_time3 = 0.0
+        build_csr_time4 = 0.0
 
-                # 🔹 取indptr
+        pool_slice_time = 0.0
+        # ============================
+
+        while self.batch_idx < self.batch_num:
+
+            need = self.batch_nnz[self.batch_idx]
+
+            # ============================================================
+            # 情况 1：pool 足够 -> 构建 CSR
+            # ============================================================
+            if self.pool_data.size >= need:
+
+                t0 = time.time()  # 🔥 build csr start
+                vals = self.pool_data[:need]
+                cols = self.pool_indices[:need]
+                build_csr_time1 += time.time() - t0  # 🔥 累加 CSR 时间
+                # 0.2111s (6.12%)
+
+                t1 = time.time()  # 🔥 build csr start
                 indptr_now = self.indptr_queue.get().column(0).to_numpy()
+                build_csr_time2 += time.time() - t1  # 🔥 累加 CSR 时间
+                # 0.3227s (9.36%)
+
+                t2 = time.time()  # 🔥 build csr start
                 last_val = indptr_now[-1]
                 indptr_now = indptr_now - global_indptr_offset
-                indptr_now = np.concatenate(([0], indptr_now))  # csr三元组 3 — indptr
+                indptr_now = np.concatenate(([0], indptr_now))
                 global_indptr_offset = last_val
 
                 n_genes = int(cols.max()) + 1 if len(cols) else 0
 
-                X = sp.csr_matrix(  # 🔹 构建 csr 格式的 X
-                    (vals, cols, indptr_now),
-                    shape=(self.batch_size, n_genes),
-                    dtype=np.float32,
-                )
+                build_csr_time3 += time.time() - t2  # 🔥 累加 CSR 时间
+                # 0.1887s (5.47%)
 
-                # 🔹 打印时间信息
-                now = time.time()
-                elapsed = now - t_start
-                print(
-                    f"[Consumer] batch {self.batch_idx}, nnz={need}, elapsed={elapsed:.2f}s, batch/s={self.batch_idx / (elapsed + 1e-8):.2f}"
-                )
+                t3 = time.time()  # 🔥 build csr start
+                X = sp.csr_matrix((self.batch_size, n_genes), dtype=np.float32)
+                X.data = vals
+                X.indices = cols
+                X.indptr = indptr_now
 
-                # 移动 pool（丢弃已消费的 nnz）
+                build_csr_time4 += time.time() - t3  # 🔥 累加 CSR 时间
+                # 1.2330s (35.75%)
+                # todo 优化1 结果， 节约1s
+                # 0.2916s (12.12%)
+
+                # ============================
+                # 🔥 pool slice 时间统计 # 0.0015s (0.04%)
+                # ============================
+                t1 = time.time()
+
                 self.pool_indices = self.pool_indices[need:]
                 self.pool_data = self.pool_data[need:]
 
-                print(f"[Consumer] : 已完成 batch_id = {self.batch_idx}，nnz={need}")
+                pool_slice_time += time.time() - t1
+                # ============================
 
-                self.batch_idx = self.batch_idx + 1  # batch id 顺序增加
-                with self.total_batches.get_lock(): # 拿到 Value 自带的互斥锁
-                    self.total_batches.value += 1 # 统计总完成 batch 数（多进程安全）
+                now = time.time()
+                elapsed = now - t_start
 
+                print(
+                    f"[Consumer] batch {self.batch_idx}, nnz={need}, "
+                    f"elapsed={elapsed:.2f}s, "
+                    f"batch/s={self.batch_idx / (elapsed + 1e-8):.2f}"
+                )
 
-            # todo data 数量不够， 存 数据
-            else: # self.pool_data.size < need 私有内存池中的data 数量不够
+                self.batch_idx += 1
+                with self.total_batches.get_lock():
+                    self.total_batches.value += 1
 
-                flag = self.shm_flags[slot_id]  # 当前的 slot 是否为空 的 标识
+            # ============================================================
+            # 情况 2：pool 不够 -> 读 slot
+            # ============================================================
+            else:
 
-                if flag.value == 0: # 当前 slot 没数据，等待
+                flag = self.shm_flags[slot_id]
+
+                # 🔥 等待时间统计
+                t_wait_start = time.time()
+                while flag.value == 0:
                     time.sleep(0.0001)
-                    continue
+                wait_slot_time += time.time() - t_wait_start
 
-                # if flag.value == 1: # 当前 slot 有数据，可读
-                shm_idx = self.shm_indices_pool[slot_id] # 共享内存 gene_id
+                # 🔥 读取共享内存时间统计
+                t_read_start = time.time()
+
+                shm_idx = self.shm_indices_pool[slot_id]
                 shm_val = self.shm_data_pool[slot_id]
 
-                # 🔹 读取数据 (零拷贝 view)
-                indices = np.ndarray(shm_idx.size // np.int32().nbytes, dtype=np.int32, buffer=shm_idx.buf)
-                data = np.ndarray(shm_val.size // np.float32().nbytes, dtype=np.float32, buffer=shm_val.buf)
+                indices = np.ndarray(
+                    shm_idx.size // np.int32().nbytes,
+                    dtype=np.int32,
+                    buffer=shm_idx.buf,
+                )
 
-                # 将 indices, data 拼接到 内存 pool
+                data = np.ndarray(
+                    shm_val.size // np.float32().nbytes,
+                    dtype=np.float32,
+                    buffer=shm_val.buf,
+                )
+
+                read_shm_time1 += time.time() - t_read_start
+                # 0.0030s (0.09%)
+
+                t_read_start1 = time.time()
                 self.pool_indices = np.concatenate([self.pool_indices, indices])
                 self.pool_data = np.concatenate([self.pool_data, data])
+                read_shm_time2 += time.time() - t_read_start1
+                # 1.4709s (42.65%) todo 优化2 很耗时
 
-                flag.value = 0  # 释放 slot（置空）， 告诉producer， 该slot的数据已经读取完毕
-                print(f"[Consumer] : 已读取 slot_{slot_id}的数据")
+                flag.value = 0
 
-                slot_id = (slot_id + 1) % self.slot_num  # 拿下一块数据
+                slot_id = (slot_id + 1) % self.slot_num
 
-        print("[Consumer] : Done")
+        # ============================================================
+        # 🔥 最终统计输出
+        # ============================================================
+        total_time = time.time() - t_start
+
+        print("\n================ Consumer Time Analysis ================")
+        print(f"Total time        : {total_time:.4f}s")
+        print(f"Wait slot time    : {wait_slot_time:.4f}s ({wait_slot_time / total_time * 100:.2f}%)")
+        print(f"Read SHM time1     : {read_shm_time1:.4f}s ({read_shm_time1 / total_time * 100:.2f}%)")
+        print(f"Read SHM time2     : {read_shm_time2:.4f}s ({read_shm_time2 / total_time * 100:.2f}%)")
+        print(f"Build CSR time1    : {build_csr_time1:.4f}s ({build_csr_time1 / total_time * 100:.2f}%)")
+        print(f"Build CSR time2    : {build_csr_time2:.4f}s ({build_csr_time2 / total_time * 100:.2f}%)")
+        print(f"Build CSR time3    : {build_csr_time3:.4f}s ({build_csr_time3 / total_time * 100:.2f}%)")
+        print(f"Build CSR time4    : {build_csr_time4:.4f}s ({build_csr_time4 / total_time * 100:.2f}%)")
+        print(f"Pool slice time   : {pool_slice_time:.4f}s ({pool_slice_time / total_time * 100:.2f}%)")
+        print("========================================================\n")
+
         conn.close()
 
     # --------------------------------------------------
@@ -270,36 +357,17 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
         print(f"batch/s: {self.total_batches.value / dt:.2f}")
 
 
-# ==================================================
+
 # 测试入口
-# ==================================================
 if __name__ == "__main__":
-    # fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
-    #     db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
-    #     batch_size=2048,
-    #     producer_num=10,
-    #     slot_num=10,  # 循环池大小
-    # )
-    # fetcher.run()
-    #
-    import os
 
-    path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql",
-          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"]
-    for e in path:
-        if os.path.exists(e):
-            print(e)
-            fetcher = CSRBatchFetcherMP_SharedMemNoQueue(  # 初始化， 完成indptr数组的获取
-                db_path=e,
-                batch_size=2048,
-                producer_num=10,
-                slot_num=10,  # 循环池大小
-            )
-            fetcher.run()
+    # 建立索引
+    # prepare_partition_index_only_p(db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql")
 
-
-# producer_num=1     60 b/s
-
-# 每个 producer 只扫描自己的连续行 90-100 b/s
-# [Producer-9] wait slot_9 的时间为 0.1873s
-# 代码有很多的写入 slot 的时间 等待； 待改进
+    fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
+        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+        batch_size=2048,
+        producer_num=10,
+        slot_num=10,  # 循环池大小
+    )
+    fetcher.run()

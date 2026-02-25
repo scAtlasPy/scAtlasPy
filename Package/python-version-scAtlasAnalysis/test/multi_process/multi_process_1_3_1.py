@@ -285,7 +285,7 @@ if __name__ == "__main__":
     import os
 
     path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql",
-          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"]
+          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_409600.sasql"]
     for e in path:
         if os.path.exists(e):
             print(e)

@@ -24,16 +24,7 @@ class MultiThreadCSRProducer:
         self.batch_size = batch_size
         self.n_threads = n_threads # 该进程内部开的线程数
         self.drop_last = drop_last
-
-        self.arr_shm_pools = {'indptr': [], 'indices': [], 'data': []}
-        for dtype,key in zip([np.int64,np.int64,np.float64],['indptr', 'indices', 'data']):
-            sp=shm_pools[key]
-            for i,shm in enumerate(sp):
-                self.arr_shm_pools[key].append(
-                    np.ndarray((batch_size * 3000,), dtype=dtype, buffer=shm.buf)
-                )
-
-        # 共享内存池（CSR 的 indptr / indices / data）
+        self.shm_pools = shm_pools  # 共享内存池（CSR 的 indptr / indices / data）
         self.sem_empty = sem_empty  # 控制空位
         self.sem_full = sem_full    # 控制已写入
 
@@ -47,13 +38,7 @@ class MultiThreadCSRProducer:
         self._cursor_lock = threading.Lock() # _batch_cursor 加锁
         self.threads = [] # 保存每个 threading.Thread 对象
 
-        self.fake_rows=np.random.randint(0,20000,size=batch_size*2000)
-        self.fake_col = np.random.randint(0, 20000, size=batch_size * 2000)
-        self.fake_data=np.random.random((batch_size * 2000,)).astype(np.float64)
-
         self._start_threads() # 启动内部线程
-
-
 
     # -----------------------------
     # 启动内部线程
@@ -92,7 +77,7 @@ class MultiThreadCSRProducer:
                     return
                 batch_id = self._batch_cursor
                 self._batch_cursor += 1
-                print(f"[DEBUG] {thread_name} PID={process_id} 抢到批次 {batch_id}")
+                # print(f"[DEBUG] {thread_name} PID={process_id} 抢到批次 {batch_id}")
 
             # -----------------------------
             # 计算 batch 偏移量和大小
@@ -111,19 +96,19 @@ class MultiThreadCSRProducer:
             # -----------------------------
             # 从 DuckDB 读取 CSR 数据,
             # -----------------------------
-            # df = conn.execute(f"""
-            #     SELECT indices, data, cell_index
-            #     FROM X_CSR_data
-            #     WHERE cell_index >= {offset} AND cell_index < {offset + cell_count}
-            #     ORDER BY id
-            # """).fetch_arrow_table().to_pandas()
-            #
-            # rows = df["cell_index"].to_numpy() - offset
-            # cols = df["indices"].to_numpy()
-            # vals = df["data"].to_numpy()
-            # gene_count = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
+            df = conn.execute(f"""
+                SELECT indices, data, cell_index
+                FROM X_CSR_data
+                WHERE cell_index >= {offset} AND cell_index < {offset + cell_count}
+                ORDER BY id
+            """).fetch_arrow_table().to_pandas()
 
-            # X = sp.coo_matrix((vals, (rows, cols)), shape=(cell_count, gene_count)).tocsr()
+            rows = df["cell_index"].to_numpy() - offset
+            cols = df["indices"].to_numpy()
+            vals = df["data"].to_numpy()
+            gene_count = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
+
+            X = sp.coo_matrix((vals, (rows, cols)), shape=(cell_count, gene_count)).tocsr()
             # todo。 csr coo 转换·
 
             # -----------------------------
@@ -131,27 +116,24 @@ class MultiThreadCSRProducer:
             # -----------------------------
             #抢 batch 成功后再 acquire，确保不会阻塞
             self.sem_empty.acquire()  # 我要占用一个共享内存槽位
-            # print(f"[DEBUG] 线程编号：{thread_name} 进程编号： PID={process_id} 批次 {batch_id} 获得 sem_empty 空槽位")
+            print(f"[DEBUG] 线程编号：{thread_name} 进程编号： PID={process_id} 批次 {batch_id} 获得 sem_empty 空槽位")
 
             # -----------------------------
             # 分配共享内存池 slot（循环使用）
             # -----------------------------
-            pool_index = batch_id % len(self.arr_shm_pools['indptr'])
-            arr_shm_indptr = self.arr_shm_pools['indptr'][pool_index]
-            arr_shm_indices = self.arr_shm_pools['indices'][pool_index]
-            arr_shm_data = self.arr_shm_pools['data'][pool_index]
+            pool_index = batch_id % len(self.shm_pools['indptr'])
+            shm_indptr = self.shm_pools['indptr'][pool_index]
+            shm_indices = self.shm_pools['indices'][pool_index]
+            shm_data = self.shm_pools['data'][pool_index]
 
             # -----------------------------
             # todo 写入共享内存
             # -----------------------------
-            vals = self.fake_data
-            rows=self.fake_rows
-            cols=self.fake_col
+            np.ndarray(X.indptr.shape, dtype=X.indptr.dtype, buffer=shm_indptr.buf)[:] = X.indptr
+            np.ndarray(X.indices.shape, dtype=X.indices.dtype, buffer=shm_indices.buf)[:] = X.indices
+            np.ndarray(X.data.shape, dtype=X.data.dtype, buffer=shm_data.buf)[:] = X.data
 
-            arr_shm_indptr[:rows.shape[0]] = rows
-            arr_shm_indices[:cols.shape[0]] = cols
-            arr_shm_data[:vals.shape[0]] = vals
-# print(f"[DEBUG] {thread_name} PID={process_id} 批次 {batch_id} 写入共享内存完成")
+            print(f"[DEBUG] {thread_name} PID={process_id} 批次 {batch_id} 写入共享内存完成")
 
             # -----------------------------
             # 通知主进程数据已写入
@@ -183,7 +165,7 @@ def csr_producer_process(db_path, total_num_cells, batch_size, n_threads,
         total_num_cells=total_num_cells,
         batch_size=batch_size,
         n_threads=n_threads, # 该进程内部开的线程数
-        shm_pools=shm_pools, # arr共享内存池（CSR 的 indptr / indices / data）
+        shm_pools=shm_pools, # 共享内存池（CSR 的 indptr / indices / data）
         sem_empty=sem_empty, # 表示“共享内存可写”的信号量
         sem_full=sem_full, # 表示“共享内存已写好”的信号量
         drop_last=drop_last
@@ -201,27 +183,14 @@ def minibatch_scan_order_mproc(db_path, batch_size, n_processes=2,
     # 创建共享内存池
     # -----------------------------
     shm_pools = {'indptr': [], 'indices': [], 'data': []} #分成3块，存CSR格式的3个数组
-    arr_shm_pools = {'indptr': [], 'indices': [], 'data': []}
-    # max_indptr_bytes = (batch_size + 1) * 4   # indptr
-    # max_indices_bytes = batch_size * 3000 * 4 # indices  假设每个cell 有3000个非零值
-    # max_data_bytes = batch_size * 3000 * 8    # data
-
-    max_indptr_bytes = batch_size * 3000 * 8  # indptr
-    max_indices_bytes = batch_size * 3000 * 8 # indices  假设每个cell 有3000个非零值
+    max_indptr_bytes = (batch_size + 1) * 4   # indptr
+    max_indices_bytes = batch_size * 3000 * 4 # indices  假设每个cell 有3000个非零值
     max_data_bytes = batch_size * 3000 * 8    # data
 
     for i in range(pool_size):  # pool_size = 10 共享内存槽位数
-        indptr=shared_memory.SharedMemory(create=True, size=max_indptr_bytes)
-        indices=shared_memory.SharedMemory(create=True, size=max_indices_bytes)
-        data=shared_memory.SharedMemory(create=True, size=max_data_bytes)
-
-        shm_pools['indptr'].append(indptr)
-        shm_pools['indices'].append(indices)
-        shm_pools['data'].append(data)
-
-        arr_shm_pools['indptr'].append(np.ndarray((batch_size * 3000,), dtype=np.int64, buffer=indptr.buf))  # 共享内存读取，零拷贝
-        arr_shm_pools['indices'].append(np.ndarray((batch_size * 3000,), dtype=np.int64, buffer=indices.buf))
-        arr_shm_pools['data'].append(np.ndarray((batch_size * 3000,), dtype=np.float64, buffer=data.buf))
+        shm_pools['indptr'].append(shared_memory.SharedMemory(create=True, size=max_indptr_bytes))
+        shm_pools['indices'].append(shared_memory.SharedMemory(create=True, size=max_indices_bytes))
+        shm_pools['data'].append(shared_memory.SharedMemory(create=True, size=max_data_bytes))
 
     sem_empty = Semaphore(pool_size) # 当前有多少个“空槽位”可以写；
     # 初始值 = pool_size；表示：所有 槽位 都是空的
@@ -258,8 +227,6 @@ def minibatch_scan_order_mproc(db_path, batch_size, n_processes=2,
     time_var_total = 0 # 时间统计分析
     time_adata_total = 0 # 时间统计分析
 
-
-
     while expected < num_batches:
         sem_full.acquire()  # 等待生产者写好 # 当前至少有 1 个 batch 已被写入共享内存池
         # print(f"[DEBUG] 主进程 acquire sem_full 批次 {expected}")
@@ -271,9 +238,9 @@ def minibatch_scan_order_mproc(db_path, batch_size, n_processes=2,
         #  batch 1 → slot 1
         #  batch N → slot (N % pool_size)
 
-        indptr = arr_shm_pools['indptr'][pool_index]  # 共享内存
-        indices = arr_shm_pools['indices'][pool_index]
-        data = arr_shm_pools['data'][pool_index]
+        shm_indptr = shm_pools['indptr'][pool_index]  # 共享内存
+        shm_indices = shm_pools['indices'][pool_index]
+        shm_data = shm_pools['data'][pool_index]
 
         # 先判断是不是最后一个 batch ， 最后一个batch的处理
         if expected == num_batches - 1 and not drop_last: 
@@ -283,35 +250,35 @@ def minibatch_scan_order_mproc(db_path, batch_size, n_processes=2,
             
         gene_count = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0] # 获取 var 表
 
-        # indptr = np.ndarray((cell_count + 1,), dtype=np.int32, buffer=shm_indptr.buf) # 共享内存读取，零拷贝
-        # indices = np.ndarray((indptr[-1],), dtype=np.int32, buffer=shm_indices.buf)
-        # data = np.ndarray((indptr[-1],), dtype=np.float64, buffer=shm_data.buf)
+        indptr = np.ndarray((cell_count + 1,), dtype=np.int32, buffer=shm_indptr.buf) # 共享内存读取，零拷贝
+        indices = np.ndarray((indptr[-1],), dtype=np.int32, buffer=shm_indices.buf)
+        data = np.ndarray((indptr[-1],), dtype=np.float64, buffer=shm_data.buf)
 
-        # X = sp.csr_matrix((data, indices, indptr), shape=(cell_count, gene_count))
-        #
-        # t0 = datetime.now()
-        # offset = expected * batch_size
-        # sub_obs = conn.execute(f"SELECT * FROM obs LIMIT {cell_count} OFFSET {offset}").fetchdf()
-        # time_obs_total += (datetime.now() - t0).total_seconds()
-        #
-        # t1 = datetime.now()
-        # sub_var = conn.execute("SELECT * FROM var").fetchdf()
-        # time_var_total += (datetime.now() - t1).total_seconds()
-        #
-        # sub_obs.index = sub_obs["cell_id"].astype(str)
-        # sub_var.index = sub_var["gene_id"].astype(str)
-        #
-        # t2 = datetime.now()
-        # adata = AnnData(X=X, obs=sub_obs, var=sub_var)
-        # adata.obs_names = sub_obs.index
-        # adata.var_names = sub_var.index
-        # time_adata_total += (datetime.now() - t2).total_seconds()
-        #
-        # # print(f"\n--- 批次 {expected} 详细信息 ---")
-        # # print(f"shape={X.shape}, nnz={X.nnz}")
-        # # print(f"obs 表读取累计用时: {time_obs_total:.2f} 秒")
-        # # print(f"var 表读取累计用时: {time_var_total:.2f} 秒")
-        # # print(f"生成 AnnData 累计用时: {time_adata_total:.2f} 秒")
+        X = sp.csr_matrix((data, indices, indptr), shape=(cell_count, gene_count))
+
+        t0 = datetime.now()
+        offset = expected * batch_size
+        sub_obs = conn.execute(f"SELECT * FROM obs LIMIT {cell_count} OFFSET {offset}").fetchdf()
+        time_obs_total += (datetime.now() - t0).total_seconds()
+
+        t1 = datetime.now()
+        sub_var = conn.execute("SELECT * FROM var").fetchdf()
+        time_var_total += (datetime.now() - t1).total_seconds()
+
+        sub_obs.index = sub_obs["cell_id"].astype(str)
+        sub_var.index = sub_var["gene_id"].astype(str)
+
+        t2 = datetime.now()
+        adata = AnnData(X=X, obs=sub_obs, var=sub_var)
+        adata.obs_names = sub_obs.index
+        adata.var_names = sub_var.index
+        time_adata_total += (datetime.now() - t2).total_seconds()
+
+        print(f"\n--- 批次 {expected} 详细信息 ---")
+        print(f"shape={X.shape}, nnz={X.nnz}")
+        print(f"obs 表读取累计用时: {time_obs_total:.2f} 秒")
+        print(f"var 表读取累计用时: {time_var_total:.2f} 秒")
+        print(f"生成 AnnData 累计用时: {time_adata_total:.2f} 秒")
 
         yield 1
 
@@ -370,8 +337,8 @@ if __name__ == "__main__":
     count = 0
 
     for adata in minibatch_scan_order_mproc(DB_PATH, batch_size=BATCH_SIZE,
-                                            n_processes=5, n_threads=10,
-                                            pool_size=20, drop_last=False):
+                                            n_processes=2, n_threads=8,
+                                            pool_size=30, drop_last=False):
         count += 1
 
     end_time = datetime.now()

@@ -11,5 +11,6 @@ from .input import (
 )
 
 from .output import (
-    export_duckdb_to_h5ad
+    export_duckdb_to_h5ad,
+export_duckdb_to_h5ad_streaming
 )

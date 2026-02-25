@@ -201,9 +201,9 @@ def _create_csr_tables(conn):
         """
         CREATE OR REPLACE TABLE X_CSR_data (
             id BIGINT,
-            indices USMALLINT,
+            indices USMALLINT,  --  gene id
             data REAL,
-            cell_index BIGINT
+            cell_index BIGINT   --  cell id
         )
         """
     )

@@ -6,7 +6,7 @@ import time
 import scipy.sparse as sp
 from anndata import AnnData
 
-# todo 单进程 + 单线程（多线程无效）:构建CSR（ indptr + indices + data ）  80 b/s 左右
+# todo scan多线程 + producer 单线程 + consumer 单线程
 class CSRBatchFetcherMT:
     """
     多线程 Arrow 解包 + 单线程 CSR batch 切分
@@ -25,7 +25,7 @@ class CSRBatchFetcherMT:
         db_path,
         batch_size=2048,
         fetch_rows=2048 * 2000,
-        n_producers=4,
+        n_scan_er=4,
     ):
         # -----------------------------
         # 基本配置参数
@@ -33,7 +33,7 @@ class CSRBatchFetcherMT:
         self.db_path = db_path
         self.batch_size = batch_size # 一个 CSR batch 中包含的 cell 数
         self.fetch_rows = fetch_rows # DuckDB 每次 scan 返回多少 nnz 行（Arrow RecordBatch 粒度）
-        self.n_producers = n_producers # Arrow → numpy 解包线程数量 （将数据表数据 写入内存中： 生产者）
+        self.n_scan_er = n_scan_er
 
         # -----------------------------
         # 线程间队列
@@ -296,18 +296,12 @@ class CSRBatchFetcherMT:
                     indptr_now = np.concatenate(([0], indptr_now)) # 3️⃣ 在开头补一个 0
                     global_indptr_offset = last_val # 4️⃣ 更新偏移量（⚠️ 用减之前的 last_val）
 
-
-                    aim = sp.csr_matrix((n_cells, n_genes), dtype=np.float32)
-                    aim.data = vals
-                    aim.indices = cols
-                    aim.indptr = indptr_now
-
-                    # # (data, indices, indptr)
-                    # X = sp.csr_matrix(
-                    #     (vals, cols, indptr_now),
-                    #     shape=(n_cells, n_genes),
-                    #     dtype=np.float32,
-                    # )
+                    # (data, indices, indptr)
+                    X = sp.csr_matrix(
+                        (vals, cols, indptr_now),
+                        shape=(n_cells, n_genes),
+                        dtype=np.float32,
+                    )
 
                     print(f"[Consumer] batch 编号： {self.batch_idx}, nnz={need}")
                     # print(f"================== 本批次构建完成！===================\n")
@@ -346,27 +340,27 @@ class CSRBatchFetcherMT:
         """
         t0 = time.time()
 
-        # todo 1. 生产线程 类型1： _scan_thread ; 单线程;
+        # todo 1. 生产线程 类型1： _scan_thread ; 多线程;
         #  顺序扫描 X_CSR_data, 惰性加载 ; 以 Arrow RecordBatch 形式推送到 rb_queue
-        scan_t = threading.Thread(target=self._scan_thread)
-        scan_t.start()  # 顺序扫描 X_CSR_data, 以 Arrow RecordBatch 形式推送到 rb_queue
-
-        # todo 2. 生产线程 类型2： _producer; 多线程；
-        #   从 rb_queue 中取 Arrow RecordBatch -> numpy array -> 推送到 data_queue
-        producers = []
-        for i in range(self.n_producers):
-            t = threading.Thread(target=self._producer, args=(i,))
+        scan_er = []
+        for i in range(self.n_scan_er):
+            t = threading.Thread(target=self._scan_thread, args=(i,))
             t.start()
-            producers.append(t)
+            scan_er.append(t)
+
+        # todo 2. 生产线程 类型2： _producer; 单线程；
+        #   从 rb_queue 中取 Arrow RecordBatch -> numpy array -> 推送到 data_queue
+        producer_t = threading.Thread(target=self._producer)
+        producer_t.start()
 
         # todo 3. 消费线程：启动 consumer，负责 单线程顺序切 batch + 构建 CSR
         consumer_t = threading.Thread(target=self._consumer)
         consumer_t.start()
 
         # todo 4. 等待所有线程结束
-        scan_t.join()
-        for t in producers:
+        for t in scan_er:
             t.join()
+        producer_t.join()
         consumer_t.join()
 
         total_time = time.time() - t0
@@ -415,7 +409,7 @@ if __name__ == "__main__":
     # print(flush=True)
 
     fetcher = CSRBatchFetcherMT(  # 初始化， 完成indptr数组的获取
-        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
+        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_204800.sasql",
         batch_size=2048,
         fetch_rows=2048 * 2000,
         n_producers=1,

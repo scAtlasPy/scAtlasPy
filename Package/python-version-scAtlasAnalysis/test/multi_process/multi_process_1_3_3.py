@@ -4,8 +4,11 @@ import multiprocessing as mp
 from multiprocessing.shared_memory import SharedMemory
 import time
 import scipy.sparse as sp
+import threading
+from queue import Queue
 
 # ==================================================
+#  多线程消费
 # todo 每个 producer 只扫描自己的连续行 90-100 b/s
 # ==================================================
 class CSRBatchFetcherMP_SharedMemNoQueue:
@@ -154,82 +157,89 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
     # -----------------------------
     # todo 5. 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data + indptr构建 CSR
     # -----------------------------
+    # -----------------------------
+    # 🔹 修改版 多线程 consumer
+    # -----------------------------
+
+
     def _consumer(self):
-
+        """
+        多线程读取共享内存 slot，加速数据搬运
+        CSR 构建仍按 batch_idx 顺序
+        """
         conn = duckdb.connect(self.db_path, read_only=True)
-        global_indptr_offset = 0 # 取indptr的全局偏移量
-        slot_id = 0 # 从 第0个slot开始拿数据
-        t_start = time.time() # 时间统计
+        global_indptr_offset = 0
+        t_start = time.time()
 
-        while self.batch_idx < self.batch_num :
+        # 🔹 修改: 创建线程安全队列，用于搬运 slot 数据
+        slot_queue = Queue()
 
-            need = self.batch_nnz[self.batch_idx]  # 当前 batch 需要的 nnz 数量
-
-            # todo data 数量够， 取 数据
-            if self.pool_data.size >= need: # 私有内存池中的data 数量足够
-
-                # 从内存pool中获取 need 个 数据
-                vals = self.pool_data[:need]  # csr三元组 1 — data
-                cols = self.pool_indices[:need]  # csr三元组 2 — gene_id
-
-                # 🔹 取indptr
-                indptr_now = self.indptr_queue.get().column(0).to_numpy()
-                last_val = indptr_now[-1]
-                indptr_now = indptr_now - global_indptr_offset
-                indptr_now = np.concatenate(([0], indptr_now))  # csr三元组 3 — indptr
-                global_indptr_offset = last_val
-
-                n_genes = int(cols.max()) + 1 if len(cols) else 0
-
-                X = sp.csr_matrix(  # 🔹 构建 csr 格式的 X
-                    (vals, cols, indptr_now),
-                    shape=(self.batch_size, n_genes),
-                    dtype=np.float32,
-                )
-
-                # 🔹 打印时间信息
-                now = time.time()
-                elapsed = now - t_start
-                print(
-                    f"[Consumer] batch {self.batch_idx}, nnz={need}, elapsed={elapsed:.2f}s, batch/s={self.batch_idx / (elapsed + 1e-8):.2f}"
-                )
-
-                # 移动 pool（丢弃已消费的 nnz）
-                self.pool_indices = self.pool_indices[need:]
-                self.pool_data = self.pool_data[need:]
-
-                print(f"[Consumer] : 已完成 batch_id = {self.batch_idx}，nnz={need}")
-
-                self.batch_idx = self.batch_idx + 1  # batch id 顺序增加
-                with self.total_batches.get_lock(): # 拿到 Value 自带的互斥锁
-                    self.total_batches.value += 1 # 统计总完成 batch 数（多进程安全）
-
-
-            # todo data 数量不够， 存 数据
-            else: # self.pool_data.size < need 私有内存池中的data 数量不够
-
-                flag = self.shm_flags[slot_id]  # 当前的 slot 是否为空 的 标识
-
-                if flag.value == 0: # 当前 slot 没数据，等待
+        # 🔹 修改: consumer thread 读取 slot 数据
+        def slot_reader_thread(slot_id):
+            while self.batch_idx < self.batch_num:
+                flag = self.shm_flags[slot_id]
+                if flag.value == 0:
                     time.sleep(0.0001)
                     continue
 
-                # if flag.value == 1: # 当前 slot 有数据，可读
-                shm_idx = self.shm_indices_pool[slot_id] # 共享内存 gene_id
+                shm_idx = self.shm_indices_pool[slot_id]
                 shm_val = self.shm_data_pool[slot_id]
 
-                # 🔹 读取数据 (零拷贝 view)
-                indices = np.ndarray(shm_idx.size // np.int32().nbytes, dtype=np.int32, buffer=shm_idx.buf)
-                data = np.ndarray(shm_val.size // np.float32().nbytes, dtype=np.float32, buffer=shm_val.buf)
+                # 🔹 零拷贝 view 然后 copy 放入 queue
+                indices = np.ndarray(shm_idx.size // np.int32().nbytes, dtype=np.int32, buffer=shm_idx.buf).copy()
+                data = np.ndarray(shm_val.size // np.float32().nbytes, dtype=np.float32, buffer=shm_val.buf).copy()
 
-                # 将 indices, data 拼接到 内存 pool
-                self.pool_indices = np.concatenate([self.pool_indices, indices])
-                self.pool_data = np.concatenate([self.pool_data, data])
+                # 🔹 放入 queue
+                slot_queue.put((slot_id, indices, data))
 
-                flag.value = 0  # 释放 slot（置空）， 告诉producer， 该slot的数据已经读取完毕
-                print(f"[Consumer] : 已读取 slot_{slot_id}的数据")
+                # 🔹 释放 slot
+                flag.value = 0
 
-                slot_id = (slot_id + 1) % self.slot_num  # 拿下一块数据
+        # 🔹 修改: 启动多线程，每个 slot 一个线程
+        threads = []
+        for slot_id in range(self.slot_num):
+            t = threading.Thread(target=slot_reader_thread, args=(slot_id,))
+            t.daemon = True
+            t.start()
+            threads.append(t)
+
+        # 🔹 修改: 主循环按 batch_idx 顺序消费 queue 数据
+        while self.batch_idx < self.batch_num:
+            slot_id, indices, data = slot_queue.get()
+            self.pool_indices = np.concatenate([self.pool_indices, indices])
+            self.pool_data = np.concatenate([self.pool_data, data])
+
+            # 🔹 如果 pool_data 足够当前 batch
+            while self.batch_idx < self.batch_num and self.pool_data.size >= self.batch_nnz[self.batch_idx]:
+                need = self.batch_nnz[self.batch_idx]
+
+                vals = self.pool_data[:need]
+                cols = self.pool_indices[:need]
+
+                indptr_now = self.indptr_queue.get().column(0).to_numpy()
+                last_val = indptr_now[-1]
+                indptr_now = indptr_now - global_indptr_offset
+                indptr_now = np.concatenate(([0], indptr_now))
+                global_indptr_offset = last_val
+
+                n_genes = int(cols.max()) + 1 if len(cols) else 0
+                X = sp.csr_matrix((vals, cols, indptr_now), shape=(self.batch_size, n_genes), dtype=np.float32)
+
+                # 移动 pool
+                self.pool_indices = self.pool_indices[need:]
+                self.pool_data = self.pool_data[need:]
+
+                # 🔹 更新 batch_idx 和总 batch 数
+                self.batch_idx += 1
+                with self.total_batches.get_lock():
+                    self.total_batches.value += 1
+
+                now = time.time()
+                elapsed = now - t_start
+                print(
+                    f"[Consumer] batch {self.batch_idx - 1}, nnz={need}, elapsed={elapsed:.2f}s, batch/s={(self.batch_idx) / (elapsed + 1e-8):.2f}"
+                )
+                print(f"[Consumer] : 已完成 batch_id = {self.batch_idx - 1}, nnz={need}")
 
         print("[Consumer] : Done")
         conn.close()
@@ -247,14 +257,21 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
             p.start()
             producers.append(p)
 
-        # todo 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data ， 并与 indptr构建 CSR
-        consumer_p = mp.Process(target=self._consumer)
-        consumer_p.start()
+        # # todo 单进程 ，consumer 消费者，从 共享内存 中取出 indices, data ， 并与 indptr构建 CSR
+        # consumer_p = mp.Process(target=self._consumer)
+        # consumer_p.start()
+
+        # -----------------------------
+        # 🔹 多线程 consumer
+        # -----------------------------
+        # 🔹 修改: 直接调用改好的 _consumer 多线程版本
+        self._consumer()
 
         # 等待所有进程结束
         for p in producers:
             p.join()
-        consumer_p.join()
+
+        # consumer_p.join()
 
         # 🔹 统一 unlink 关闭 所有共享内存
         for name in self.shm_to_unlink:

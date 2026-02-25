@@ -12,6 +12,9 @@ import tempfile
 import matplotlib.pyplot as plt
 import scipy.sparse as sp
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import time
+import multiprocessing as mp
 
 from pyexpat.errors import messages
 
@@ -59,6 +62,8 @@ class Atlas:
         db_file = os.path.join(self.__path, f"{self.__name}.sasql")
         logger.debug(f"数据库文件路径: {db_file}")
 
+        self.__db_file = db_file # 数据库文件的绝对路径
+
         if not os.path.exists(db_file):
             logger.info(f"数据库文件不存在，开始创建新数据库: {db_file}")
             try:
@@ -73,6 +78,15 @@ class Atlas:
 
         logger.info("Atlas 实例初始化完成")
 
+    @property
+    def db_file(self) -> str:
+        """获取名称属性"""
+        return self.__db_file
+
+    @db_file.setter
+    def db_file(self, value: str) -> None:
+        """设置名称属性"""
+        self.__db_file = value
 
     @property
     def name(self) -> str:
@@ -159,7 +173,8 @@ class Atlas:
             self.close()
 
         # 构建数据库文件路径
-        db_file = os.path.join(self.__path, f"{self.__name}.sasql")
+        # db_file = os.path.join(self.__path, f"{self.__name}.sasql")
+        db_file = self.db_file
         logger.debug(f"数据库文件路径: {db_file}")
 
         try:
@@ -563,59 +578,475 @@ class Atlas:
         # 新增：在所有批次处理完成后，绘制时间图表
         # self._plot_batch_times(batch_times, batch_size)
 
-    def minibatch_scan_random_no_replace(self, batch_size, drop_last):
-        """随机读取不放回模式"""
+    def minibatch_scan_random_no_replace_coo( self, batch_size: int, drop_last: bool):
+        """
+        随机、不放回地按 cell 读取 AnnData（基于 COO 重建）
 
-        total_num = self.query("SELECT COUNT(*) AS count FROM obs").iloc[0, 0]
+        核心思想：
+        - 随机的是 cell（obs 行）
+        - X 直接从 (cell_index, gene_index, data) 三元组重建
+        - 完全不依赖 CSR indptr
+        """
+        # =========================================================
+        # 1️⃣ 生成一个「随机但不重复」的 cell 顺序（只做一次）
+        # =========================================================
+        # 这里只读 obs.id，一列 int，内存占用极小
+        rng = np.random.default_rng()
 
-        # 生成所有可能的索引
-        all_indices = list(range(total_num))
-        random.shuffle(all_indices)  # 随机打乱
+        cell_ids =  self.connection.execute("SELECT id FROM obs").fetch_arrow_table().to_pandas()['id'].to_numpy()
 
-        # 计算批次数量
+        var_count = self.connection.execute("SELECT COUNT(*) AS n FROM var").fetch_arrow_table().to_pandas().iloc[0, 0]
+
+        # 打乱顺序 = random_no_replace
+        rng.shuffle(cell_ids)
+
+        total_cells = len(cell_ids)
+
         if drop_last:
-            num_batches = total_num // batch_size
+            num_batches = total_cells // batch_size
         else:
-            num_batches = (total_num + batch_size - 1) // batch_size
+            num_batches = (total_cells + batch_size - 1) // batch_size
 
-        for i in range(num_batches):
-            start_idx = i * batch_size
-            end_idx = start_idx + batch_size
+        # =========================================================
+        # 2️⃣ minibatch 循环
+        # =========================================================
+        for batch_idx in range(num_batches):
 
-            # 如果是最后一批且不丢弃剩余数据，调整结束位置
-            if not drop_last and i == num_batches - 1 and total_num % batch_size != 0:
-                end_idx = start_idx + (total_num % batch_size)
+            # 当前 batch 的 cell id（这是“随机”的唯一来源）
+            batch_cell_ids = cell_ids[
+                batch_idx * batch_size: (batch_idx + 1) * batch_size
+            ]
 
-            # 获取当前批次的索引
-            batch_indices = all_indices[start_idx:end_idx]
+            if len(batch_cell_ids) == 0:
+                break
 
-            # 构建IN查询,将整数索引转换为字符串,用逗号连接所有字符串 ; 如 batch_indices = [0, 1, 2] ，indices_str = "0,1,2"
-            indices_str = ",".join(map(str, batch_indices))
+            # 用于 SQL IN (...)
+            ids_str = ",".join(map(str, batch_cell_ids))
 
-            # 使用rowid或主键进行随机查询
-            if (self.isView):  # 数据库视图
-                sub_X = self.query(f"SELECT * FROM {self.viewID} WHERE rowid IN ({indices_str})")
-            else:
-                sub_X = self.query(f"SELECT * FROM X WHERE rowid IN ({indices_str})")
-            sub_obs = self.query(f"SELECT * FROM obs WHERE rowid IN ({indices_str})")
-            sub_var = self.query("SELECT * FROM var")
+            # =====================================================
+            # 3️⃣ 直接读取 COO 三元组
+            # =====================================================
+            # 这里不需要 indptr，不需要 data 区间计算
+            # 每一行就是一个非零值
+            query_X = f"""
+                SELECT
+                    cell_index,   -- 行号（cell）
+                    indices,      -- 列号（gene）
+                    data          -- 非零值
+                FROM X_CSR_data
+                WHERE cell_index IN ({ids_str})
+            """
+            x1 = self.connection.execute(query_X)
+            x2 = x1.fetch_arrow_table()
+            X_df = x2.to_pandas()
 
-            sub_X = sub_X.iloc[:, 2:]  # 去掉数据表中的前2列 id cell_id
-            sub_obs = sub_obs.iloc[:, 1:]  # 去掉数据表中的前1列 id
-            sub_var = sub_var.iloc[:, 1:]  # 去掉数据表中的前1列
-            cell_id = sub_obs['cell_id']  # 获取cell_id
-            gene_id = sub_var['gene_id']  # 获取gene_id
+            # 如果这个 batch 全是空 cell（极端情况）
+            if X_df.empty:
+                continue
 
-            # 创建AnnData对象，正确设置obs_names和var_names
+            # =====================================================
+            # 4️⃣ 把全局 cell_id → batch 内 row index
+            # =====================================================
+            # COO 要求 row ∈ [0, n_rows)
+            # 所以需要一个映射
+            #
+            # 例：
+            #   batch_cell_ids = [42, 7, 19]
+            #   映射为
+            #   42 → 0
+            #    7 → 1
+            #   19 → 2
+            cell_id_to_row = { cid: i for i, cid in enumerate(batch_cell_ids) }
+
+            rows = X_df['cell_index'].map(cell_id_to_row).to_numpy()
+            cols = X_df['indices'].to_numpy()
+            vals = X_df['data'].to_numpy()
+
+            # =====================================================
+            # 5️⃣ 构建稀疏矩阵（COO → CSR）
+            # =====================================================
+            # COO 构建最快
+            # CSR 是 AnnData / 下游算法更友好的格式
+            X = sp.coo_matrix(
+                (vals, (rows, cols)),
+                shape=(len(batch_cell_ids), var_count)
+            ).tocsr()
+
+            # =====================================================
+            # 6️⃣ obs / var
+            # =====================================================
+            sub_obs = (
+                self.connection.execute(f"""
+                    SELECT * FROM obs
+                    WHERE id IN ({ids_str})
+                    ORDER BY id
+                """)
+                .fetch_arrow_table()
+                .to_pandas()
+                .iloc[:, 1:]  # 去掉内部 id
+            )
+
+            sub_var = (
+                self.connection.execute("SELECT * FROM var")
+                .fetch_arrow_table()
+                .to_pandas()
+                .iloc[:, 1:]
+            )
+
+            sub_obs.index = sub_obs['cell_id'].astype(str)
+            sub_var.index = sub_var['gene_id'].astype(str)
+
+            # =====================================================
+            # 7️⃣ 生成 AnnData
+            # =====================================================
             adata = AnnData(
-                X=sub_X.values,
+                X=X,
                 obs=sub_obs,
                 var=sub_var
             )
-            adata.obs_names = cell_id  # 设置观测名为cell_id
-            adata.var_names = gene_id  # 设置变量名为gene_id
 
-            # 返回数据
+            yield adata
+
+# todo 加上时间分析
+    def minibatch_scan_random_no_replace_coo_time(self, batch_size: int, drop_last: bool):
+        """
+        随机、不放回地按 cell 读取 AnnData（基于 COO 重建）
+        + 各阶段耗时统计
+        """
+
+        # =========================================================
+        # 1️⃣ 生成随机 cell 顺序（只做一次）
+        # =========================================================
+        t_init = time.perf_counter()
+
+        rng = np.random.default_rng()
+
+        cell_ids = (
+            self.connection
+            .execute("SELECT id FROM obs")
+            .fetch_arrow_table()
+            .to_pandas()['id']
+            .to_numpy()
+        )
+
+        var_count = (
+            self.connection
+            .execute("SELECT COUNT(*) FROM var")
+            .fetch_arrow_table()
+            .to_pandas()
+            .iloc[0, 0]
+        )
+
+        rng.shuffle(cell_ids)
+
+        total_cells = len(cell_ids)
+
+        if drop_last:
+            num_batches = total_cells // batch_size
+        else:
+            num_batches = (total_cells + batch_size - 1) // batch_size
+
+        print(f"[INIT] cell_ids={total_cells}, var_count={var_count}, "
+              f"init_time={time.perf_counter() - t_init:.3f}s")
+
+        # =========================================================
+        # 2️⃣ minibatch 循环
+        # =========================================================
+        for batch_idx in range(num_batches):
+
+            t_batch_start = time.perf_counter()
+
+            batch_cell_ids = cell_ids[
+                batch_idx * batch_size: (batch_idx + 1) * batch_size
+            ]
+
+            if len(batch_cell_ids) == 0:
+                break
+
+            ids_str = ",".join(map(str, batch_cell_ids))
+
+            # =====================================================
+            # 3️⃣ 读取 COO 三元组
+            # =====================================================
+            t_x_start = time.perf_counter()
+
+            query_X = f"""
+                SELECT
+                    cell_index,
+                    indices,
+                    data
+                FROM X_CSR_data
+                WHERE cell_index IN ({ids_str})
+            """
+
+            X_df = (
+                self.connection
+                .execute(query_X)
+                .fetch_arrow_table()
+                .to_pandas()
+            )
+
+            t_x = time.perf_counter() - t_x_start
+
+            if X_df.empty:
+                print(f"[BATCH {batch_idx}] empty X, skip")
+                continue
+
+            # =====================================================
+            # 4️⃣ cell_id → batch row 映射
+            # =====================================================
+            t_map_start = time.perf_counter()
+
+            cell_id_to_row = {cid: i for i, cid in enumerate(batch_cell_ids)}
+
+            rows = X_df['cell_index'].map(cell_id_to_row).to_numpy()
+            cols = X_df['indices'].to_numpy()
+            vals = X_df['data'].to_numpy()
+
+            t_map = time.perf_counter() - t_map_start
+
+            # =====================================================
+            # 5️⃣ COO → CSR
+            # =====================================================
+            t_sparse_start = time.perf_counter()
+
+            X = sp.coo_matrix(
+                (vals, (rows, cols)),
+                shape=(len(batch_cell_ids), var_count)
+            ).tocsr()
+
+            t_sparse = time.perf_counter() - t_sparse_start
+
+            # =====================================================
+            # 6️⃣ obs / var
+            # =====================================================
+            t_obs_start = time.perf_counter()
+
+            sub_obs = (
+                self.connection.execute(f"""
+                    SELECT * FROM obs
+                    WHERE id IN ({ids_str})
+                    ORDER BY id
+                """)
+                .fetch_arrow_table()
+                .to_pandas()
+                .iloc[:, 1:]
+            )
+
+            t_obs = time.perf_counter() - t_obs_start
+
+            t_var_start = time.perf_counter()
+
+            sub_var = (
+                self.connection.execute("SELECT * FROM var")
+                .fetch_arrow_table()
+                .to_pandas()
+                .iloc[:, 1:]
+            )
+
+            t_var = time.perf_counter() - t_var_start
+
+            sub_obs.index = sub_obs['cell_id'].astype(str)
+            sub_var.index = sub_var['gene_id'].astype(str)
+
+            # =====================================================
+            # 7️⃣ AnnData 构建
+            # =====================================================
+            t_adata_start = time.perf_counter()
+
+            adata = AnnData(X=X, obs=sub_obs, var=sub_var)
+
+            t_adata = time.perf_counter() - t_adata_start
+            t_batch = time.perf_counter() - t_batch_start
+
+            # =====================================================
+            # 8️⃣ 打印统计
+            # =====================================================
+            print(
+                f"[BATCH {batch_idx:04d}] "
+                f"cells={len(batch_cell_ids):5d} | "
+                f"X_read={t_x:.3f}s | "
+                f"map={t_map:.3f}s | "
+                f"sparse={t_sparse:.3f}s | "
+                f"obs={t_obs:.3f}s | "
+                f"var={t_var:.3f}s | "
+                f"adata={t_adata:.3f}s | "
+                f"total={t_batch:.3f}s"
+            )
+
+            yield adata
+
+# todo JOIN 版 + 时间统计
+    def minibatch_scan_random_no_replace_coo_join(self, batch_size: int, drop_last: bool):
+        """
+        随机、不放回按 cell 读取 AnnData
+        - 使用 DuckDB TEMP TABLE + JOIN
+        - 带完整时间统计
+        """
+
+        # =========================================================
+        # 0️⃣ 全局初始化
+        # =========================================================
+        t_init = time.perf_counter()
+
+        rng = np.random.default_rng()
+
+        cell_ids = (
+            self.connection
+            .execute("SELECT id FROM obs")
+            .fetch_arrow_table()
+            .to_pandas()['id']
+            .to_numpy()
+        )
+
+        var_df = (
+            self.connection
+            .execute("SELECT * FROM var")
+            .fetch_arrow_table()
+            .to_pandas()
+            .iloc[:, 1:]
+        )
+        var_count = var_df.shape[0]
+        var_df.index = var_df['gene_id'].astype(str)
+
+        rng.shuffle(cell_ids)
+        total_cells = len(cell_ids)
+
+        if drop_last:
+            num_batches = total_cells // batch_size
+        else:
+            num_batches = (total_cells + batch_size - 1) // batch_size
+
+        print(
+            f"[INIT] cells={total_cells}, vars={var_count}, "
+            f"batches={num_batches}, init_time={time.perf_counter() - t_init:.3f}s"
+        )
+
+        # =========================================================
+        # 1️⃣ batch loop
+        # =========================================================
+        for batch_idx in range(num_batches):
+
+            t_batch_start = time.perf_counter()
+
+            batch_cell_ids = cell_ids[
+                batch_idx * batch_size:(batch_idx + 1) * batch_size
+            ]
+            if len(batch_cell_ids) == 0:
+                break
+
+            # =====================================================
+            # 2️⃣ 创建 TEMP TABLE
+            # =====================================================
+            t_temp_start = time.perf_counter()
+
+            self.connection.execute("DROP TABLE IF EXISTS batch_cells")
+            self.connection.execute("CREATE TEMP TABLE batch_cells(id INTEGER)")
+
+            # DuckDB 可以直接从 Python list 插入
+            self.connection.execute(
+                "INSERT INTO batch_cells SELECT * FROM UNNEST(?)",
+                [batch_cell_ids.tolist()]
+            )
+
+            t_temp = time.perf_counter() - t_temp_start
+
+            # =====================================================
+            # 3️⃣ JOIN 读取 X（COO）
+            # =====================================================
+            t_x_start = time.perf_counter()
+
+            X_df = (
+                self.connection.execute("""
+                    SELECT
+                        x.cell_index,
+                        x.indices,
+                        x.data
+                    FROM X_CSR_data x
+                    JOIN batch_cells b
+                    ON x.cell_index = b.id
+                """)
+                .fetch_arrow_table()
+                .to_pandas()
+            )
+
+            t_x = time.perf_counter() - t_x_start
+
+            if X_df.empty:
+                print(f"[BATCH {batch_idx}] empty X")
+                continue
+
+            # =====================================================
+            # 4️⃣ cell_id → row 映射
+            # =====================================================
+            t_map_start = time.perf_counter()
+
+            cell_id_to_row = {cid: i for i, cid in enumerate(batch_cell_ids)}
+
+            rows = X_df['cell_index'].map(cell_id_to_row).to_numpy()
+            cols = X_df['indices'].to_numpy()
+            vals = X_df['data'].to_numpy()
+
+            t_map = time.perf_counter() - t_map_start
+
+            # =====================================================
+            # 5️⃣ COO → CSR
+            # =====================================================
+            t_sparse_start = time.perf_counter()
+
+            X = sp.coo_matrix(
+                (vals, (rows, cols)),
+                shape=(len(batch_cell_ids), var_count)
+            ).tocsr()
+
+            t_sparse = time.perf_counter() - t_sparse_start
+
+            # =====================================================
+            # 6️⃣ JOIN 读取 obs
+            # =====================================================
+            t_obs_start = time.perf_counter()
+
+            sub_obs = (
+                self.connection.execute("""
+                    SELECT o.*
+                    FROM obs o
+                    JOIN batch_cells b
+                    ON o.id = b.id
+                    ORDER BY o.id
+                """)
+                .fetch_arrow_table()
+                .to_pandas()
+                .iloc[:, 1:]
+            )
+
+            t_obs = time.perf_counter() - t_obs_start
+            sub_obs.index = sub_obs['cell_id'].astype(str)
+
+            # =====================================================
+            # 7️⃣ AnnData
+            # =====================================================
+            t_adata_start = time.perf_counter()
+
+            adata = AnnData(X=X, obs=sub_obs, var=var_df)
+
+            t_adata = time.perf_counter() - t_adata_start
+            t_batch = time.perf_counter() - t_batch_start
+
+            # =====================================================
+            # 8️⃣ 打印统计
+            # =====================================================
+            print(
+                f"[BATCH {batch_idx:04d}] "
+                f"cells={len(batch_cell_ids):5d} | "
+                f"temp={t_temp:.3f}s | "
+                f"X_join={t_x:.3f}s | "
+                f"map={t_map:.3f}s | "
+                f"sparse={t_sparse:.3f}s | "
+                f"obs_join={t_obs:.3f}s | "
+                f"adata={t_adata:.3f}s | "
+                f"total={t_batch:.3f}s"
+            )
+
             yield adata
 
     def minibatch_scan_random_replace(self,batch_size):
@@ -659,8 +1090,7 @@ class Atlas:
             yield adata
             i += 1
 
-
-# == todo==== 数据库 配置优化 和 建立索引 ， 待修改 =========
+    # == todo==== 数据库 配置优化 和 建立索引 ， 待修改 =========
     def comprehensive_database_optimization(self):
         """综合数据库优化方案 - 用户手动调用"""
         print("开始执行数据库综合优化...")
@@ -903,4 +1333,575 @@ class Atlas:
             if os.path.exists(new_db_path):
                 os.remove(new_db_path)
             raise
+
+# == todo ==== minibatch的新方案  =========
+#       多进程（子进程 读取数据 ， 主进程消费数据） +
+#       共享内存 +
+#       （原来的自己写的 多线程 + 普通 queue 读取，每个线程对应一个 conn , 读取minibatch大小的数据）
+
+
+# todo 第一步： 可以先完成 多线程 + 普通 queue 读取，每个线程对应一个 conn , 读取minibatch大小的数据；
+    # todo 多线程 + 普通 queue 读取，每个线程对应一个 conn , 读取minibatch大小的数据；
+# =========================
+# minibatch_scan_order_mthread 保持原结构
+# =========================
+    def minibatch_scan_order_mthread_o(self, batch_size, drop_last):
+        """按顺序读取模式（X_CSR 多线程版本）"""
+#         time_2 = time_3 = time_4 = 0
+#
+#         self.connect("r")
+#
+#         total_num = self.connection.execute("SELECT COUNT(*) AS count FROM obs").fetchdf().iloc[0, 0] # 获取数量
+#
+#         if drop_last:
+#             num_batches = total_num // batch_size
+#         else:
+#             num_batches = (total_num + batch_size - 1) // batch_size
+#
+#         # ========= ✅ 使用多线程 X_CSR Reader =========
+#         csr_reader = MultiThreadCSRReader(
+#             db_path=self.db_file,  # 使用 db_path 让线程每个都新建只读连接
+#             total_num_cells=total_num,
+#             batch_size=batch_size,
+#             n_threads=15,
+#             queue_size=50,
+#             drop_last=drop_last,
+#         )
+#
+#         for i, cur_bs, CSR_indptr_array, CSR_indices_array, CSR_data_array in (
+#                 (item["batch_id"], item["batch_size"], item["indptr"], item["indices"], item["data"])
+#                 for item in csr_reader
+#         ):
+#             offset = i * batch_size
+#
+#             print(f"\n--- 批次 {i} 详细时间分析 ---")
+#             print(f"--- 批次大小 {cur_bs} ---")
+#
+#             # ========= obs =========
+#             start_time2 = datetime.now()
+#             sub_obs = self.connection.execute(f"SELECT * FROM obs LIMIT {cur_bs} OFFSET {offset}").fetchdf()
+#             time_2 += (datetime.now() - start_time2).total_seconds()
+#
+#             # ========= var =========
+#             start_time3 = datetime.now()
+#             sub_var = self.connection.execute("SELECT * FROM var").fetchdf()
+#             time_3 += (datetime.now() - start_time3).total_seconds()
+#
+#             # ========= AnnData =========
+#             start_time4 = datetime.now()
+#
+#             # ========= 重置索引 =========
+#             sub_obs = sub_obs.reset_index(drop=True)
+#             sub_var = sub_var.reset_index(drop=True)
+#
+#             cell_id = sub_obs["cell_id"]
+#             gene_id = sub_var["gene_id"]
+#
+#             print(f"indptr[-1] {CSR_indptr_array[-1]}")
+#             print(f"len(CSR_data_array) {len(CSR_data_array)}")
+#             print(f"len(CSR_indices_array) {len(CSR_indices_array)}")
+#             print(f"len(CSR_indptr_array) {len(CSR_indptr_array)}")
+#
+#             X = sp.coo_matrix(
+#                 (CSR_data_array, (np.repeat(np.arange(cur_bs), np.diff(CSR_indptr_array)), CSR_indices_array)),
+#                 shape=(cur_bs, len(sub_var))
+#             ).tocsr()
+#
+#             adata = AnnData(X=X, obs=sub_obs, var=sub_var)
+#             adata.obs_names = cell_id.astype(str)
+#             adata.var_names = gene_id.astype(str)
+#
+#             time_4 += (datetime.now() - start_time4).total_seconds()
+#
+#             yield adata
+#
+#             print(f"批次 {i}: nnz = {len(CSR_data_array)}, shape = ({cur_bs}, {len(sub_var)})")
+#
+#             print(f"obs 表读取用时： {time_2:.2f} 秒")
+#             print(f"var 表读取用时： {time_3:.2f} 秒")
+#             print(f"生成 anndata 用时： {time_4:.2f} 秒")
+
+    def minibatch_scan_order_mthread(self, batch_size, drop_last=False, n_threads=10, queue_size=50):
+        """
+        按顺序读取模式（X_CSR 多线程版本），直接返回 AnnData
+
+        参数:
+        - batch_size: 每个 batch 的细胞数
+        - drop_last: 是否丢弃最后不足 batch_size 的 batch
+        - n_threads: worker 线程数
+        - queue_size: 队列大小，控制背压
+
+        返回:
+        - yield AnnData 对象
+        """
+
+        from datetime import datetime
+        import scipy.sparse as sp
+        import numpy as np
+        from anndata import AnnData
+
+        self.connect("r")
+
+        # 1️⃣ 总细胞数
+        total_num = self.connection.execute("SELECT COUNT(*) AS count FROM obs").fetchdf().iloc[0, 0]
+
+        # 2️⃣ 初始化多线程 CSR 读取器
+        csr_reader = MultiThreadCSRReader(
+            db_path=self.db_file,
+            total_num_cells=total_num,
+            batch_size=batch_size,
+            n_threads=24,
+            queue_size=50,
+            drop_last=drop_last
+        )
+
+        # 3️⃣ 计时
+        time_obs = 0
+        time_var = 0
+        time_adata = 0
+
+        for item in csr_reader:
+            batch_id = item["batch_id"]
+            cur_bs = item["batch_size"]
+            CSR_indptr_array = item["indptr"]
+            CSR_indices_array = item["indices"]
+            CSR_data_array = item["data"]
+
+            offset = batch_id * batch_size
+
+            print(f"\n--- 批次 {batch_id} 详细时间分析 ---")
+            print(f"--- 批次大小 {cur_bs} ---")
+            print(f"indptr[-1] {CSR_indptr_array[-1]}")
+            print(f"len(CSR_data_array) {len(CSR_data_array)}")
+            print(f"len(CSR_indices_array) {len(CSR_indices_array)}")
+            print(f"len(CSR_indptr_array) {len(CSR_indptr_array)}")
+
+            # ========= obs =========
+            t0 = datetime.now()
+            sub_obs = self.connection.execute(f"SELECT * FROM obs LIMIT {cur_bs} OFFSET {offset}").fetchdf()
+            time_obs += (datetime.now() - t0).total_seconds()
+
+            # ========= var =========
+            t1 = datetime.now()
+            sub_var = self.connection.execute("SELECT * FROM var").fetchdf()
+            time_var += (datetime.now() - t1).total_seconds()
+
+            # ========= AnnData =========
+            t2 = datetime.now()
+
+            # sub_obs = sub_obs.reset_index(drop=True)
+            # sub_var = sub_var.reset_index(drop=True)
+
+            cell_id = sub_obs["cell_id"]
+            gene_id = sub_var["gene_id"]
+
+            sub_obs.index = cell_id.astype(str)
+            sub_var.index = gene_id.astype(str)
+
+            # 构建 COO 矩阵
+            X = sp.coo_matrix(
+                (CSR_data_array, (np.repeat(np.arange(cur_bs), np.diff(CSR_indptr_array)), CSR_indices_array)),
+                shape=(cur_bs, len(sub_var))
+            )
+
+            adata = AnnData(X=X, obs=sub_obs, var=sub_var)
+            adata.obs_names = cell_id.astype(str)
+            adata.var_names = gene_id.astype(str)
+
+            time_adata += (datetime.now() - t2).total_seconds()
+
+            yield adata
+
+            print(f"批次 {batch_id}: nnz={len(CSR_data_array)}, shape=({cur_bs}, {len(sub_var)})")
+            print(f"obs 表读取累计用时: {time_obs:.2f} 秒")
+            print(f"var 表读取累计用时: {time_var:.2f} 秒")
+            print(f"生成 AnnData 累计用时: {time_adata:.2f} 秒")
+
+        # 等待 worker 线程结束
+        csr_reader.join()
+        print("所有批次处理完成，worker 已退出")
+
+
+# import threading
+# from queue import Queue
+# import numpy as np
+# import scipy.sparse as sp
+# from datetime import datetime
+# from anndata import AnnData
+# import duckdb
+#
+#
+# class MultiThreadCSRReader:
+#     """
+#     多线程 CSR 读取器（线程安全，每个线程独立只读连接）
+#     """
+#
+#     def __init__(self, db_path, total_num_cells, batch_size, n_threads=10, queue_size=50, drop_last=False):
+#         self.db_path = db_path
+#         self.total_num_cells = total_num_cells
+#         self.batch_size = batch_size
+#         self.n_threads = n_threads
+#         self.drop_last = drop_last
+#
+#         self.queue = Queue(maxsize=queue_size)
+#
+#         if drop_last:
+#             self.num_batches = total_num_cells // batch_size
+#         else:
+#             self.num_batches = (total_num_cells + batch_size - 1) // batch_size
+#
+#         # 全局批次游标锁
+#         self._batch_cursor = 0
+#         self._cursor_lock = threading.Lock()
+#
+#         self.threads = [] # 通常这是一个 线程列表
+#         self._start_threads()
+#
+#     # -----------------------------
+#     # 启动线程
+#     # -----------------------------
+#     def _start_threads(self):
+#         for tid in range(self.n_threads):
+#             t = threading.Thread(
+#                 target=self._worker,
+#                 name=f"CSR-Worker-{tid}",
+#                 daemon=True
+#             ) # todo 此时：NEW 状态
+#             self.threads.append(t)
+#             t.start() #  todo start 之后，线程进入 READY
+#
+#     # -----------------------------
+#     # 每个线程工作函数
+#     # -----------------------------
+#     def _worker(self):
+#         """
+#         每个线程工作函数：独立只读连接，多线程安全
+#         """
+#         import duckdb
+#         import numpy as np
+#         import scipy.sparse as sp
+#         import threading
+#         import time
+#
+#         thread_name = threading.current_thread().name
+#
+#         # 每个线程独立只读连接
+#         conn = duckdb.connect(self.db_path, read_only=True)
+#
+#         while True:
+#             # -----------------------------
+#             # 1️⃣ 抢批次
+#             # -----------------------------
+#             with self._cursor_lock:
+#                 if self._batch_cursor >= self.num_batches:
+#                     print(f"[{thread_name}] 所有批次抢完，线程退出")
+#                     # 所有批次抢完，向队列推送终止信号
+#                     self.queue.put(None)
+#                     return
+#                 batch_id = self._batch_cursor
+#                 self._batch_cursor += 1
+#                 print(f"[{thread_name}] 抢到批次 {batch_id}, 当前全局批次游标 {self._batch_cursor}")
+#
+#             offset = batch_id * self.batch_size
+#             if (not self.drop_last and batch_id == self.num_batches - 1
+#                     and self.total_num_cells % self.batch_size != 0):
+#                 current_batch_size = self.total_num_cells % self.batch_size
+#             else:
+#                 current_batch_size = self.batch_size
+#
+#             # -----------------------------
+#             # 2️⃣ 读取 indptr
+#             # -----------------------------
+#             query_indptr = f"""
+#                 SELECT indptr
+#                 FROM X_CSR_indptr
+#                 LIMIT {current_batch_size}
+#                 OFFSET {offset}
+#             """
+#             indptr_df = conn.execute(query_indptr).fetch_arrow_table().to_pandas()
+#             raw_indptr = indptr_df["indptr"].to_numpy()
+#
+#             # -----------------------------
+#             # 3️⃣ 读取 CSR_data (indices + data + cell_index)
+#             # -----------------------------
+#             if current_batch_size > 0:
+#                 query_data = f"""
+#                     SELECT indices, data, cell_index
+#                     FROM X_CSR_data
+#                     WHERE cell_index >= {offset} AND cell_index < {offset + current_batch_size}
+#                     ORDER BY id
+#                 """
+#                 data_df = conn.execute(query_data).fetch_arrow_table().to_pandas()
+#
+#                 rows = data_df["cell_index"].to_numpy()
+#                 cols = data_df["indices"].to_numpy()
+#                 vals = data_df["data"].to_numpy()
+#
+#                 # ✅ 计算 batch 内偏移
+#                 rows -= offset
+#             else:
+#                 rows = np.array([], dtype=np.int32)
+#                 cols = np.array([], dtype=np.int32)
+#                 vals = np.array([], dtype=np.float32)
+#
+#             # -----------------------------
+#             # 4️⃣ 构建 COO → CSR
+#             # -----------------------------
+#             var_count = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
+#             X = sp.coo_matrix(
+#                 (vals, (rows, cols)),
+#                 shape=(current_batch_size, var_count)
+#             ).tocsr()
+#
+#             # -----------------------------
+#             # 5️⃣ 推送到队列
+#             # -----------------------------
+#             self.queue.put({
+#                 "batch_id": batch_id,
+#                 "indptr": X.indptr,
+#                 "indices": X.indices,
+#                 "data": X.data,
+#                 "batch_size": current_batch_size,
+#             })
+#             print(f"[{thread_name}] 批次 {batch_id} 放入队列, 当前队列大小 {self.queue.qsize()}")
+#
+#     # -----------------------------
+#     # 对外消费接口
+#     # -----------------------------
+#     def __iter__(self):
+#         return self
+#
+#     def __next__(self):
+#         """
+#         从队列获取下一个批次，如果队列中取到 None，则迭代结束
+#         """
+#         while True:
+#             item = self.queue.get()  # 阻塞直到有数据
+#             if item is None:
+#                 # 将 None 再放回队列，保证其他线程也能停止迭代
+#                 self.queue.put(None)
+#                 print("[ITER] 队列收到终止信号，StopIteration")
+#                 raise StopIteration
+#             print(f"[ITER] 取到批次 {item['batch_id']}, 当前队列大小 {self.queue.qsize()}")
+#             return item
+#
+#     def join(self):
+#         # 阻塞当前线程，直到 self.threads 里的所有线程都执行完毕。
+#         for t in self.threads: # 依次取出每一个线程对象 t
+#             t.join() # 线程会进入阻塞状态，直到目标线程完成执行。
+#             # 当前线程（通常是主线程
+
+
+
+import threading
+from queue import Queue
+import numpy as np
+import scipy.sparse as sp
+from anndata import AnnData
+from datetime import datetime
+import duckdb
+
+class MultiThreadCSRReader:
+    """
+    多线程 CSR 读取器（线程安全、顺序输出、不阻塞）
+
+    特点：
+    1. worker 线程可以乱序生成 batch
+    2. 主线程顺序输出 batch，保证 batch_id 0,1,2,... 顺序
+    3. 使用 Queue 做线程间通信
+    4. 支持 drop_last 选项
+    """
+
+    def __init__(self, db_path, total_num_cells, batch_size,
+                 n_threads=10, queue_size=50, drop_last=False):
+        self.db_path = db_path
+        self.total_num_cells = total_num_cells
+        self.batch_size = batch_size
+        self.n_threads = n_threads # 线程数
+        self.drop_last = drop_last
+
+        # 内部队列：线程间通信，存放 batch 数据
+        self.queue = Queue(maxsize=queue_size)
+
+        # 计算总批次数
+        if drop_last:
+            self.num_batches = total_num_cells // batch_size
+        else:
+            self.num_batches = (total_num_cells + batch_size - 1) // batch_size
+
+        # 全局批次游标及锁，确保每个线程抢到不同 batch
+        self._batch_cursor = 0
+        self._cursor_lock = threading.Lock()
+
+        # 保存线程对象
+        self.threads = [] # 线程队列
+        self._start_threads()
+
+    # -----------------------------
+    # 启动 worker 线程
+    # -----------------------------
+    def _start_threads(self):
+        for tid in range(self.n_threads):
+            t = threading.Thread(
+                target=self._worker,
+                name=f"CSR-Worker-{tid}",
+                daemon=True  # 主线程退出，worker 自动结束
+            )
+            self.threads.append(t) # 将t加入到 线程队列
+            t.start()
+
+    # -----------------------------
+    # worker 函数：负责生成 batch，放入队列
+    # -----------------------------
+    def _worker(self):
+        """
+        每个线程独立只读连接，多线程安全
+        """
+        name = threading.current_thread().name
+        print(f"name 是什么？ [{name}]  线程编号 ？")
+        conn = duckdb.connect(self.db_path, read_only=True)
+
+        while True:
+            # -----------------------------
+            # 1️⃣ 抢批次（全局锁）
+            # -----------------------------
+            with self._cursor_lock:
+                if self._batch_cursor >= self.num_batches:
+                    # 没有更多 batch 了
+                    print(f"[{name}] no more batch, exit")
+                    return
+                batch_id = self._batch_cursor
+                self._batch_cursor += 1
+
+            # -----------------------------
+            # 2️⃣ 计算当前 batch 偏移量和大小
+            # -----------------------------
+            offset = batch_id * self.batch_size
+            if (not self.drop_last and batch_id == self.num_batches - 1
+                    and self.total_num_cells % self.batch_size != 0):
+                cur_bs = self.total_num_cells % self.batch_size
+            else:
+                cur_bs = self.batch_size
+
+            # -----------------------------
+            # 3️⃣ 读取 CSR 数据 (indices, data, cell_index)
+            # -----------------------------
+            if cur_bs > 0:
+                query = f"""
+                    SELECT indices, data, cell_index
+                    FROM X_CSR_data
+                    WHERE cell_index >= {offset} AND cell_index < {offset + cur_bs}
+                    ORDER BY id
+                """
+                df = conn.execute(query).fetch_arrow_table().to_pandas()
+
+                rows = df["cell_index"].to_numpy() - offset  # batch 内行号， cell_id
+                cols = df["indices"].to_numpy() # gene_id
+                vals = df["data"].to_numpy() # data
+            else:
+                rows = cols = vals = np.array([])
+
+            # -----------------------------
+            # 4️⃣ 生成 CSR 矩阵
+            # -----------------------------
+            var_count = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
+
+
+            X = sp.coo_matrix(
+                (vals, (rows, cols)),
+                shape=(cur_bs, var_count)
+            ).tocsr()
+
+            # -----------------------------
+            # 5️⃣ 放入队列
+            # -----------------------------
+            self.queue.put({
+                "batch_id": batch_id,
+                "indptr": X.indptr,
+                "indices": X.indices,
+                "data": X.data,
+                "batch_size": cur_bs,
+            })
+
+            print(f"[{name}] produced batch {batch_id}, queue size={self.queue.qsize()}")
+
+    # -----------------------------
+    # 顺序迭代器：保证按 batch_id 输出
+    # -----------------------------
+    def __iter__(self):
+        expected = 0  # 当前期望输出的批次ID（从0开始）
+        buffer = {}  # 缓存乱序收到的批次 {batch_id: 数据}
+
+        while expected < self.num_batches:
+            # 1. 从队列取数据（阻塞，直到有数据）
+            item = self.queue.get()
+            bid = item["batch_id"]
+            buffer[bid] = item  # 存入缓存
+
+            # 2. 连续输出所有“已就绪”的批次
+            while expected in buffer:
+                out = buffer.pop(expected)  # 取出期望的批次
+                yield out  # 输出
+                expected += 1  # 期望下一个批次
+# todo 假设队列里先入队 batch3，再入队 batch1，再入队 batch2：
+#     第一次取到 batch3 → 存入 buffer {3: 数据} → expected=0 不在 buffer 中，继续等；
+#     第二次取到 batch1 → 存入 buffer {3: 数据，1: 数据} → expected=0 仍不在 buffer 中，继续等；
+#     第三次取到 batch2 → 存入 buffer {3: 数据，1: 数据，2: 数据} → expected=0 仍不在 buffer 中，继续等；
+#     第四次取到 batch0 → 存入 buffer {0: 数据，1: 数据，2: 数据，3: 数据}；
+#     此时检查 expected=0 在 buffer 中 → 输出 batch0，expected 变为 1；
+#     继续检查 expected=1 在 buffer 中 → 输出 batch1，expected 变为 2；
+#     继续检查 expected=2 在 buffer 中 → 输出 batch2，expected 变为 3；
+#     继续检查 expected=3 在 buffer 中 → 输出 batch3，expected 变为 4；
+#     直到 expected 达到总批次数，迭代结束。
+
+    # -----------------------------
+    # 等待所有线程结束
+    # -----------------------------
+    def join(self):
+        for t in self.threads:
+            t.join()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
