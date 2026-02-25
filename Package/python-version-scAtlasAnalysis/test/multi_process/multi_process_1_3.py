@@ -274,28 +274,28 @@ class CSRBatchFetcherMP_SharedMemNoQueue:
 # 测试入口
 # ==================================================
 if __name__ == "__main__":
-    # fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
-    #     db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql",
-    #     batch_size=2048,
-    #     producer_num=10,
-    #     slot_num=10,  # 循环池大小
-    # )
-    # fetcher.run()
+    fetcher = CSRBatchFetcherMP_SharedMemNoQueue(
+        db_path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_200.sasql",
+        batch_size=20,
+        producer_num=5,
+        slot_num=5,  # 循环池大小
+    )
+    fetcher.run()
     #
-    import os
-
-    path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql",
-          r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"]
-    for e in path:
-        if os.path.exists(e):
-            print(e)
-            fetcher = CSRBatchFetcherMP_SharedMemNoQueue(  # 初始化， 完成indptr数组的获取
-                db_path=e,
-                batch_size=2048,
-                producer_num=10,
-                slot_num=10,  # 循环池大小
-            )
-            fetcher.run()
+    # import os
+    #
+    # path=[r"/mnt/data/test_409600.sasql", r"E:\data\test_409600.sasql",
+    #       r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_819200.sasql"]
+    # for e in path:
+    #     if os.path.exists(e):
+    #         print(e)
+    #         fetcher = CSRBatchFetcherMP_SharedMemNoQueue(  # 初始化， 完成indptr数组的获取
+    #             db_path=e,
+    #             batch_size=2048,
+    #             producer_num=10,
+    #             slot_num=10,  # 循环池大小
+    #         )
+    #         fetcher.run()
 
 
 # producer_num=1     60 b/s
@@ -303,3 +303,28 @@ if __name__ == "__main__":
 # 每个 producer 只扫描自己的连续行 90-100 b/s
 # [Producer-9] wait slot_9 的时间为 0.1873s
 # 代码有很多的写入 slot 的时间 等待； 待改进
+
+# Producer 0 (0–9999)  ──→  Slot 0
+# Producer 1 (10000–19999) ──→ Slot 1
+# Producer 2 (20000–29999) ──→ Slot 2
+#
+# Consumer 读取顺序：
+#
+# Slot0 → Slot1 → Slot2 → Slot0 → Slot1 → Slot2
+#
+# 拼接结果：
+#
+# [0–9999]
+# [10000–19999]
+# [20000–29999]
+#
+# 但是每个Producer 0 (0–9999)， 是使用fetch_record_batch 进行处理的啊 ，假设fetch_size = 100,
+# 则每次写入100个到Slot0 ;Producer 1[10000–19999] 同理；
+# 因此，实际的顺序是：
+#
+# slot0 - Producer 0   0–99 ，          100-199 ,
+# slot1 - Producer 1  10000-10099，    10100-10199，
+# slot2 - Producer 2  20000-20099，    20100-20199，
+#
+# 实际到consumer的私有内存的数据是：
+#  0–99 ， 10000-10099，  20000-20099， 是无序的无意义的数据

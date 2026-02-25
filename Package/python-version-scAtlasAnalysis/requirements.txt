@@ -1,0 +1,4 @@
+duckdb==1.4.3
+scanpy==1.11.5
+tqdm==4.67.1
+pyarrow==23.0.0
