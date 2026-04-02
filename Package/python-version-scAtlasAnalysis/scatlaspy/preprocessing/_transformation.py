@@ -9,20 +9,19 @@ import math
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
 
-#========== todo 归一化 normalize 法 1 ： 不分块， 在 X_CSR_data 表上直接处理 ， 不替换原数据 ==========
-def normalize_total_new(atlas: Atlas,
+# todo 归一化 normalize 法 1 ： 不分块， 在 X_CSR_data 表上直接处理 ， 不替换原数据 ==========
+#     不能支持大数据
+def normalize_total(atlas: Atlas,
                     target_sum: float = 10000,
-                    add_key: Optional[str] = None,
-                    add_field: str = "data_normalize") -> None:
+                    add_field: str = "data_normalize",
+                    select_data: str = "data" ) -> None:
     """
     类似scanpy中的normalize_total的行为，对数据按行归一化，使得细胞的所有基因表达值之和等于给定值target_sum。
-
     Args:
         atlas: Atlas对象，包含单细胞数据
-        target_sum: 归一化后的总计数目标值。默认 10,000；如果为 None，则使用中位数
-        add_key: 在obs中动态增加add_key指定的字段，在该字段存放target_sum值
+        target_sum: 归一化后的总计数目标值。默认 10,000
         add_field: 指定新字段的名称,将结果存入
-
+        select_data: X_CSR_data 中用于计算的字段名（默认 'data'）
     Returns:
         None
     """
@@ -31,152 +30,234 @@ def normalize_total_new(atlas: Atlas,
 
     conn = atlas.connection
 
-    # -----------------------------
-    # 0. DuckDB 并行 & 内存设置
-    # -----------------------------
+    # 1. DuckDB 并行
     try:
         conn.execute(f"PRAGMA threads={os.cpu_count()}")
     except:
         pass
 
-    # -----------------------------
-    # 1. 计算每个 cell 的 total counts
-    # -----------------------------
+    # 2. 基本安全检查
+    col_exists = conn.execute(f"""
+           SELECT COUNT(*)
+           FROM information_schema.columns
+           WHERE table_name = 'X_CSR_data'
+             AND column_name = '{select_data}'
+       """).fetchone()[0]
+
+    if col_exists == 0:
+        raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
+
+    # 2. 计算每个 cell 的 total counts
     print("计算每个 cell 的 total counts ...")
+    conn.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _cell_sum AS
+        SELECT
+            atlas_cell_id,
+            SUM({select_data}) AS total
+        FROM X_CSR_data
+        GROUP BY atlas_cell_id
+    """)
 
-    conn.execute("""
-           CREATE OR REPLACE TEMP TABLE _cell_sum AS
-           SELECT
-               cell_index,
-               SUM(data) AS total
-           FROM X_CSR_data
-           GROUP BY cell_index
-       """)
-
-    # -----------------------------
-    # 2. 如果 target_sum = None → 使用中位数
-    # -----------------------------
-    if target_sum is None:
-        target_sum = conn.execute("""
-               SELECT median(total) FROM _cell_sum
-           """).fetchone()[0]
-
-        print(f"自动使用中位数作为 target_sum = {target_sum}")
-
-    # -----------------------------
-    # 3. 是否在 obs 中记录 target_sum
-    # -----------------------------
-    if add_key is not None:
-        conn.execute(f"""
-               ALTER TABLE obs
-               ADD COLUMN IF NOT EXISTS {add_key} DOUBLE
-           """)
-        conn.execute(f"""
-               UPDATE obs
-               SET {add_key} = {float(target_sum)}
-           """)
-    # -----------------------------
-    # 4. 执行归一化
-    # -----------------------------
-    if add_field is None:
-        raise ValueError("当 inplace=False 时，必须指定 add_field")
-
+    # 3. 执行归一化
     print(f"创建新字段 X_CSR_data.{add_field} ...")
-
     new_table = f"X_CSR_data_{add_field}"
 
     conn.execute(f"""
         CREATE TABLE {new_table} AS
         SELECT
             x.id,
-            x.cell_index,
-            x.indices,
-            x.data,
-            x.data * {float(target_sum)} / s.total AS {add_field}
+            x.atlas_cell_id,
+            x.atlas_gene_id,
+            x.{select_data} AS {select_data},
+            x.{select_data} * {float(target_sum)} / s.total AS {add_field}
         FROM X_CSR_data x
         JOIN _cell_sum s
-        ON x.cell_index = s.cell_index
+          ON x.atlas_cell_id = s.atlas_cell_id
         WHERE s.total > 0
+        ORDER BY x.atlas_cell_id, x.atlas_cell_id
     """)
 
-    # 可选：替换当前 X
     conn.execute("DROP TABLE X_CSR_data")
     conn.execute(f"ALTER TABLE {new_table} RENAME TO X_CSR_data")
 
-    # -----------------------------
-    # 5. 结束
-    # -----------------------------
     print("normalize_total 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
-#========== todo 归一化 normalize 法 2 ： 分块， 在 X_CSR_data 表上直接处理 ， 不替换原数据  ==========
-def normalize_total_new_chunked(atlas: Atlas,
-                    target_sum: float = 10000,
-                    add_key: Optional[str] = None,
-                    chunk_size: int = 100_000_000,
-                    add_field: str = "data_normalize") -> None:
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#  data_normalize	     归一化后的data值
+
+# todo 顺序性有问题
+#  todo 归一化 normalize 法 2 ： 分块， 在 X_CSR_data 表上直接处理 ， 不替换原数据  ==========
+# def normalize_total_chunked(
+#         atlas: Atlas,
+#         target_sum: float = 10000,
+#         chunk_size: int = 100_000_000,
+#         add_field: str = "data_normalize",
+#         select_data: str = "data") -> None:
+#     """
+#     类似scanpy中的normalize_total的行为，对数据按行归一化，使得细胞的所有基因表达值之和等于给定值target_sum。
+#
+#     Args:
+#         atlas: Atlas对象，包含单细胞数据
+#         target_sum: 归一化后的总计数目标值。默认 10,000
+#         chunk_size: 分块大小
+#         add_field: 指定新字段的名称
+#         select_data: X_CSR_data 中用于计算的字段名（默认 data）
+#
+#     Returns:
+#         None
+#     """
+#
+#     print("==== normalize_total_chunked (CSR + DuckDB) ====")
+#     start = datetime.now()
+#
+#     conn = atlas.connection
+#
+#     # 0. 字段安全检查（新增）
+#     col_exists = conn.execute(f"""
+#         SELECT COUNT(*)
+#         FROM information_schema.columns
+#         WHERE table_name = 'X_CSR_data'
+#           AND column_name = '{select_data}'
+#     """).fetchone()[0]
+#
+#     if col_exists == 0:
+#         raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
+#
+#     # 1. 计算每个 cell 的 total counts
+#     print("Step 1: compute cell sums")
+#
+#     conn.execute(f"""
+#         CREATE OR REPLACE TEMP TABLE _cell_sum AS
+#         SELECT
+#             atlas_cell_id,
+#             SUM({select_data}) AS total
+#         FROM X_CSR_data
+#         GROUP BY atlas_cell_id
+#     """)
+#
+#     # 2. 获取 atlas_cell_id 范围
+#     min_cell, max_cell = conn.execute("""
+#         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
+#         FROM _cell_sum
+#     """).fetchone()
+#
+#     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_size)
+#     print(f"Step 2: {n_chunks} chunks")
+#
+#     part_tables = []
+#
+#     # 3. 分块 CTAS
+#     for i in range(n_chunks):
+#
+#         start_cell = min_cell + i * chunk_size
+#         end_cell = start_cell + chunk_size - 1
+#
+#         part_table = f"_X_norm_part_{i}"
+#         part_tables.append(part_table)
+#
+#         print(f"  -> chunk {i+1}/{n_chunks}: atlas_cell_id [{start_cell}, {end_cell}]")
+#
+#         conn.execute(f"""
+#             CREATE TABLE {part_table} AS
+#             SELECT
+#                 x.id,
+#                 x.atlas_cell_id,
+#                 x.atlas_gene_id,
+#                 x.{select_data} AS {select_data},
+#                 x.{select_data} * {float(target_sum)} / s.total AS {add_field}
+#             FROM X_CSR_data x
+#             JOIN _cell_sum s
+#               ON x.atlas_cell_id = s.atlas_cell_id
+#             WHERE x.atlas_cell_id BETWEEN {start_cell} AND {end_cell}
+#               AND s.total > 0
+#             ORDER BY x.atlas_cell_id, x.atlas_gene_id
+#         """)
+#
+#     # 4. 合并 chunk
+#     print("Step 3: union all chunks")
+#
+#     union_sql = "\nUNION ALL\n".join(
+#         [f"SELECT * FROM {t}" for t in part_tables]
+#     )
+#
+#     conn.execute(f"""
+#         CREATE TABLE X_CSR_data_norm AS
+#         SELECT *
+#         FROM (
+#             {union_sql}
+#         )
+#         ORDER BY atlas_cell_id, atlas_gene_id   -- ✅ 核心保证顺序
+#     """)
+#
+#     # 5. 替换原表
+#     print("Step 4: replace X_CSR_data")
+#
+#     conn.execute("DROP TABLE X_CSR_data")
+#     conn.execute("ALTER TABLE X_CSR_data_norm RENAME TO X_CSR_data")
+#
+#     for t in part_tables:
+#         conn.execute(f"DROP TABLE {t}")
+#
+#     print("normalize_total_chunked 完成")
+#     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#  data_normalize	     归一化后的data值
+
+# todo 代码是有序的
+#  耗时: 185.57 秒 819200 数据
+def normalize_total_chunked(
+        atlas,
+        target_sum: float = 10000,
+        chunk_size: int = 1_000_0000,
+        add_field: str = "data_normalize",
+        select_data: str = "data"
+    ) -> None:
     """
-    类似scanpy中的normalize_total的行为，对数据按行归一化，使得细胞的所有基因表达值之和等于给定值target_sum。
+    高性能版本（依赖 id == CSR 顺序）
 
-    Args:
-        atlas: Atlas对象，包含单细胞数据
-        target_sum: 归一化后的总计数目标值。默认 10,000；如果为 None，则使用中位数
-        add_key: 在obs中动态增加add_key指定的字段，在该字段存放target_sum值
-        inplace: 是否原地修改表达值。如果为True，则在 X_CSR_data 表中 的 data 字段修改；如果为False，则创建新字段存值
-        add_field: 当inplace为False时，指定新字段的名称
-
-    Returns:
-        None
+    优化点：
+    1. 使用 ORDER BY id（比 CSR 排序快）
+    2. 去掉最终全局排序（大幅提速）
+    3. 分块 + UNION ALL 保持天然有序
     """
 
-    print("==== normalize_total_chunked (CSR + DuckDB) ====")
+    print("==== normalize_total_chunked (FAST) ====")
     start = datetime.now()
 
     conn = atlas.connection
 
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
+    # 0. 检查字段是否存在
+    col_exists = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSR_data'
+          AND column_name = '{select_data}'
+    """).fetchone()[0]
 
-    # -------------------------------------------------
-    # 1. 计算每个 cell 的 total counts
-    # -------------------------------------------------
+    if col_exists == 0:
+        raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
+
+    # 1. 计算每个 cell 的表达总和
     print("Step 1: compute cell sums")
 
-    conn.execute("""
+    conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _cell_sum AS
         SELECT
-            cell_index,
-            SUM(data) AS total
+            atlas_cell_id,
+            SUM({select_data}) AS total
         FROM X_CSR_data
-        GROUP BY cell_index
+        GROUP BY atlas_cell_id
     """)
 
-    if target_sum is None:
-        target_sum = conn.execute(
-            "SELECT median(total) FROM _cell_sum"
-        ).fetchone()[0]
-        print(f"Auto target_sum = {target_sum}")
-
-    # -------------------------------------------------
-    # 2. 记录 target_sum 到 obs
-    # -------------------------------------------------
-    if add_key is not None:
-        conn.execute(f"""
-            ALTER TABLE obs
-            ADD COLUMN IF NOT EXISTS {add_key} DOUBLE
-        """)
-        conn.execute(f"""
-            UPDATE obs
-            SET {add_key} = {float(target_sum)}
-        """)
-
-    # -------------------------------------------------
-    # 3. 获取 cell_index 范围
-    # -------------------------------------------------
+    # 2. 获取 cell_id 范围，用于分块
     min_cell, max_cell = conn.execute("""
-        SELECT MIN(cell_index), MAX(cell_index)
+        SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
         FROM _cell_sum
     """).fetchone()
 
@@ -185,37 +266,41 @@ def normalize_total_new_chunked(atlas: Atlas,
 
     part_tables = []
 
-    # -------------------------------------------------
-    # 4. 分块 CTAS（保留 id）
-    # -------------------------------------------------
+    # 3. 分块处理
     for i in range(n_chunks):
+
         start_cell = min_cell + i * chunk_size
         end_cell = start_cell + chunk_size - 1
 
         part_table = f"_X_norm_part_{i}"
         part_tables.append(part_table)
 
-        print(f"  -> chunk {i+1}/{n_chunks}: cell_index [{start_cell}, {end_cell}]")
+        print(f"  -> chunk {i+1}/{n_chunks}: [{start_cell}, {end_cell}]")
 
+        # 🔥 核心：用 id 排序（你已验证等价 CSR 顺序）
         conn.execute(f"""
             CREATE TABLE {part_table} AS
             SELECT
                 x.id,
-                x.cell_index,
-                x.indices,
-                x.data,
-                x.data * {float(target_sum)} / s.total AS {add_field}
+                x.atlas_cell_id,
+                x.atlas_gene_id,
+                x.{select_data} AS {select_data},
+
+                -- 按 cell 总量归一化
+                x.{select_data} * {float(target_sum)} / s.total AS {add_field}
+
             FROM X_CSR_data x
             JOIN _cell_sum s
-              ON x.cell_index = s.cell_index
-            WHERE x.cell_index BETWEEN {start_cell} AND {end_cell}
+              ON x.atlas_cell_id = s.atlas_cell_id
+
+            WHERE x.atlas_cell_id BETWEEN {start_cell} AND {end_cell}
               AND s.total > 0
+
+            ORDER BY x.id
         """)
 
-    # -------------------------------------------------
-    # 5. 合并所有 chunk
-    # -------------------------------------------------
-    print("Step 3: union all chunks")
+    # 4. 合并所有 chunk（🔥 不再排序）
+    print("Step 3: union all chunks (NO SORT)")
 
     union_sql = "\nUNION ALL\n".join(
         [f"SELECT * FROM {t}" for t in part_tables]
@@ -226,25 +311,23 @@ def normalize_total_new_chunked(atlas: Atlas,
         {union_sql}
     """)
 
-    # -------------------------------------------------
-    # 6. 替换原 X_CSR_data
-    # -------------------------------------------------
+    # 5. 替换原表
     print("Step 4: replace X_CSR_data")
 
     conn.execute("DROP TABLE X_CSR_data")
     conn.execute("ALTER TABLE X_CSR_data_norm RENAME TO X_CSR_data")
 
+    # 清理临时分块表
     for t in part_tables:
         conn.execute(f"DROP TABLE {t}")
 
     print("normalize_total_chunked 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
-
-#========== todo 归一化 normalize 法 3 ： 参照scanpy，在 obs表上记录 scale_factor ， 等到使用的时候在计算=========
+# todo 归一化 normalize 法 3 ： 参照scanpy，在 obs表上记录 scale_factor ， 等到使用的时候在计算=========
 def normalize_total_scale_factor(
                     atlas: Atlas,
-                    target_sum: Optional[float] = 10000,
+                    target_sum: float = 10000,
                     add_key: str = "scale_factor",
                     select_data: str = "data" ) -> None:
     """
@@ -255,7 +338,7 @@ def normalize_total_scale_factor(
 
     Args:
         atlas: Atlas 对象
-        target_sum: 归一化目标和；None 表示使用中位数
+        target_sum: 归一化目标和；
         add_key: 写入 obs 的 scale_factor 字段名
         select_data: X_CSR_data 中用于计算 total 的字段名
                      （如 'data', 'data_normalized', 'X_log1p'）
@@ -270,9 +353,7 @@ def normalize_total_scale_factor(
     except:
         pass
 
-    # -------------------------------------------------
-    # 0. 基本安全检查（强烈建议保留）
-    # -------------------------------------------------
+    # 0. 基本安全检查
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -283,29 +364,18 @@ def normalize_total_scale_factor(
     if col_exists == 0:
         raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. 计算每个 cell 的 total
-    # -------------------------------------------------
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _cell_sum AS
         SELECT
-            cell_index,
+            atlas_cell_id,
             SUM({select_data}) AS total
         FROM X_CSR_data
-        GROUP BY cell_index
+        GROUP BY atlas_cell_id
+        ORDER BY atlas_cell_id
     """)
 
-    # -------------------------------------------------
-    # 2. target_sum = median(total)
-    # -------------------------------------------------
-    if target_sum is None:
-        target_sum = conn.execute(
-            "SELECT median(total) FROM _cell_sum"
-        ).fetchone()[0]
-
-    # -------------------------------------------------
     # 3. 在 obs 中写 scale_factor
-    # -------------------------------------------------
     conn.execute(f"""
         ALTER TABLE obs
         ADD COLUMN IF NOT EXISTS {add_key} REAL
@@ -320,19 +390,25 @@ def normalize_total_scale_factor(
                 ELSE 0
             END
         FROM _cell_sum AS s
-        WHERE obs.id = s.cell_index
+        WHERE obs.atlas_cell_id = s.atlas_cell_id
     """)
 
     print(f"normalize_total 完成，target_sum={target_sum}")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   obs 表
+#     新增字段	             含义
+#   scale_factor	     scale_factor，等到使用的时候在计算，data * scale_factor ，即可
 
-#========== todo log1p  法 1 ： 不分块   ==========
+# todo 上面的代码 顺序性 控制
 
+# todo log1p  法 1 ： 不分块   ==========
+# todo 不会破坏原表顺序
 def log1p(
             atlas: 'Atlas',
             base: Optional[Number] = None,
-            add_field: str = "log1p_factor",
+            add_field: str = "data_log1p",
             select_data: str = "data" ) -> None:
     """
     对表达值进行 log(1+x) 转换
@@ -350,9 +426,7 @@ def log1p(
 
     conn = atlas.connection
 
-    # -------------------------------------------------
-    # 0. 字段存在性检查（防止 silent bug）
-    # -------------------------------------------------
+    # 0. 字段存在性检查
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -363,9 +437,7 @@ def log1p(
     if col_exists == 0:
         raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. 构造 log1p 表达式
-    # -------------------------------------------------
     if base is None:
         log_expr = f"ln(1.0 + {select_data})"
     else:
@@ -376,34 +448,34 @@ def log1p(
 
     print(f"创建新字段 X_CSR_data.{add_field} ...")
 
-    # -------------------------------------------------
     # 2. 确保输出字段存在
-    # -------------------------------------------------
     conn.execute(f"""
         ALTER TABLE X_CSR_data
         ADD COLUMN IF NOT EXISTS {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 3. 执行 log1p
-    # -------------------------------------------------
     conn.execute(f"""
         UPDATE X_CSR_data
         SET {add_field} = {log_expr}
         WHERE {select_data} IS NOT NULL
     """)
 
-    # -------------------------------------------------
     # 4. 结束
-    # -------------------------------------------------
     print("log1p 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#   data_log1p	     对表达值进行 log(1+x) 转换
+
 #========== todo log1p  法 2 ： 分块  ==========
+# todo 不会破坏原表顺序
 def log1p_chunked(
                 atlas: 'Atlas',
                 base: Optional[Number] = None,
-                add_field: str = "log1p_factor",
+                add_field: str = "data_log1p",
                 select_data: str = "data",
                 chunk_size: int = 100_000_000) -> None:
     """
@@ -490,12 +562,19 @@ def log1p_chunked(
     print("log1p (chunked) 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#   data_log1p	     对表达值进行 log(1+x) 转换
+
+
 #========== todo exp1 是  log1p的逆运算 ==========
+# todo 不会破坏原表顺序
 def exp1_chunked(
         atlas: 'Atlas',
         base: Optional[Number] = None,
-        add_field: str = "exp1_factor",
-        select_data: str = "log1p_factor",
+        add_field: str = "data_exp1",
+        select_data: str = "data_log1p",
         chunk_size: int = 100_000_000 ) -> None:
     """
     log1p_chunked 的逆运算：exp(x) - 1
@@ -581,14 +660,19 @@ def exp1_chunked(
     print("exp1 (chunked) 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#   data_exp1	     对表达值进行 log(1+x) 转换 的 还原
 
 
 #========== todo normalize_and_log1p： normalize 法 3 + log1p 法 2 ==========
+# todo 不会破坏原表顺序
 def normalize_and_log1p(
             atlas: Atlas,
             target_sum: Optional[float] = 10000,
             scale_key: str = "scale_factor",
-            add_field: str = "X_log1p",
+            add_field: str = "data_log1p",
             select_data: str = "data",
             base: Optional[Number] = None,
             chunk_size: int = 100_000_000 ) -> None:
@@ -674,7 +758,7 @@ def normalize_and_log1p(
             UPDATE X_CSR_data AS x
             SET {add_field} = {log_expr}
             FROM obs AS o
-            WHERE x.cell_index = o.id
+            WHERE x.atlas_cell_id = o.atlas_cell_id
               AND x.id BETWEEN {start_id} AND {end_id}
         """)
 
@@ -685,7 +769,13 @@ def normalize_and_log1p(
     print("总耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	             含义
+#   data_log1p	     对表达值进行 normalize_total +  log(1+x) 转换
+
 #========== todo  highly_variable_genes：  识别高变基因 - 在 X_CSR 表上进行操作
+# todo 不会破坏原表顺序
 def highly_variable_genes(
                         atlas: Atlas,
                         flavor: Literal["var", "cv"] = "var",
@@ -711,9 +801,7 @@ def highly_variable_genes(
     except:
         pass
 
-    # -------------------------------------------------
     # 0. 检查字段存在
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -724,22 +812,20 @@ def highly_variable_genes(
     if col_exists == 0:
         raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. 计算每个 gene 的 mean / var / std
-    # -------------------------------------------------
     print("Step 1: 计算 gene-level 统计量")
 
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_stats AS
         SELECT
-            indices AS gene_index,
+            atlas_gene_id,
             COUNT(*)                      AS n,
             AVG({select_data})            AS mean,
             VAR_POP({select_data})        AS var,
             STDDEV_POP({select_data})     AS std
         FROM X_CSR_data
         WHERE {select_data} IS NOT NULL
-        GROUP BY indices
+        GROUP BY atlas_gene_id
     """)
 
     # -------------------------------------------------
@@ -756,20 +842,18 @@ def highly_variable_genes(
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_score AS
         SELECT
-            gene_index,
+            atlas_gene_id,
             {score_expr} AS score
         FROM _gene_stats
     """)
 
-    # -------------------------------------------------
     # 3. 选 top genes
-    # -------------------------------------------------
     if n_top_genes is not None:
         print(f"Step 2: 选取 top {n_top_genes} genes")
 
         conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _hvg AS
-            SELECT gene_index
+            SELECT atlas_gene_id
             FROM _gene_score
             ORDER BY score DESC
             LIMIT {int(n_top_genes)}
@@ -780,13 +864,11 @@ def highly_variable_genes(
 
         conn.execute("""
             CREATE OR REPLACE TEMP TABLE _hvg AS
-            SELECT gene_index
+            SELECT atlas_gene_id
             FROM _gene_score
         """)
 
-    # -------------------------------------------------
     # 4. 在 var 表中写入布尔结果
-    # -------------------------------------------------
     print(f"Step 3: 写入 var.{add_key}")
 
     conn.execute(f"""
@@ -805,7 +887,7 @@ def highly_variable_genes(
         UPDATE var
         SET {add_key} = TRUE
         FROM _hvg
-        WHERE var.id = _hvg.gene_index
+        WHERE var.atlas_gene_id = _hvg.atlas_gene_id
     """)
 
     # -------------------------------------------------
@@ -814,15 +896,21 @@ def highly_variable_genes(
     print("highly_variable_genes 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   var 表
+#     新增字段	                     含义
+#   highly_variable_genes	     对 n_top_genes 标记为true
 
-#========== todo scale ：  进行 z-score转换 - 在 X_CSR 表上进行操作
+
+#= todo scale ：  进行 z-score转换 - 在 X_CSR 表上进行操作
+# todo 不会破坏原表顺序
 def scale(
             atlas: Atlas,
-            max_value: float = 10.0,
-            add_field: str = "X_scale",
             select_data: str = "data",
+            add_field: str = "data_scale",
+            max_value: float = 10.0,
             use_hvg: bool = False,
-            hvg_key: str = "highly_variable" ) -> None:
+            hvg_key: str = "highly_variable_genes" ) -> None:
     """
     Gene-wise z-score 标准化（sc.pp.scale 等价）
     数学定义：
@@ -886,8 +974,8 @@ def scale(
             raise ValueError(f"var 表中不存在 HVG 字段: {hvg_key}")
 
         gene_filter_clause = f"""
-            WHERE indices IN (
-                SELECT id FROM var WHERE {hvg_key} = TRUE
+            WHERE atlas_gene_id IN (
+                SELECT atlas_gene_id FROM var WHERE {hvg_key} = TRUE
             )
         """
 
@@ -899,22 +987,22 @@ def scale(
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_stat AS
         SELECT
-            indices,
+            atlas_gene_id,
             AVG(val)        AS mean,
             STDDEV_POP(val) AS std
         FROM (
             SELECT
-                indices,
+                atlas_gene_id,
                 {select_data} AS val
             FROM X_CSR_data
             WHERE {select_data} IS NOT NULL
         )
         {gene_filter_clause}
-        GROUP BY indices
+        GROUP BY atlas_gene_id
     """)
     # 创建一个 临时表 _gene_stat
     # 列名	       含义
-    # indices	gene_index
+    # atlas_gene_id	gene_index
     # mean	    该基因在所有细胞中的平均表达
     # std	    该基因的总体标准差
 
@@ -947,7 +1035,7 @@ def scale(
                 ELSE 0
             END
         FROM _gene_stat AS g
-        WHERE x.indices = g.indices
+        WHERE x.atlas_gene_id = g.atlas_gene_id
           AND x.{select_data} IS NOT NULL
     """)
 
@@ -964,208 +1052,21 @@ def scale(
     print("scale 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	                     含义
+#   data_scale	     对 data 进行 z-score 标准化， z = (x - mean_g) / std_g
 
-def scale_gene_chunked(
+# todo scale ： 分块，直接在 chunk 内 UPDATE，彻底删掉临时表 + merge
+# todo 不会破坏原表顺序
+def scale_chunked(
             atlas,
             select_data: str = "data",
-            add_field: str = "X_scale",
-            add_field_to_var: str = "zero_scale_transform", # 增加该字段，将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
-            max_value: float = 10.0,
-            gene_chunk_size: int = 512, # gene_chunk_size 的设置与cell数量 相关
-            use_hvg: bool = False,
-            hvg_key: str = "highly_variable"):
-    """
-    Gene-wise z-score scale（DuckDB OLAP 优化版，1e8 cell 安全）
-
-    - X_CSR_data：写入 scale 后的非零值
-    - var 表：写入 zero -> z-score 的变换值 (0 - mean) / std
-    """
-
-    print("\n==== scale_gene_chunked_vA (OLAP optimized) ====")
-    start_all = datetime.now()
-    conn = atlas.connection
-
-    # -------------------------------------------------
-    # 0. 并行
-    # -------------------------------------------------
-    try:
-        n_threads = os.cpu_count()
-        conn.execute(f"PRAGMA threads={n_threads}")
-        print(f"-> DuckDB threads = {n_threads}")
-    except Exception:
-        pass
-
-    # -------------------------------------------------
-    # 1. 输入字段检查
-    # -------------------------------------------------
-    if conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name='X_CSR_data'
-          AND column_name='{select_data}'
-    """).fetchone()[0] == 0:
-        raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
-
-    # -------------------------------------------------
-    # 2. 输出字段准备
-    # -------------------------------------------------
-    conn.execute(f"""
-        ALTER TABLE X_CSR_data
-        ADD COLUMN IF NOT EXISTS {add_field} REAL
-    """)
-
-    conn.execute(f"""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL
-    """)
-
-    # -------------------------------------------------
-    # 3. gene 列表
-    # -------------------------------------------------
-    if use_hvg:
-        print("-> 使用 HVG gene 子集")
-
-        gene_ids = conn.execute(f"""
-            SELECT id FROM var
-            WHERE {hvg_key} = TRUE
-            ORDER BY id
-        """).fetchall()
-        gene_ids = [g[0] for g in gene_ids]
-    else:
-        gene_ids = conn.execute("""
-            SELECT DISTINCT indices
-            FROM X_CSR_data
-            ORDER BY indices
-        """).fetchall()
-        gene_ids = [g[0] for g in gene_ids]
-
-    n_genes = len(gene_ids)
-    if n_genes == 0:
-        print("无 gene，退出")
-        return
-
-    n_chunks = math.ceil(n_genes / gene_chunk_size)
-
-    print(f"-> Total genes: {n_genes}")
-    print(f"-> Gene chunk size: {gene_chunk_size}")
-    print(f"-> Total chunks: {n_chunks}")
-
-    # -------------------------------------------------
-    # 4. 临时表（存 scale 后的非零值）
-    # -------------------------------------------------
-    conn.execute("DROP TABLE IF EXISTS _X_scale_tmp") # 清理之前的缓存
-
-    conn.execute("""
-        CREATE TEMP TABLE _X_scale_tmp (
-            id BIGINT,
-            indices INTEGER,
-            val REAL
-        )
-    """)
-
-    # -------------------------------------------------
-    # 5. 主循环（gene chunk）
-    # -------------------------------------------------
-    for i in range(n_chunks):
-        chunk_start = i * gene_chunk_size
-        chunk_genes = gene_ids[chunk_start: chunk_start + gene_chunk_size]
-        gene_list_sql = ",".join(map(str, chunk_genes))
-
-        print(f"\n[Chunk {i+1}/{n_chunks}] genes={len(chunk_genes)}")
-
-        # ---------------------------------------------
-        # 5.1 gene-wise mean / std
-        # ---------------------------------------------
-        conn.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _gene_stat AS
-            SELECT
-                indices,
-                AVG({select_data})        AS mean,
-                STDDEV_POP({select_data}) AS std
-            FROM X_CSR_data
-            WHERE indices IN ({gene_list_sql})
-              AND {select_data} IS NOT NULL
-            GROUP BY indices
-        """)
-
-        # ---------------------------------------------
-        # 5.2 非零值 scale → 临时表
-        # ---------------------------------------------
-        conn.execute(f"""
-            INSERT INTO _X_scale_tmp
-            SELECT
-                x.id,
-                x.indices,
-                CASE
-                    WHEN g.std > 0 THEN
-                        LEAST(
-                            {float(max_value)},
-                            GREATEST(
-                                -{float(max_value)},
-                                (x.{select_data} - g.mean) / g.std
-                            )
-                        )
-                    ELSE 0
-                END
-            FROM X_CSR_data x
-            JOIN _gene_stat g
-              ON x.indices = g.indices
-            WHERE x.indices IN ({gene_list_sql})
-              AND x.{select_data} IS NOT NULL
-        """)
-
-        # ---------------------------------------------
-        # 5.3 写入 var：zero → z-score
-        # (0 - mean) / std
-        # ---------------------------------------------
-        conn.execute(f"""
-            UPDATE var v
-            SET {add_field_to_var} =
-                CASE
-                    WHEN g.std > 0 THEN
-                        LEAST(
-                            {float(max_value)},
-                            GREATEST(
-                                -{float(max_value)},
-                                (0 - g.mean) / g.std
-                            )
-                        )
-                    ELSE 0
-                END
-            FROM _gene_stat g
-            WHERE v.id = g.indices
-        """)
-
-    # -------------------------------------------------
-    # 6. merge 回 X_CSR_data
-    # -------------------------------------------------
-    print("\n-> Merging scaled values back to X_CSR_data ...")
-
-    conn.execute(f"""
-        UPDATE X_CSR_data x
-        SET {add_field} = t.val
-        FROM _X_scale_tmp t
-        WHERE x.id = t.id
-    """)
-
-    # 在函数末尾 清理缓存
-    conn.execute("DROP TABLE IF EXISTS _X_scale_tmp")
-
-    print("\n==== scale_gene_chunked 完成 ====")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
-
-
-#========== todo scale ：  对 scale_gene_chunked 的优化 1
-#                           直接在 chunk 内 UPDATE，彻底删掉临时表 + merge
-def scale_gene_chunked_1(
-            atlas,
-            select_data: str = "data",
-            add_field: str = "X_scale",
+            add_field: str = "data_scale",
             add_field_to_var: str = "zero_scale_transform",
             max_value: float = 10.0,
-            gene_chunk_size: int = 512,
             use_hvg: bool = False,
-            hvg_key: str = "highly_variable"):
+            hvg_key: str = "highly_variable_genes"):
     """
     Gene-wise z-score scale（chunk 内 in-place UPDATE 版）
 
@@ -1187,6 +1088,32 @@ def scale_gene_chunked_1(
     except Exception:
         pass
 
+    # 自适应计算  gene_chunk_size 的大小
+    total_nnz = conn.execute("""
+    SELECT COUNT(*)
+    FROM X_CSR_data
+    """).fetchone()[0]
+
+    gene_num = conn.execute("""
+    SELECT COUNT(*)
+    FROM var
+    """).fetchone()[0]
+
+    nnz_per_gene = total_nnz / gene_num
+
+    target_rows = 100_000_000
+
+    gene_chunk_size = int(target_rows / nnz_per_gene)
+
+    gene_chunk_size = max(16, min(1024, gene_chunk_size))
+
+    # cells	nnz_per_gene	gene_chunk_size
+    # 1M	100k	1024
+    # 5M	500k	200
+    # 10M	1M	100
+    # 50M	5M	20
+    # 100M	10M	16
+
     # -------------------------------------------------
     # 1. 输入字段检查
     # -------------------------------------------------
@@ -1217,16 +1144,16 @@ def scale_gene_chunked_1(
     if use_hvg:
         print("-> 使用 HVG gene 子集")
         gene_ids = conn.execute(f"""
-            SELECT id FROM var
+            SELECT atlas_gene_id FROM var
             WHERE {hvg_key} = TRUE
-            ORDER BY id
+            ORDER BY atlas_gene_id
         """).fetchall()
         gene_ids = [g[0] for g in gene_ids]
     else:
         gene_ids = conn.execute("""
-            SELECT DISTINCT indices
+            SELECT DISTINCT atlas_gene_id
             FROM X_CSR_data
-            ORDER BY indices
+            ORDER BY atlas_gene_id
         """).fetchall()
         gene_ids = [g[0] for g in gene_ids]
 
@@ -1257,13 +1184,13 @@ def scale_gene_chunked_1(
         conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _gene_stat AS
             SELECT
-                indices,
+                atlas_gene_id,
                 AVG({select_data})        AS mean,
                 STDDEV_POP({select_data}) AS std
             FROM X_CSR_data
-            WHERE indices IN ({gene_list_sql})
+            WHERE atlas_gene_id IN ({gene_list_sql})
               AND {select_data} IS NOT NULL
-            GROUP BY indices
+            GROUP BY atlas_gene_id
         """)
 
         # ---------------------------------------------
@@ -1284,8 +1211,8 @@ def scale_gene_chunked_1(
                     ELSE 0
                 END
             FROM _gene_stat g
-            WHERE x.indices = g.indices
-              AND x.indices IN ({gene_list_sql})
+            WHERE x.atlas_gene_id = g.atlas_gene_id
+              AND x.atlas_gene_id IN ({gene_list_sql})
               AND x.{select_data} IS NOT NULL
         """)
 
@@ -1307,14 +1234,170 @@ def scale_gene_chunked_1(
                     ELSE 0
                 END
             FROM _gene_stat g
-            WHERE v.id = g.indices
+            WHERE v.atlas_gene_id = g.atlas_gene_id
         """)
 
     print("\n==== scale_gene_chunked_inplace 完成 ====")
     print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
 
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	                     含义
+#   data_scale	             对 data 进行 z-score 标准化， z = (x - mean_g) / std_g
+#   var 表  新增字段
+#   zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
+
+
+# todo scale 优化 还没验证 好像没什么用
+# todo 不会破坏原表顺序
+def scale_ultra(
+        atlas,
+        select_data: str = "data",
+        add_field: str = "data_scale",
+        add_field_to_var: str = "zero_scale_transform",
+        max_value: float = 10.0,
+        use_hvg: bool = False,
+        hvg_key: str = "highly_variable_genes"):
+    """
+    工业级 Gene-wise z-score scale（超大数据版）
+
+    特点：
+    - 完全不需要 chunk
+    - 使用线性化公式 z = a*x + b
+    - X_CSR_data：直接写入 scale
+    - var 表：写入 zero -> z-score 的变换值 (0 - mean) / std
+    - 支持 HVG 子集
+    """
+    import os
+    from datetime import datetime
+
+    print("\n==== scale_ultra (industrial OLAP optimized) ====")
+    start_all = datetime.now()
+    conn = atlas.connection
+
+    # -------------------------------------------------
+    # 0. 并行
+    # -------------------------------------------------
+    try:
+        n_threads = os.cpu_count()
+        conn.execute(f"PRAGMA threads={n_threads}")
+        print(f"-> DuckDB threads = {n_threads}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 1. 输入字段检查
+    # -------------------------------------------------
+    col_exists = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name='X_CSR_data'
+          AND column_name='{select_data}'
+    """).fetchone()[0]
+
+    if col_exists == 0:
+        raise ValueError(f"X_CSR_data 中不存在字段: {select_data}")
+
+    # -------------------------------------------------
+    # 2. 输出字段准备
+    # -------------------------------------------------
+    conn.execute(f"""
+        ALTER TABLE X_CSR_data
+        ADD COLUMN IF NOT EXISTS {add_field} REAL
+    """)
+    conn.execute(f"""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL
+    """)
+
+    # -------------------------------------------------
+    # 3. gene 列表
+    # -------------------------------------------------
+    if use_hvg:
+        print("-> 使用 HVG gene 子集")
+        gene_ids = conn.execute(f"""
+            SELECT atlas_gene_id
+            FROM var
+            WHERE {hvg_key} = TRUE
+            ORDER BY atlas_gene_id
+        """).fetchall()
+    else:
+        gene_ids = conn.execute("""
+            SELECT atlas_gene_id
+            FROM var
+            ORDER BY atlas_gene_id
+        """).fetchall()
+
+    gene_ids = [g[0] for g in gene_ids]
+    n_genes = len(gene_ids)
+    if n_genes == 0:
+        print("无 gene，退出")
+        return
+
+    print(f"-> Total genes: {n_genes}")
+
+    gene_list_sql = ",".join(map(str, gene_ids))
+
+    # -------------------------------------------------
+    # 4. 计算 gene-wise统计 + 线性化系数 a,b
+    # -------------------------------------------------
+    print("-> 计算 gene-wise mean/std -> a,b")
+    conn.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _gene_stat AS
+        SELECT
+            atlas_gene_id,
+            AVG({select_data}) AS mean,
+            STDDEV_POP({select_data}) AS std,
+            CASE WHEN STDDEV_POP({select_data}) > 0
+                 THEN 1.0 / STDDEV_POP({select_data})
+                 ELSE 0
+            END AS a,
+            CASE WHEN STDDEV_POP({select_data}) > 0
+                 THEN -AVG({select_data}) / STDDEV_POP({select_data})
+                 ELSE 0
+            END AS b
+        FROM X_CSR_data
+        WHERE atlas_gene_id IN ({gene_list_sql})
+          AND {select_data} IS NOT NULL
+        GROUP BY atlas_gene_id
+    """)
+
+    # -------------------------------------------------
+    # 5. 直接 UPDATE X_CSR_data
+    # -------------------------------------------------
+    print("-> 直接应用线性化 z-score + clip")
+    conn.execute(f"""
+        UPDATE X_CSR_data x
+        SET {add_field} = 
+            LEAST(
+                {float(max_value)},
+                GREATEST(
+                    -{float(max_value)},
+                    g.a * x.{select_data} + g.b
+                )
+            )
+        FROM _gene_stat g
+        WHERE x.atlas_gene_id = g.atlas_gene_id
+          AND x.{select_data} IS NOT NULL
+    """)
+
+    # -------------------------------------------------
+    # 6. 更新 var 表 zero_scale_transform
+    # -------------------------------------------------
+    print("-> 更新 var zero_scale_transform")
+    conn.execute(f"""
+        UPDATE var v
+        SET {add_field_to_var} = g.b
+        FROM _gene_stat g
+        WHERE v.atlas_gene_id = g.atlas_gene_id
+    """)
+
+    print("\n==== scale_ultra 完成 ====")
+    print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
+
 
 #========== todo sqrt  法 1 ： 在 X_CSR_data 表上直接处理 ==========
+# todo 不会破坏原表顺序
 def sqrt(
     atlas: "Atlas",
     add_field: str = "data_sqrt",
@@ -1393,9 +1476,10 @@ def sqrt(
 
 
 #========== todo sqrt  法 2 ： 法 1 +  分块 ==========
+# todo 不会破坏原表顺序
 def sqrt_chunked(
     atlas: "Atlas",
-    add_field: str = "data_sqrt_chunked",
+    add_field: str = "data_sqrt",
     select_data: str = "data",
     chunk_size: int = 100_000_000) -> None:
     """
@@ -1491,3 +1575,11 @@ def sqrt_chunked(
     elapsed = (datetime.now() - start).total_seconds()
     print("sqrt (chunked) 完成")
     print(f"耗时: {elapsed:.2f} 秒")
+
+# 运行结果
+#   X_CSR_data 表
+#     新增字段	                     含义
+#   data_sqrt	             对 data 进行 sqrt
+
+
+

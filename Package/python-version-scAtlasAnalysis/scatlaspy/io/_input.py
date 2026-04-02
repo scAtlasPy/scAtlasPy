@@ -14,88 +14,55 @@ import scanpy as sc
 logger = logging.getLogger('Atlas')
 
 
-# todo 大文件读取， 只支持 h5ad 格式的导入 ######################################################
-
-# 主入口函数
-def load_big_h5ad_to_duckdb(
+''' 大文件读取, cell 随机 导入， 只支持 h5ad格式'''
+def load_big_h5ad_to_duckdb_random(
     h5ad_path: str,
     atlas,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
 ):
-    """
-    从 h5ad 文件流式导入 DuckDB（CSR-only，全局游标版）
 
-    关键工程原则：
-      - scanpy backed：避免一次性加载 X
-      - mega-batch   ：顺序磁盘 IO（HDF5 友好） ; mega-batch = “一次从磁盘顺序读多大”
-      - mini-batch   ： 每批导入的细胞数量 ; mini-batch = “一次在内存里处理多大”
-      - CSR-only     ：不存稠密矩阵
-      - 全局游标     ：
-    """
+    mega_batch_size = batch_size * 8
 
-
-    mega_batch_size = batch_size * 8  # mega-batch：控制磁盘 IO 行为（性能参数，通常 = mini-batch × 常数）
-
-    # --------------------------------------------------------
     #  1️⃣ 连接数据库
-    # --------------------------------------------------------
     conn = atlas.connect("r+")
-    atlas.connection = conn
 
-    # ========================================================
-    # 全局游标（★ 本版本的核心 ★）
-    # ========================================================
-    global_cell_id = 0          # obs.id 起始游标
-    global_indptr_id = 0        # X_CSR_indptr.id 起始游标
-    global_indptr_offset = 0    # 全局 nnz 偏移（CSR indptr 语义）
-    global_data_id = 0          # X_CSR_data.id 起始游标
+    # 全局游标
+    global_cell_id = 0
+    global_indptr_id = 0
+    global_indptr_offset = 0
+    global_data_id = 0
 
     obs_written = False
     var_written = False
 
-    # --------------------------------------------------------
-    # 2️⃣ backed 打开（只用于 schema + X）
-    # --------------------------------------------------------
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r") # backed="r" 磁盘后端，只读（lazy loading）
-
-    # 不把 X / obs / var 真正读进内存 ； 只有在切片或 .to_memory() 时才触发磁盘 IO
+    # 2️⃣ backed 打开
+    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
-    # --------------------------------------------------------
-    # 3️⃣ 动态建表
-    # --------------------------------------------------------
-    # _create_obs_var_tables(conn)
-    # _create_csr_tables(conn)
+    # 生成全局随机索引
+    global_perm = np.arange(n_cells, dtype=np.int32)
+    np.random.shuffle(global_perm)
 
-    # todo 建表（动态 schema）
+    # 3️⃣ 动态建表
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
-    ''' # 从 h5ad 文件中，只抽取 1 个 cell，
-     # 用它来读取 obs / var 的字段结构（列名 + dtype），
-     # 然后在 DuckDB 里创建 obs / var 表结构，但不导入任何数据。
-    '''
-
-    _create_csr_tables(conn)
-
+    _create_csro_tables(conn)
 
     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
+    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式 + 全局随机顺序")
 
-    # ========================================================
     # 4️⃣ mega-batch / mini-batch 导入
-    # ========================================================
     for mega_start in tqdm(
         range(0, n_cells, mega_batch_size),
-        desc="Mega-batch（磁盘顺序读取）",
+        desc="Mega-batch（随机顺序读取）",
     ):
         mega_end = min(mega_start + mega_batch_size, n_cells)
 
-        # ★ 真正触发磁盘读取的地方
-        mega = adata_backed[mega_start:mega_end].to_memory()
+        # 使用随机索引读取
+        mega_idx = global_perm[mega_start:mega_end] # 全局随机索引
+        mega = adata_backed[mega_idx].to_memory()
 
-        # ====================================================
-        # mini-batch
-        # ====================================================
+        # 按batch_size分批导入
         for start in range(0, mega.n_obs, batch_size):
             end = min(start + batch_size, mega.n_obs)
             adata = mega[start:end]
@@ -117,7 +84,109 @@ def load_big_h5ad_to_duckdb(
                 global_indptr_id,
                 global_indptr_offset,
                 global_data_id,
-            ) = _append_X_CSR_chunk(
+            ) = _append_X_CSRO_chunk(
+                adata,
+                conn,
+                base_cell_id=global_cell_id - adata.n_obs,
+                global_indptr_id=global_indptr_id,
+                global_indptr_offset=global_indptr_offset,
+                global_data_id=global_data_id,
+            )
+
+        del mega
+        gc.collect()
+
+    # 5️⃣ 主键
+    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+
+    # 6️⃣ obsm / varm
+    _add_obsm_from_h5ad(h5ad_path, atlas)
+    _add_varm_from_h5ad(h5ad_path, atlas)
+
+    print("✔ 全部数据成功导入 DuckDB（含 obsm / varm）")
+
+
+'''  大文件读取，cell 顺序 导入, 只支持 h5ad 格式'''
+def load_big_h5ad_to_duckdb(
+    h5ad_path: str,
+    atlas,
+    batch_size: int = 4096,
+):
+    """
+    从 h5ad 文件流式导入 DuckDB（全局游标版）
+    关键工程原则：
+      - scanpy backed：避免一次性加载 X
+      - mega-batch   ：顺序磁盘 IO（HDF5 友好） ; mega-batch = “一次从磁盘顺序读多大”
+      - mini-batch   ： 每批导入的细胞数量 ; mini-batch = “一次在内存里处理多大”
+      - CSR-only     ：不存稠密矩阵
+      - 全局游标     ：
+    """
+
+    mega_batch_size = batch_size * 8  # mega-batch：控制磁盘 IO 行为（性能参数，通常 = mini-batch × 常数）
+
+    #  1️⃣ 连接数据库
+    conn = atlas.connect("r+")
+
+    # 全局游标（★ 本版本的核心 ★）
+    global_cell_id = 0          # obs.id 起始游标
+    global_indptr_id = 0        # X_CSRO_indptr.id 起始游标
+    global_indptr_offset = 0    # 全局 nnz 偏移（CSR indptr 语义）
+    global_data_id = 0          # X_CSRO_data.id 起始游标
+
+    obs_written = False
+    var_written = False
+
+    # 2️⃣ backed 打开（只用于 schema + X）
+    adata_backed = sc.read_h5ad(h5ad_path, backed="r") # backed="r" 磁盘后端，只读（lazy loading）
+
+    # 不把 X / obs / var 真正读进内存 ； 只有在切片或 .to_memory() 时才触发磁盘 IO
+    n_cells = adata_backed.n_obs
+
+    # 3️⃣ 动态建表(动态 schema）
+    _create_obs_table_from_adata(conn, adata_backed[:1])
+    _create_var_table_from_adata(conn, adata_backed[:1])
+     # 从 h5ad 文件中，只抽取 1 个 cell，
+     # 用它来读取 obs / var 的字段结构（列名 + dtype），
+     # 然后在 DuckDB 里创建 obs / var 表结构，但不导入任何数据。
+
+    _create_csro_tables(conn)
+    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
+
+    # 4️⃣ mega-batch / mini-batch 导入
+    for mega_start in tqdm(
+        range(0, n_cells, mega_batch_size),
+        desc="Mega-batch（磁盘顺序读取）",
+    ):
+        mega_end = min(mega_start + mega_batch_size, n_cells)
+
+        # ★ 真正触发磁盘读取的地方
+        mega = adata_backed[mega_start:mega_end].to_memory()
+
+        # 按batch_size分批导入
+        for start in range(0, mega.n_obs, batch_size):
+            end = min(start + batch_size, mega.n_obs)
+            adata = mega[start:end]
+
+            # ---------------- batch 导入 obs ----------------
+            global_cell_id = _append_obs_rows(
+                adata,
+                conn,
+                start_cell_id=global_cell_id,
+            )
+
+            # ---------------- 导入 var（一次） ----------------
+            if not var_written:
+                _append_var(adata, conn)
+                var_written = True
+
+            # ---------------- batch 导入 X（CSRO） ----------------
+            (
+                global_indptr_id,
+                global_indptr_offset,
+                global_data_id,
+            ) = _append_X_CSRO_chunk(
                 adata,
                 conn,
                 base_cell_id=global_cell_id - adata.n_obs,
@@ -130,23 +199,18 @@ def load_big_h5ad_to_duckdb(
         del mega
         gc.collect()
 
-    # --------------------------------------------------------
     # 5️⃣ 主键（非常重要：必须在数据写完之后）
-    # --------------------------------------------------------
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (id)")
-    conn.execute("ALTER TABLE X_CSR_indptr ADD PRIMARY KEY (id)")
-    conn.execute("ALTER TABLE X_CSR_data ADD PRIMARY KEY (id)")
+    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
 
-    # ====================================================
     # 6️⃣ 导入 obsm / varm
-    # ====================================================
-    add_obsm_from_h5ad(h5ad_path, atlas)
-    add_varm_from_h5ad(h5ad_path, atlas)
+    _add_obsm_from_h5ad(h5ad_path, atlas)
+    _add_varm_from_h5ad(h5ad_path, atlas)
 
     print("✔ 全部数据成功导入 DuckDB（含 obsm / varm）")
 
-# 推断数据类型
+
+''' 推断数据类型'''
 def _infer_duckdb_type_from_series(s: pd.Series) -> str:
     """根据 pandas dtype 推断 DuckDB 类型"""
     if pd.api.types.is_integer_dtype(s):
@@ -157,9 +221,11 @@ def _infer_duckdb_type_from_series(s: pd.Series) -> str:
         return "BOOLEAN"
     return "VARCHAR"
 
-# 建表
+
+''' 建立obs表'''
 def _create_obs_table_from_adata(conn, adata):
-    cols = ["id BIGINT", "cell_id VARCHAR"]
+
+    cols = ["atlas_cell_id INTEGER", "atlas_cell_name VARCHAR"]
 
     for col in adata.obs.columns:
         duck_type = _infer_duckdb_type_from_series(adata.obs[col])
@@ -172,8 +238,11 @@ def _create_obs_table_from_adata(conn, adata):
     """
     conn.execute(ddl)
 
+
+''' 建立var表'''
 def _create_var_table_from_adata(conn, adata):
-    cols = ["id BIGINT", "gene_id VARCHAR"]
+
+    cols = ["atlas_gene_id USMALLINT", "atlas_gene_name VARCHAR"]
 
     for col in adata.var.columns:
         duck_type = _infer_duckdb_type_from_series(adata.var[col])
@@ -186,38 +255,42 @@ def _create_var_table_from_adata(conn, adata):
     """
     conn.execute(ddl)
 
-def _create_csr_tables(conn):
-    """CSR-only 存储结构"""
+
+''' 建立CSRO存储结构 '''
+def _create_csro_tables(conn):
+
     conn.execute(
-        """
-        CREATE OR REPLACE TABLE X_CSR_indptr (
-            id BIGINT,
-            cell_id VARCHAR,
+        """ -- 不存第一个0值
+        CREATE OR REPLACE TABLE X_CSRO_indptr ( 
+            atlas_cell_id   INTEGER,  --  cell id , 改成 INTEGER int32  −21 4748 3648 到 21 4748 3647
+            atlas_cell_name VARCHAR,
             indptr BIGINT
         )
         """
     )
     conn.execute(
         """
-        CREATE OR REPLACE TABLE X_CSR_data (
+        CREATE OR REPLACE TABLE X_CSRO_data (
             id BIGINT,
-            indices USMALLINT,  --  gene id
-            data REAL,
-            cell_index BIGINT   --  cell id
+            atlas_cell_id INTEGER,    --  cell id , 改成 INTEGER，int32  −21 4748 3648 到 21 4748 3647
+            atlas_gene_id USMALLINT,  --  gene id , indices 无符号 int16 0 ~ 65535 之间
+            data REAL                 --  float 32 单精度浮点数（4字节）
         )
         """
     )
 
-# 导入
+
+''' 导入 obs 表 '''
 def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
+
     n = adata.n_obs
 
     obs_df = adata.obs.copy()
-    obs_df["cell_id"] = adata.obs.index.astype(str)
-    obs_df["id"] = np.arange(start_cell_id, start_cell_id + n, dtype=np.int64)
+    obs_df["atlas_cell_name"] = adata.obs.index.astype(str)
+    obs_df["atlas_cell_id"] = np.arange(start_cell_id, start_cell_id + n, dtype=np.int64)
 
     obs_df = obs_df[
-        ["id", "cell_id"] + [c for c in obs_df.columns if c not in ("id", "cell_id")]
+        ["atlas_cell_id", "atlas_cell_name"] + [c for c in obs_df.columns if c not in ("atlas_cell_id", "atlas_cell_name")]
     ]
 
     conn.register("obs_df", obs_df)
@@ -226,20 +299,25 @@ def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
 
     return start_cell_id + n
 
+
+''' 导入 var 表 '''
 def _append_var(adata, conn):
+
     var_df = adata.var.copy()
-    var_df["gene_id"] = adata.var.index.astype(str)
-    var_df["id"] = np.arange(adata.n_vars, dtype=np.int64)
+    var_df["atlas_gene_name"] = adata.var.index.astype(str)
+    var_df["atlas_gene_id"] = np.arange(adata.n_vars, dtype=np.uint16)
 
     var_df = var_df[
-        ["id", "gene_id"] + [c for c in var_df.columns if c not in ("id", "gene_id")]
+        ["atlas_gene_id", "atlas_gene_name"] + [c for c in var_df.columns if c not in ("atlas_gene_id", "atlas_gene_name")]
     ]
 
     conn.register("var_df", var_df)
     conn.execute("INSERT INTO var SELECT * FROM var_df")
     conn.unregister("var_df")
 
-def _append_X_CSR_chunk(
+
+''' 导入 X_CSRO 表 '''
+def _append_X_CSRO_chunk(
     adata,
     conn,
     *,
@@ -249,12 +327,7 @@ def _append_X_CSR_chunk(
     global_data_id: int,
 ):
     """
-    导入一个 mini-batch 的 CSR 数据（不使用 COUNT(*)）
-
-    CSR 语义：
-      - indptr 仅存 indptr[1:]
-      - indptr 为【全局 nnz 偏移】
-      - cell_index 为【全局 cell id】
+      indptr 不存第一个0值
     """
 
     X = adata.X
@@ -269,25 +342,24 @@ def _append_X_CSR_chunk(
     indices = X.indices.astype(np.uint16)
     data = X.data.astype(np.float32)
 
-    # ================= indptr =================
-    # 不存 indptr[0]
+    # ================= indptr ================
     row_nnz = np.diff(indptr)
-    adj_indptr = indptr[1:] + global_indptr_offset
+    adj_indptr = indptr[1:] + global_indptr_offset # 不存 indptr[0]
 
     indptr_df = pd.DataFrame(
         {
-            "id": np.arange(
+            "atlas_cell_id": np.arange(
                 global_indptr_id,
                 global_indptr_id + len(adj_indptr),
-                dtype=np.int64,
+                dtype=np.int32,
             ),
-            "cell_id": adata.obs.index.astype(str),
+            "atlas_cell_name": adata.obs.index.astype(str),
             "indptr": adj_indptr,
         }
     )
 
     conn.register("indptr_df", indptr_df)
-    conn.execute("INSERT INTO X_CSR_indptr SELECT * FROM indptr_df")
+    conn.execute("INSERT INTO X_CSRO_indptr SELECT * FROM indptr_df")
     conn.unregister("indptr_df")
 
     global_indptr_id += len(adj_indptr)
@@ -296,21 +368,21 @@ def _append_X_CSR_chunk(
     nnz = len(data)
     if nnz > 0:
         cell_index = np.repeat(
-            np.arange(base_cell_id, base_cell_id + adata.n_obs, dtype=np.int64),
+            np.arange(base_cell_id, base_cell_id + adata.n_obs, dtype=np.int32),
             row_nnz,
         )
 
         data_df = pd.DataFrame(
             {
                 "id": np.arange(global_data_id, global_data_id + nnz, dtype=np.int64),
-                "indices": indices,
+                "atlas_cell_id": cell_index,
+                "atlas_gene_id": indices,
                 "data": data,
-                "cell_index": cell_index,
             }
         )
 
         conn.register("data_df", data_df)
-        conn.execute("INSERT INTO X_CSR_data SELECT * FROM data_df")
+        conn.execute("INSERT INTO X_CSRO_data SELECT * FROM data_df")
         conn.unregister("data_df")
 
         global_data_id += nnz
@@ -319,9 +391,10 @@ def _append_X_CSR_chunk(
     return global_indptr_id, global_indptr_offset, global_data_id
 
 
-def add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=100_000):
-    logger.info("导入 obsm（h5py 直读，支持超大规模）")
+''' 导入 obsm '''
+def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
 
+    logger.info("导入 obsm")
     conn = atlas.connection
 
     with h5py.File(h5ad_path, "r") as f:
@@ -341,21 +414,21 @@ def add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=100_000):
             cols = ", ".join([f"dim_{i} DOUBLE" for i in range(k)])
             conn.execute(f"""
                 CREATE OR REPLACE TABLE obsm_{key} (
-                    cell_index BIGINT,
+                    atlas_cell_id BIGINT,
                     {cols}
                 )
             """)
 
             for start in range(0, n_cells, batch_size):
-                end = min(start + batch_size, n_cells)
 
+                end = min(start + batch_size, n_cells)
                 block = dset[start:end]
                 df = pd.DataFrame(
                     block,
                     columns=[f"dim_{i}" for i in range(k)]
                 )
-                df["cell_index"] = np.arange(start, end, dtype=np.int64)
-                df = df[["cell_index"] + [c for c in df.columns if c != "cell_index"]]
+                df["atlas_cell_id"] = np.arange(start, end, dtype=np.int64)
+                df = df[["atlas_cell_id"] + [c for c in df.columns if c != "atlas_cell_id"]]
 
                 conn.register("obsm_df", df)
                 conn.execute(f"INSERT INTO obsm_{key} SELECT * FROM obsm_df")
@@ -363,8 +436,11 @@ def add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=100_000):
 
     logger.info("obsm 导入完成")
 
-def add_varm_from_h5ad(h5ad_path: str, atlas):
-    logger.info("导入 varm（h5py 直读）")
+
+''' 导入 varm '''
+def _add_varm_from_h5ad(h5ad_path: str, atlas):
+
+    logger.info("导入 varm")
 
     conn = atlas.connection
 
@@ -386,8 +462,8 @@ def add_varm_from_h5ad(h5ad_path: str, atlas):
                 dset[:],
                 columns=[f"dim_{i}" for i in range(k)]
             )
-            df["gene_index"] = np.arange(n_genes, dtype=np.int64)
-            df = df[["gene_index"] + [c for c in df.columns if c != "gene_index"]]
+            df["atlas_gene_id"] = np.arange(n_genes, dtype=np.uint16)
+            df = df[["atlas_gene_id"] + [c for c in df.columns if c != "atlas_gene_id"]]
 
             conn.register("varm_df", df)
             conn.execute(f"""
@@ -398,29 +474,19 @@ def add_varm_from_h5ad(h5ad_path: str, atlas):
 
     logger.info("varm 导入完成")
 
-# todo 小文件读取 ： 支持多种数据格式的导入；  ######################################################
 
+''' 小文件读取 ： 支持多种数据格式的导入 '''
 def load_small_to_duckdb( file_path , atlas:Atlas):
-    '''
-    :param file_path:
-    :param atlas:
-    :return:
-    '''
-    print("开始导入数据")
+
+    print("小文件读取 , 开始导入数据...")
     adata = read_smart(file_path)
     load_AnnData(adata,atlas)
     print("✔ 全部数据成功导入 DuckDB ")
 
-def read_smart(file_path, **kwargs):
-    """
-    根据文件后缀名智能选择相应的scanpy读取方法
 
-    参数:
-        file_path: 文件路径
-        **kwargs: 传递给具体读取函数的额外参数
-    返回:
-        AnnData对象
-    """
+''' 多种数据格式的导入 '''
+def read_smart(file_path, **kwargs):
+
     # 获取文件后缀名（小写形式）
     file_ext = os.path.splitext(file_path)[1].lower()
 
@@ -453,43 +519,39 @@ def read_smart(file_path, **kwargs):
         # 如果不认识的后缀，尝试使用通用的read函数
         return sc.read(file_path, **kwargs)
 
-def load_AnnData(adata:AnnData, atlas:Atlas, var_names_clean = True):
-    """
-    将anndata数据存入数据库中
 
-    :param adata: AnnData对象，包含单细胞数据
-    :param atlas: Atlas数据库实例
-    :return: None
-    """
+''' 导入小数据 '''
+def load_AnnData(adata:AnnData, atlas:Atlas):
+
     try:
         # 1. 准备数据表
         logger.info("准备数据表...")
 
         if hasattr(adata, 'obs'):
-            add_obs(adata, atlas)  # 细胞表数据（对应obs）,
+            _add_obs(adata, atlas)  # 细胞表数据（对应obs）,
         else:
             print("Skipping obs layer")
 
         if hasattr(adata, 'var'):
-            add_var(adata, atlas)  # 基因表数据（对应var）
+            _add_var(adata, atlas)  # 基因表数据（对应var）
         else:
             print("Skipping var layer")
 
         if hasattr(adata, 'X'):
             start_time = time.time()
-            add_X_CSR_chunked(adata,atlas,chunk_size=4096) # 分块导入X表数据
+            _add_X_CSRO_chunked(adata,atlas,chunk_size=4096) # 分块导入X表数据
             end_time = time.time()
             logger.info("######## X表的导入用时为： " + str(end_time - start_time))
         else:
             print("Skipping X layer")
 
         if hasattr(adata, 'obsm'):
-            add_obsm(adata,atlas)
+            _add_obsm(adata,atlas)
         else:
             print("Skipping obsm layer")
 
         if hasattr(adata, 'varm'):
-            add_varm(adata,atlas)
+            _add_varm(adata,atlas)
         else:
             print("Skipping varm layer")
 
@@ -506,46 +568,47 @@ def load_AnnData(adata:AnnData, atlas:Atlas, var_names_clean = True):
         logger.exception("加载数据异常详情:")
         raise
 
-def add_obs(adata:AnnData, atlas:Atlas):
+
+''' 导入 obs 表 '''
+def _add_obs(adata:AnnData, atlas:Atlas):
 
     logger.info("导入obs数据")
-    # obs_df = adata.obs.reset_index().rename(columns={'index': 'cell_id'})
-    # 方法1：推荐使用，最简洁
+
     obs_df = adata.obs.copy()
-    obs_df['cell_id'] = adata.obs.index
+    obs_df['atlas_cell_name'] = adata.obs.index
 
-    obs_df['id'] = range(len(obs_df))  # 添加 id 列
+    obs_df['atlas_cell_id'] = range(len(obs_df))  # 添加 id 列
 
-    obs_df = obs_df[['id', 'cell_id'] + [col for col in obs_df.columns if col not in ['id', 'cell_id']]]  # 直接指定列的顺序
+    obs_df = obs_df[['atlas_cell_id', 'atlas_cell_name'] + [col for col in obs_df.columns if col not in ['atlas_cell_id', 'atlas_cell_name']]]  # 直接指定列的顺序
     logger.info(f"obs表数据准备完成，行数: {len(obs_df)}")
 
     atlas.connection.register('obs_df', obs_df)
     atlas.connection.execute("CREATE OR REPLACE TABLE obs AS SELECT * FROM obs_df")
-    atlas.connection.execute("ALTER TABLE obs ADD PRIMARY KEY (id)")  # 设置ID字段为主码，保证唯一性
+    atlas.connection.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")  # 设置ID字段为主码，保证唯一性
     atlas.connection.unregister('obs_df')
     logger.info("导入obs数据成功")
 
-def add_var(adata:AnnData, atlas:Atlas):
-    #  todo 是否需要添加 一列递增的ID作为主码，保证数据的唯一性。??? 基因名是否需要进行清洗操作
-    # add var data into duckdb
+
+''' 导入 var  '''
+def _add_var(adata:AnnData, atlas:Atlas):
+
     logger.info("导入var数据")
-    var_df = adata.var.reset_index().rename(columns={'index': 'gene_id'})
-    var_df['id'] = range(len(var_df))
-    var_df = var_df[['id', 'gene_id'] + [col for col in var_df.columns if col not in ['id', 'gene_id']]]  # 直接指定列的顺序
+    var_df = adata.var.reset_index().rename(columns={'index': 'atlas_gene_name'})
+    var_df['atlas_gene_id'] = range(len(var_df))
+    var_df = var_df[['atlas_gene_id', 'atlas_gene_name'] + [col for col in var_df.columns if col not in ['atlas_gene_id', 'atlas_gene_name']]]  # 直接指定列的顺序
     logger.info(f"var表数据准备完成，行数: {len(var_df)}")
 
     atlas.connection.register('var_df', var_df)
     atlas.connection.execute("CREATE OR REPLACE TABLE var AS SELECT * FROM var_df")
-    atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (id)")  # 设置ID字段为主码，保证唯一性
+    atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")  # 设置ID字段为主码，保证唯一性
     atlas.connection.unregister('var_df')
     logger.info("导入var数据成功")
 
-def add_obsm(adata: AnnData, atlas: Atlas):
-    """
-    small / big 通用 obsm schema
-    obsm_{key}(cell_index, dim_0, dim_1, ...)
-    """
-    logger.info("导入 obsm（统一 schema）")
+
+''' 导入 obsm '''
+def _add_obsm(adata: AnnData, atlas: Atlas):
+
+    logger.info("导入 obsm ")
 
     conn = atlas.connection
     n_cells = adata.n_obs
@@ -565,8 +628,7 @@ def add_obsm(adata: AnnData, atlas: Atlas):
             columns=[f"dim_{i}" for i in range(mat.shape[1])]
         )
 
-        # ★ 关键：cell_index = obs.id 的语义
-        df.insert(0, "cell_index", np.arange(n_cells, dtype=np.int64))
+        df.insert(0, "atlas_cell_id", np.arange(n_cells, dtype=np.int32))
 
         conn.register("obsm_df", df)
         conn.execute(f"""
@@ -577,11 +639,10 @@ def add_obsm(adata: AnnData, atlas: Atlas):
 
     logger.info("obsm 导入完成（统一 schema）")
 
-def add_varm(adata: AnnData, atlas: Atlas):
-    """
-    small / big 通用 varm schema
-    varm_{key}(gene_index, dim_0, dim_1, ...)
-    """
+
+''' 导入 varm '''
+def _add_varm(adata: AnnData, atlas: Atlas):
+
     logger.info("导入 varm（统一 schema）")
 
     conn = atlas.connection
@@ -601,8 +662,8 @@ def add_varm(adata: AnnData, atlas: Atlas):
             columns=[f"dim_{i}" for i in range(mat.shape[1])]
         )
 
-        # ★ gene_index = var.id 的语义
-        df.insert(0, "gene_index", np.arange(n_genes, dtype=np.int64))
+        # ★ atlas_gene_id = var.atlas_gene_id 的语义
+        df.insert(0, "atlas_gene_id", np.arange(n_genes, dtype=np.uint16))
 
         conn.register("varm_df", df)
         conn.execute(f"""
@@ -613,39 +674,38 @@ def add_varm(adata: AnnData, atlas: Atlas):
 
     logger.info("varm 导入完成（统一 schema）")
 
-def add_X_CSR_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 2048):
-    """
-    仅导入 CSR 结构：
-      - X_CSR_indptr(id, cell_id, indptr)
-      - X_CSR_data(id, indices, data, cell_index)
 
-    并在导入完成后，直接构建 cell_index
-    """
-    logger.info("开始导入 CSR 表达矩阵（无 X 稠密表）")
+'''导入 X_CSRO '''
+def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
+
+    logger.info("开始导入 CSRO ")
 
     conn = atlas.connect("r+")
     atlas.connection = conn
 
-    cell_ids = adata.obs.index
+    cell_names = adata.obs.index
     n_cells = adata.n_obs
 
     # ===================== 建表 =====================
-    conn.execute("""
-        CREATE OR REPLACE TABLE X_CSR_indptr (
-            id BIGINT PRIMARY KEY,
-            cell_id VARCHAR,
+    conn.execute(
+        """ -- 不存第一个0值
+        CREATE OR REPLACE TABLE X_CSRO_indptr ( 
+            atlas_cell_id   INTEGER,  --  cell id , 改成 INTEGER int32  −21 4748 3648 到 21 4748 3647
+            atlas_cell_name VARCHAR,
             indptr BIGINT
         )
-    """)
-
-    conn.execute("""
-        CREATE OR REPLACE TABLE X_CSR_data (
-            id BIGINT PRIMARY KEY,
-            indices USMALLINT,
-            data REAL,
-            cell_index BIGINT
+        """
+    )
+    conn.execute(
+        """
+        CREATE OR REPLACE TABLE X_CSRO_data (
+            id BIGINT,
+            atlas_cell_id INTEGER,    --  cell id , 改成 INTEGER，int32  −21 4748 3648 到 21 4748 3647
+            atlas_gene_id USMALLINT,  --  gene id , indices 无符号 int16 0 ~ 65535 之间
+            data REAL                 --  float 32 单精度浮点数（4字节）
         )
-    """)
+        """
+    )
 
     conn.execute("BEGIN TRANSACTION")
 
@@ -669,19 +729,19 @@ def add_X_CSR_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 2048):
                 csr = sparse.csr_matrix(X_chunk)
 
             data = csr.data
-            indices = csr.indices.astype(np.int64)
+            indices = csr.indices.astype(np.uint16)
             indptr = csr.indptr.astype(np.int64)
 
             # ================= indptr 表 =================
             adj_indptr = indptr[1:] + global_indptr_offset
 
             indptr_df = pd.DataFrame({
-                "id": np.arange(start, end, dtype=np.int64),
-                "cell_id": cell_ids[start:end],
+                "atlas_cell_id": np.arange(start, end, dtype=np.int32),
+                "atlas_cell_name": cell_names[start:end],
                 "indptr": adj_indptr
             })
 
-            conn.execute("INSERT INTO X_CSR_indptr SELECT * FROM indptr_df")
+            conn.execute("INSERT INTO X_CSRO_indptr SELECT * FROM indptr_df")
 
             global_indptr_offset = adj_indptr[-1]
 
@@ -697,18 +757,18 @@ def add_X_CSR_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 2048):
                 # 直接在 chunk 内构造 cell_index（CSR → COO）
                 row_lengths = np.diff(indptr)
                 cell_index = np.repeat(
-                    np.arange(start, end, dtype=np.int64),
+                    np.arange(start, end, dtype=np.int32),
                     row_lengths
                 )
 
                 data_df = pd.DataFrame({
                     "id": data_ids,
-                    "indices": indices,
-                    "data": data,
-                    "cell_index": cell_index
+                    "atlas_cell_id": cell_index,
+                    "atlas_gene_id": indices,
+                    "data": data
                 })
 
-                conn.execute("INSERT INTO X_CSR_data SELECT * FROM data_df")
+                conn.execute("INSERT INTO X_CSRO_data SELECT * FROM data_df")
 
                 global_data_counter += nnz
 
@@ -733,16 +793,15 @@ def add_X_CSR_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 2048):
         raise
 
 
-# todo 基因名清洗 ：先导入，再清洗， var表  ######################################
-
-def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
+''' 基因名清洗 ：先导入，再清洗，var表 '''
+def clean_genes_in_database(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """
     在数据库层面清洗基因名，直接操作数据库表
     参数:
     ----------
     atlas : Atlas
         Atlas数据库对象
-        gene_id_column : str  基因ID列名，默认为'gene_id'
+        gene_name_column : str  基因名，默认为'atlas_gene_name'
         在数据库中添加后缀模式：为重复基因添加 _1, _2, _3 等后缀
         仅处理 var 表
     """
@@ -762,23 +821,23 @@ def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
         WITH ranked_genes AS (
             SELECT *,
                    ROW_NUMBER() OVER (
-                       PARTITION BY {gene_id_column}
-                       ORDER BY id
+                       PARTITION BY {gene_name_column}
+                       ORDER BY atlas_gene_id
                    ) AS rn
             FROM var
         )
         SELECT
-            id,
+            atlas_gene_id,
             CASE
-                WHEN rn = 1 THEN {gene_id_column} -- 第一个出现的基因名保持不变         
-                ELSE {gene_id_column} || '_' || (rn - 1)::VARCHAR -- 后续重复基因添加后缀：gene_1, gene_2, ...
-            END AS {gene_id_column}
+                WHEN rn = 1 THEN {gene_name_column} -- 第一个出现的基因名保持不变         
+                ELSE {gene_name_column} || '_' || (rn - 1)::VARCHAR -- 后续重复基因添加后缀：gene_1, gene_2, ...
+            END AS {gene_name_column}
         FROM ranked_genes
-        ORDER BY id
+        ORDER BY atlas_gene_id
     """)
 
     # 创建带后缀的基因名临时表 var_with_suffix
-    # id | gene_id
+    # atlas_gene_id | atlas_gene_name
     # ---|---------
     # 1  | TP53     -- 第一个TP53保持原名
     # 2  | EGFR     -- EGFR只有一个，保持原名
@@ -786,18 +845,18 @@ def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
     # 4  | BRAF     -- BRAF只有一个，保持原名
     # 5  | TP53_2   -- 第三个TP53添加_2后缀
 
-    # 2. 记录 gene_id 实际发生变化的映射关系（仅用于日志）
+    # 2. 记录 atlas_gene_name 实际发生变化的映射关系（仅用于日志）
     gene_mapping = atlas.connection.execute(f"""
         SELECT
-            v.{gene_id_column}  AS original_gene_id,
-            vs.{gene_id_column} AS new_gene_id
+            v.{gene_name_column}  AS original_gene_name,
+            vs.{gene_name_column} AS new_gene_name
         FROM var v
         JOIN var_with_suffix vs
-            ON v.id = vs.id
-        WHERE v.{gene_id_column} != vs.{gene_id_column}
+            ON v.atlas_gene_id = vs.atlas_gene_id
+        WHERE v.{gene_name_column} != vs.{gene_name_column}
     """).df()
     # 获取基因名映射关系。gene_mapping数据框
-    #    original_gene_id  new_gene_id
+    #    original_gene_name  new_gene_name
     # 0              TP53       TP53_1
     # 1              TP53       TP53_2
 
@@ -813,7 +872,7 @@ def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
     if(len(gene_mapping)>0):
         atlas.connection.execute("DROP TABLE var")
         atlas.connection.execute("ALTER TABLE var_with_suffix RENAME TO var")
-        atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (id)")
+        atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
         logger.info("var表已更新")
 
     logger.info("清洗基因名 已完成!")
@@ -821,7 +880,7 @@ def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
 
 # 示例
 # var 表
-# id | gene_id
+# atlas_gene_id | atlas_gene_name
 # ---|--------
 # 1  | TP53
 # 2  | EGFR
@@ -831,7 +890,7 @@ def clean_genes_in_database(atlas: Atlas, gene_id_column: str = "gene_id"):
 
 # 添加后缀模式：为重复基因添加 _1, _2, _3 等后缀
 # 更新后的var表：
-# id | gene_id
+# atlas_gene_id | atlas_gene_name
 # ---|---------
 # 1  | TP53
 # 2  | EGFR
