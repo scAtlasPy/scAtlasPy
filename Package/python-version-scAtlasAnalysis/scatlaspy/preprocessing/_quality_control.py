@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger('Atlas')
 
 
-# ========== todo 过滤细胞 ：  使用 mmap 扫描 CSR 过滤细胞（安全支持 1 亿细胞） ==========
+'''==== 过滤细胞 ：  使用 mmap 扫描 CSR 过滤细胞（安全支持 1 亿细胞） ======'''
 # 833206 * 17745  sap.pp.filter_cells(atlas, min_genes=200) 过滤细胞 = 0 (0.00%) 总耗时 0.54 秒
 def filter_cells(atlas: 'Atlas',
                        min_counts: Optional[int] = None,
@@ -70,7 +70,7 @@ def filter_cells(atlas: 'Atlas',
                 atlas_cell_id,
                 SUM(data) AS sum_expr,
             COUNT(*) AS nonzero_genes
-            FROM X_CSR_data
+            FROM X_CSRO_data
             GROUP BY atlas_cell_id
         ) WHERE {condition}
     """)
@@ -105,7 +105,9 @@ def filter_cells(atlas: 'Atlas',
 #     字段	                    含义
 #  filter_cells	       该 cell 是否符合过滤条件 true
 
-# ========== todo 过滤基因 ：行-批 + NumPy 聚合 + 批写回 var ，当前最快 ==========
+
+
+'''==== 过滤基因 ：行-批 + NumPy 聚合 + 批写回 var ，当前最快 =========='''
 # 833206 * 17745  sap.pp.filter_genes(atlas, min_cells=3)  保留基因 17745  耗时: 3.35 秒
 def filter_genes(atlas: 'Atlas',
                      min_counts: Optional[int] = None,
@@ -114,7 +116,7 @@ def filter_genes(atlas: 'Atlas',
                      max_cells: Optional[int] = None,
                      add_key: str = "filter_genes") -> None:
     """
-    使用 CSR 数据（X_CSR_indptr + X_CSR_data）计算每个基因的：
+    使用 CSR 数据（X_CSRO_indptr + X_CSRO_data）计算每个基因的：
         - sum_expr
         - nonzero_expr
     并写入 var 表。
@@ -143,7 +145,7 @@ def filter_genes(atlas: 'Atlas',
         ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN DEFAULT FALSE;
     """)
 
-    print("开始聚合 X_CSR_data ...")
+    print("开始聚合 X_CSRO_data ...")
 
     # -------- 核心：CSR 聚合统计 --------
     rows = conn.execute("""
@@ -151,7 +153,7 @@ def filter_genes(atlas: 'Atlas',
             atlas_gene_id,
             SUM(data) AS sum_expr,
             COUNT(*) AS nonzero_expr
-        FROM X_CSR_data
+        FROM X_CSRO_data
         GROUP BY atlas_gene_id
         ORDER BY atlas_gene_id
     """).fetchall()
@@ -222,11 +224,12 @@ def filter_genes(atlas: 'Atlas',
 #  filter_genes	       该 gene是否符合过滤条件 true
 
 
-#========== todo  计算每个细胞的总 UMI（Unique Molecular Identifier）计数 ==========
-# 833206 * 17745 耗时 1.58 秒
+
+'''====== 计算每个细胞的总 UMI（Unique Molecular Identifier）计数 ========== '''
+# 833206 * 17745  sap.pp.calculate_cell_total_counts(atlas)   耗时 1.00 秒
 def calculate_cell_total_counts(atlas: 'Atlas', add_key: str = "cell_total_counts") -> None:
     """
-    使用 DuckDB 原生 CSR 表（X_CSR_data）计算每个细胞的总 UMI 计数
+    使用 DuckDB 原生 CSR 表（X_CSRO_data）计算每个细胞的总 UMI 计数
     - 无 Python 循环
     - 无 AnnData
     - 低内存
@@ -265,7 +268,7 @@ def calculate_cell_total_counts(atlas: 'Atlas', add_key: str = "cell_total_count
         SELECT
             atlas_cell_id,
             SUM(data) AS total_counts
-        FROM X_CSR_data
+        FROM X_CSRO_data
         GROUP BY atlas_cell_id
     """)
 
@@ -300,15 +303,17 @@ def calculate_cell_total_counts(atlas: 'Atlas', add_key: str = "cell_total_count
 #     字段	                    含义
 #  cell_total_counts	     每个细胞的总 UMI 计数
 
-# ========== todo  计算每个基因的表达值 ==========
-# 833206 * 17745 耗时 0.77 秒
+
+
+''' ====== 计算每个基因的表达值 ========== '''
+# 833206 * 17745   sap.pp.calculate_gene_total_counts(atlas)    耗时  0.86  秒
 def calculate_gene_total_counts(
                     atlas: 'Atlas',
                     add_key1: str = "gene_total_counts",
                     add_key2: str = "gene_mean_counts",
                     ) -> None:
     """
-    使用 X_CSR_data 计算：
+    使用 X_CSRO_data 计算：
         - 每个基因的总表达值（SUM）
         - 每个基因的平均表达值（SUM / 总细胞数）
     结果写入 var 表
@@ -351,7 +356,7 @@ def calculate_gene_total_counts(
     # -------------------------------------------------
     # Step 1: CSR 聚合（一次扫描）
     # -------------------------------------------------
-    logger.info("聚合 X_CSR_data（按 atlas_gene_id）...")
+    logger.info("聚合 X_CSRO_data（按 atlas_gene_id）...")
 
     conn.execute("DROP TABLE IF EXISTS gene_stats_tmp")
     conn.execute("""
@@ -359,7 +364,7 @@ def calculate_gene_total_counts(
         SELECT
             atlas_gene_id,
             SUM(data) AS total_counts
-        FROM X_CSR_data
+        FROM X_CSRO_data
         GROUP BY atlas_gene_id
     """)
 
@@ -405,233 +410,11 @@ def calculate_gene_total_counts(
 #  gene_mean_counts	         每个基因的平均表达值（SUM / 总细胞数）
 
 
-# ========== todo 质量控制指标  +  线粒体基因比例计算 ==========
-#  833206 * 17745 23.85 秒
+
+''' ====== 质量控制指标  +  线粒体基因 + 核糖体基因比例计算  ========== '''
+# 833206 * 17745  sap.pp.calculate_qc_metrics(atlas)  24.10 秒
 def calculate_qc_metrics(atlas: Atlas,
-                        qc_prefix: str = "MT-",   # 线粒体基因名前缀，如 MT-CO1
-                        qc_key: str = "mt"        # Scanpy 中 qc_vars=['mt']
-                    ) -> None:
-    # todo 补充 过滤细胞的额外条件：mitochondrial gene和ribosomal gene比例过高的细胞会被过滤
-    #  “ mt” 和 ^RP[SL] 补充
-    """
-    使用 DuckDB + CSR 稀疏存储，实现 Scanpy 的 calculate_qc_metrics
-    X_CSR_data:
-        - atlas_cell_id : 细胞 ID（obs.id）
-        - atlas_gene_id : 基因索引（var.id）
-        - data       : 表达值（非零）
-    var:
-        - atlas_gene_id    :
-        - atlas_gene_name    : 真实基因名（如 MT-CO1）
-    obs:
-        - atlas_cell_id
-    """
-
-    print("==== calculate_qc_metrics (CSR + DuckDB) ====")
-    start = datetime.now()
-
-    # DuckDB 连接
-    conn = atlas.connection
-
-    # =================================================
-    # 0️⃣ 并行执行设置
-    # =================================================
-    # DuckDB 支持多线程 pipeline aggregation
-    # 对 GROUP BY / JOIN 非常关键
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
-
-    # =================================================
-    # 1️⃣ 在 var 表中生成 qc 标记列（如 mt）
-    # =================================================
-    # 等价 Scanpy：
-    # adata.var['mt'] = adata.var_names.str.startswith("MT-")
-
-    print(f"-> 标记 qc gene: {qc_key} (prefix='{qc_prefix}')")
-
-    # 若不存在 qc_key（如 mt），先添加一列 BOOLEAN
-    conn.execute(f"""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS {qc_key} BOOLEAN
-    """)
-
-    # 根据 atlas_gene_name  前缀判断是否为 qc gene
-    # SQL LIKE 'MT-%' 等价 Python startswith("MT-")
-    conn.execute(f"""
-        UPDATE var
-        SET {qc_key} =
-            CASE
-                WHEN atlas_gene_name LIKE '{qc_prefix}%'
-                THEN TRUE
-                ELSE FALSE
-            END
-    """)
-
-    # =================================================
-    # 2️⃣ Cell-wise QC（每个细胞）
-    # =================================================
-    print("-> 计算 cell-wise QC")
-
-    # -------------------------------------------------
-    # 2.1 total_counts / n_genes_by_counts
-    # -------------------------------------------------
-    # Scanpy 对应：
-    # adata.obs['total_counts'] = X.sum(axis=1)
-    # adata.obs['n_genes_by_counts'] = (X > 0).sum(axis=1)
-
-    # CSR 中：
-    # - SUM(data)        → total_counts  每个 cell 的总 counts
-    # - COUNT(*)         → 非零基因数
-    conn.execute("""
-        CREATE OR REPLACE TEMP TABLE _cell_basic AS
-        SELECT
-            atlas_cell_id,
-            SUM(data)  AS cell_total_counts,
-            COUNT(*)   AS n_genes_by_counts
-        FROM X_CSR_data
-        WHERE data IS NOT NULL
-        GROUP BY atlas_cell_id
-    """)
-
-    # 给 obs 表准备字段
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS cell_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS n_genes_by_counts INTEGER
-    """)
-
-    # 把聚合结果写回 obs
-    conn.execute("""
-        UPDATE obs
-        SET
-            cell_total_counts = c.cell_total_counts, -- 每个 cell 的总 counts
-            n_genes_by_counts = c.n_genes_by_counts  -- 每个 cell 中 非零基因数
-        FROM _cell_basic c
-        WHERE obs.atlas_cell_id = c.atlas_cell_id
-    """)
-
-    # -------------------------------------------------
-    # 2.2 total_counts_mt / pct_counts_mt
-    # -------------------------------------------------
-    # Scanpy 对应：
-    # adata.obs['total_counts_mt']
-    # adata.obs['pct_counts_mt']
-
-    # 做法：
-    # X_CSR_data → JOIN var → 只保留 mt 基因 → cell-wise SUM
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _cell_qc AS
-        SELECT
-            x.atlas_cell_id AS atlas_cell_id,
-            SUM(x.data)  AS total_counts_qc
-        FROM X_CSR_data x
-        JOIN var v
-          ON x.atlas_gene_id = v.atlas_gene_id
-        WHERE v.{qc_key} = TRUE
-        GROUP BY x.atlas_cell_id
-    """)
-
-    # obs 中增加字段
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS total_counts_mt REAL
-    """)
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS pct_counts_mt REAL
-    """)
-
-    # 写回 obs
-    # pct = total_counts_mt / cell_total_counts * 100 , 线粒体基因的百分比
-    conn.execute("""
-        UPDATE obs
-        SET
-            total_counts_mt = COALESCE(q.total_counts_qc, 0),  -- 线粒体基因 counts 之和
-            pct_counts_mt =
-                CASE
-                    WHEN obs.cell_total_counts > 0
-                    THEN 100.0 * COALESCE(q.total_counts_qc, 0) / obs.cell_total_counts
-                    ELSE 0
-                END
-        FROM _cell_qc q
-        WHERE obs.atlas_cell_id = q.atlas_cell_id
-    """)
-
-    # =================================================
-    # 3️⃣ Gene-wise QC（每个基因）
-    # =================================================
-    print("-> 计算 gene-wise QC")
-
-    # Scanpy 对应：
-    # adata.var['total_counts'] = X.sum(axis=0)
-    # adata.var['n_cells_by_counts'] = (X > 0).sum(axis=0)
-
-    conn.execute("""
-        CREATE OR REPLACE TEMP TABLE _gene_qc AS
-        SELECT
-            atlas_gene_id,
-            SUM(data) AS gene_total_counts,
-            COUNT ( DISTINCT atlas_cell_id ) AS n_cells_by_counts
-        FROM X_CSR_data
-        WHERE data IS NOT NULL
-        GROUP BY atlas_gene_id
-    """)
-
-    # var 表中增加字段
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS gene_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS n_cells_by_counts INTEGER
-    """)
-
-    # 写回 var
-    conn.execute("""
-        UPDATE var
-        SET
-            gene_total_counts = g.gene_total_counts, -- 该 gene 在所有 cells 的 counts 之和
-            n_cells_by_counts = g.n_cells_by_counts  -- 有多少 cell 表达该 gene（非零）
-        FROM _gene_qc g
-        WHERE var.atlas_gene_id = g.atlas_gene_id
-    """)
-
-    # 删除临时表
-    conn.execute("DROP TABLE IF EXISTS _cell_basic")
-    conn.execute("DROP TABLE IF EXISTS _cell_qc")
-    conn.execute("DROP TABLE IF EXISTS _gene_qc")
-
-    # =================================================
-    # 结束
-    # =================================================
-    print("calculate_qc_metrics 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-# 运行结果
-# var 表  新增字段
-#     字段	                    含义
-#  mt	                 atlas_gene_id 是否以 MT- 开头
-#  gene_total_counts	 该 gene 在所有 cells 的 counts 之和
-#  n_cells_by_counts	 非零 cell 数 ：有多少 cell 表达该 gene（非零）
-
-# obs 表  新增字段
-#     字段	                   含义
-#  cell_total_counts	    每个 cell 的总 counts
-#  n_genes_by_counts       	每个 cell 的 非零基因数
-#  total_counts_mt	        线粒体基因 counts 之和
-#  pct_counts_mt           	线粒体基因的百分比
-
-# todo 补充核糖体基因
-def calculate_qc_metrics1(atlas: Atlas,
-                         qc_vars: dict = {
-                             "mt": "MT-",
-                             "ribo": "^RP[SL]"
-                         }
+                         qc_vars: dict | None = None
                     ) -> None:
     """
     CSR + DuckDB 实现 Scanpy calculate_qc_metrics（支持多个 qc_vars）
@@ -640,6 +423,11 @@ def calculate_qc_metrics1(atlas: Atlas,
         {
             "mt": "MT-",
             "ribo": "^RP[SL]"
+        }
+    qc_vars={
+        "mt": "MT-",
+        "ribo": "^RP[SL]",
+        "hb": "^HB"   # 血红蛋白基因
         }
     """
 
@@ -654,7 +442,7 @@ def calculate_qc_metrics1(atlas: Atlas,
     if qc_vars is None:
         qc_vars = {
             "mt": "MT-",
-            "ribo": "^RP[SL]"
+            "ribo": "^(RPS|RPL)"
         }
 
     # =================================================
@@ -666,7 +454,7 @@ def calculate_qc_metrics1(atlas: Atlas,
         pass
 
     # =================================================
-    # 2️⃣ 在 var 中打 qc 标记（支持多个）
+    # 2️⃣ 在 var 中打 qc 标记
     # =================================================
     for qc_key, pattern in qc_vars.items():
 
@@ -677,25 +465,24 @@ def calculate_qc_metrics1(atlas: Atlas,
             ADD COLUMN IF NOT EXISTS {qc_key} BOOLEAN
         """)
 
-        # 区分 prefix / regex
+        # ✅ 修改点1：支持大小写 + 正确 regex
         if pattern.startswith("^"):
-            # regex
             conn.execute(f"""
                 UPDATE var
                 SET {qc_key} =
                     CASE
-                        WHEN atlas_gene_name ~ '{pattern}'
+                        WHEN regexp_matches(atlas_gene_name, '{pattern}', 'i')
                         THEN TRUE
                         ELSE FALSE
                     END
             """)
         else:
-            # prefix（兼容旧逻辑）
+            # ✅ 修改点2：统一大小写（避免 miss）
             conn.execute(f"""
                 UPDATE var
                 SET {qc_key} =
                     CASE
-                        WHEN atlas_gene_name LIKE '{pattern}%'
+                        WHEN UPPER(atlas_gene_name) LIKE '{pattern.upper()}%'
                         THEN TRUE
                         ELSE FALSE
                     END
@@ -712,7 +499,7 @@ def calculate_qc_metrics1(atlas: Atlas,
             atlas_cell_id,
             SUM(data)  AS cell_total_counts,
             COUNT(*)   AS n_genes_by_counts
-        FROM X_CSR_data
+        FROM X_CSRO_data
         WHERE data IS NOT NULL
         GROUP BY atlas_cell_id
     """)
@@ -747,7 +534,7 @@ def calculate_qc_metrics1(atlas: Atlas,
             SELECT
                 x.atlas_cell_id,
                 SUM(x.data) AS total_counts_qc
-            FROM X_CSR_data x
+            FROM X_CSRO_data x
             JOIN var v
               ON x.atlas_gene_id = v.atlas_gene_id
             WHERE v.{qc_key} = TRUE
@@ -789,7 +576,7 @@ def calculate_qc_metrics1(atlas: Atlas,
             atlas_gene_id,
             SUM(data) AS gene_total_counts,
             COUNT(DISTINCT atlas_cell_id) AS n_cells_by_counts
-        FROM X_CSR_data
+        FROM X_CSRO_data
         WHERE data IS NOT NULL
         GROUP BY atlas_gene_id
     """)
@@ -824,6 +611,20 @@ def calculate_qc_metrics1(atlas: Atlas,
     print("calculate_qc_metrics 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# 运行结果
+# var 表  新增字段
+#     字段	                    含义
+#  mt	                 是否是线粒体基因（MT- 前缀）
+#  ribo                  是否是核糖体基因（^RP[SL]）
+#  gene_total_counts	 该 gene 在所有 cells 的 counts 之和
+#  n_cells_by_counts	 非零 cell 数 ：有多少 cell 表达该 gene（非零）
 
-#     HVG基因过滤
-#
+
+# obs 表  新增字段
+#     字段	                   含义
+#  cell_total_counts	    每个 cell 的总 counts
+#  n_genes_by_counts       	每个 cell 的 非零基因数
+#  total_counts_mt	        线粒体基因 counts 之和
+#  pct_counts_mt           	线粒体基因的比例 (%)
+#  total_counts_ribo	    核糖体基因ribo counts
+#  pct_counts_ribo	        核糖体基因ribo 比例 (%)

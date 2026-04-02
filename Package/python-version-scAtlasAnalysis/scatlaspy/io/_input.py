@@ -15,6 +15,7 @@ logger = logging.getLogger('Atlas')
 
 
 ''' 大文件读取, cell 随机 导入， 只支持 h5ad格式'''
+# 819200  耗时 8 分钟左右     2,840,130 × 24,552   2:03:48
 def load_big_h5ad_to_duckdb_random(
     h5ad_path: str,
     atlas,
@@ -108,6 +109,7 @@ def load_big_h5ad_to_duckdb_random(
 
 
 '''  大文件读取，cell 顺序 导入, 只支持 h5ad 格式'''
+# 819200   耗时 10:54      2,840,130 × 24,552     30:08
 def load_big_h5ad_to_duckdb(
     h5ad_path: str,
     atlas,
@@ -675,7 +677,7 @@ def _add_varm(adata: AnnData, atlas: Atlas):
     logger.info("varm 导入完成（统一 schema）")
 
 
-'''导入 X_CSRO '''
+''' 导入 X_CSRO '''
 def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
 
     logger.info("开始导入 CSRO ")

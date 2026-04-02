@@ -6,17 +6,15 @@ from ._quality_control import (
     calculate_qc_metrics,
 )
 from ._transformation import (
-    normalize_total_new,
-    normalize_total_new_chunked,
+    normalize_total,
     normalize_total_scale_factor,
     log1p,
-    log1p_chunked,
-    exp1_chunked,
+    log1p_fast,
+    exp1,
     normalize_and_log1p,
     highly_variable_genes,
     scale,
-    scale_gene_chunked,
-    scale_gene_chunked_1,
+    scale_fast,
     sqrt,
-    sqrt_chunked,
+    sqrt_fast,
 )
