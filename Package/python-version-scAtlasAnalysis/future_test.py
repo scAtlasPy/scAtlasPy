@@ -166,37 +166,44 @@ def validate_random_cells(
 
     print("\n✅ 随机抽查全部通过")
 
+import scatlaspy as sap
+from scipy import sparse
+
 # 1. 导入
 atlas = sap.Atlas("test_819200",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
 # file_path = r"E:\python\data\HBCA__subsample_20__hvg_2000.h5ad" # 数据集维度: 186,961 × 2,000
-file_path = r"E:\python\data\FullMouseBrain_raw.h5ad" # 82万细胞
-# file_path = r"E:\python\data\Immune_ALL_human.h5ad" # 82万细胞
-# file_path = r"E:\python\data\1M_neurons_filtered_gene_bc_matrices_h5.h5" # 100万细胞
+# file_path = r"E:\python\data\HBCA__subsample_20__hvg_2000.h5ad"
+file_path = r"E:\python\data\FullMouseBrain_raw.h5ad" # 82万细胞 test_hbca_hvg_2000.sasql
+# "E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database\test_fullmousebrain.sasql"
+# file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\adata_JAX_dataset_1.h5ad" #
 
-adata = sc.read_h5ad(file_path)
-adata100 = adata[:100]
-adata200 = adata[:200]
-adata1000 = adata[:1000]
-sap.io.load_AnnData(adata100, atlas)
+# adata = sc.read_h5ad(file_path)
+# adata_subset = adata[:819200].copy()
+# adata_subset = adata[:819200, :5000].copy()
+# sap.io.load_AnnData(adata_subset, atlas)  # 小数据导入
 
 sap.io.load_small_to_duckdb(file_path , atlas)    # 小数据导入 ， 支持多种格式
-# sap.io.load_big_h5ad_to_duckdb(file_path , atlas) # 大数据导入 ， 只支持h5ad
+sap.io.load_big_h5ad_to_duckdb(file_path , atlas) # 大数据导入 ， 只支持h5ad
+sap.io.load_big_h5ad_to_duckdb_random(file_path , atlas) # 大数据导入 ，随机， 只支持h5ad
 
 # 查看数据规模
 gene_num = atlas.connection.execute("SELECT COUNT(*) FROM var").fetchone()[0]
 cell_num = atlas.connection.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
 print(f"[数据规模]: {cell_num} x {gene_num}" )
 
-# 校验导入
-validate_random_cells(
-        h5ad_path=file_path,
-        conn=atlas.connection,
-        n_checks=20,
-    )
+# # 校验导入
+# validate_random_cells(
+#         h5ad_path=file_path,
+#         conn=atlas.connection,
+#         n_checks=20,
+#     )
 
+# 6793163
 # 2. filter_cells & filter_genes
-sap.pp.filter_cells(atlas,min_counts = 200)
-sap.pp.filter_genes(atlas,min_counts = 20000)
+sap.pp.filter_cells(atlas,min_counts = 1000)
+# 保留细胞 = 512,955 过滤细胞 = 306,245 (37.38%)
+sap.pp.filter_genes(atlas,min_counts = 80000)
+# 过滤完成: 保留基因 4645 / 总 17745
 
 # 校验 结果
 conn = atlas.connection
@@ -225,17 +232,18 @@ sap.pp.calculate_gene_total_counts(atlas)
 
 
 # 5. 归一化
-sap.pp.normalize_total_new(atlas)            # 法1 ：全部
-# sap.pp.normalize_total_new_chunked(atlas)  # 法2 ：分块
+# sap.pp.normalize_total(atlas)            # 法1 ：全部
+sap.pp.normalize_total_chunked(atlas)  # 法2 ：分块
+sap.pp.normalize_total_streaming(atlas)  # 法2 ：分块流式
 # sap.pp.normalize_total_scale_factor(atlas) # 法3 ：分块， 在 obs表上记录 scale_factor ， 等到使用的时候在计算
 
-print("=== X_CSR_data schema ===")
-for row in conn.execute("PRAGMA table_info('X_CSR_data')").fetchall():
+print("=== X_CSRO_data schema ===")
+for row in conn.execute("PRAGMA table_info('X_CSRO_data')").fetchall():
     print(row)
 
-print("\n=== X_CSR_data head(3) ===")
+print("\n=== X_CSRO_data head(3) ===")
 for row in conn.execute("""
-    SELECT * FROM X_CSR_data ORDER BY id LIMIT 3
+    SELECT * FROM X_CSRO_data ORDER BY id LIMIT 3
 """).fetchall():
     print(row)
 
@@ -264,18 +272,18 @@ sap.pp.sqrt_chunked(atlas)   # 法2：分块
 # 10. 聚类 leiden
 
 # 11. 导出
-file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_HBCA_outs.h5ad" # 导出文件
+file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_204800_out.h5ad" # 导出文件
 # file_path = r"E:\python\data\HBCA__subsample_20__hvg_2000.h5ad" # 原始文件
 # sap.io.export_duckdb_to_h5ad(atlas,file_path)
 sap.io.export_duckdb_to_h5ad_streaming(atlas,file_path) # 小内存
 
 
-# 校验导出
-validate_h5ad_vs_h5ad(
-    ref_h5ad=r"E:\python\data\HBCA__subsample_20__hvg_2000.h5ad", # 原始文件
-    out_h5ad=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_HBCA_outs.h5ad", # 导出文件
-    n_checks=20,
-)
+# # # 校验导出
+# validate_h5ad_vs_h5ad(
+#     ref_h5ad=r"E:\python\data\HBCA__subsample_20__hvg_2000.h5ad", # 原始文件
+#     out_h5ad=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_HBCA_outs.h5ad", # 导出文件
+#     n_checks=20,
+# )
 
 # 校验导出
 
