@@ -1,3 +1,4 @@
+import time
 from typing import *
 from _duckdb import DuckDBPyConnection
 import duckdb
@@ -5,6 +6,8 @@ import os
 import logging # 管理各种类型的日志
 from ._minibatch_multi_thread import MinibatchFetchMultiThreads
 from ._filter_index import FilterBuildIndex
+import scatlaspy as sap
+import numpy as np
 
 # 配置日志
 logging.basicConfig(
@@ -39,6 +42,9 @@ class Atlas:
             path: 文件夹路径
             file_path：数据库文件的绝对路径
         """
+
+        self.ipca = None # todo PCA降维 调试用
+
         logger.info(f"开始初始化 Atlas 实例，名称: {name}, 路径: {path}")
 
         self.__name = name  # 该数据库的名称（无后缀）
@@ -260,6 +266,7 @@ class Atlas:
 
     ''' 过滤 + 建新表 + 建tid分块索引 '''
     #  833206 * 17745   耗时 1:12
+    # 2840130 x 24552   耗时 03:48
     def filter_build_index(self):
 
         builder = FilterBuildIndex( file_path = self.file_path )
@@ -271,8 +278,11 @@ class Atlas:
     def minibatch_CSR(self):
 
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path )
-        fetcher.run()
-
+        # fetcher.run()
+        for X_batch in fetcher.run():
+            pass
+            # print("获取一个x_csr")
+            # yield X_batch
 
     ''' minibatch_CSR 格式读取 '''
     # 833206 * 17745   single-pass 单次遍历 38 batch/s
@@ -285,14 +295,77 @@ class Atlas:
     #                  buffer_batch_num = 20  19.94 batch/s
     def minibatch_dense( self , pass_mode = "single-pass" ,buffer_batch_num = 5 ):
 
+        # fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
+        # for X_batch in fetcher.run():
+        #     pass
+        #     # yield X_batch
+
+
+        # todo PCA 用
+        buffer = []  # 设置大的缓冲区
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
-        fetcher.run()
+        for X_batch in fetcher.run():
+            buffer.append(X_batch)
+            if len(buffer) == 1 :
+                X_big = np.vstack(buffer)  # 纵向拼接 成一个大的batch
+                print("纵向拼接 成一个大的batch")
+                yield X_big
+                buffer = []  # 清空
+
+    # minibatch kmeans
+    def kmeans(self):
+
+        t_start = time.time()
+
+        # 1️⃣ 初始化
+        kmeans = sap.tl.StreamingPCAMiniBatchKMeans(
+                 n_components=50,
+                 n_clusters=10,
+                 batch_size=2048)
+
+        # 2. 运行 pca +  转换 pca + minibatch kmeans
+        kmeans.run(self)
+
+        t_end = time.time()
+
+        print(f"pca + minibatch kmeans 耗时 {t_end - t_start}: seconds")
+
+        # n_clusters = 2
+        # 耗时 715.0501403808594: seconds
+
+        # n_clusters = 10
+        # pca + minibatch kmeans 耗时 783.3221092224121: seconds
 
 
+    # minibatch kmeans + umap
+    def umap(self):
+
+        t_start = time.time()
+
+        # 1️⃣ 初始化
+        kmeans = sap.tl.StreamingPCAMiniBatchKMeans(
+            n_components=50,
+            n_clusters=10,
+            batch_size=2048)
+
+        # 2. 运行 pca +  转换 pca + minibatch kmeans
+        kmeans.run(self)
+
+        t_end = time.time()
+
+        print(f"pca + minibatch kmeans 耗时 {t_end - t_start}: seconds")
 
 
-
-
-
+# 原始表达矩阵 (gene × cell)
+#         ↓
+# normalize / log1p / scale
+#         ↓
+# PCA  ←（降维，用于结构）
+#         ↓
+# neighbors（构图）
+#         ↓
+# leiden（聚类）  ←🔥 得到 group
+#         ↓
+# rank_genes_groups  ←🔥 找 marker
 
 

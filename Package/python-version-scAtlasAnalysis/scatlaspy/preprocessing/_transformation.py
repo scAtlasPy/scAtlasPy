@@ -2,10 +2,13 @@ from ..data import Atlas
 from typing import Literal
 from typing import Optional
 import logging
-from datetime import datetime
 from numbers import Number
-import os
 import math
+import os
+from datetime import datetime
+import numpy as np
+import pandas as pd
+
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
 
@@ -226,7 +229,7 @@ def log1p_fast(
             atlas: 'Atlas',
             base: Optional[Number] = None,
             add_field: str = "data_log1p",
-            select_data: str = "data" ) -> None:
+            select_data: str = "data_normalize" ) -> None:
     """
     对表达值进行 log(1+x) 转换
     - 支持选择 X_CSRO_data 中任意字段进行计算
@@ -294,7 +297,7 @@ def log1p(
                 atlas: 'Atlas',
                 base: Optional[Number] = None,
                 add_field: str = "data_log1p",
-                select_data: str = "data",
+                select_data: str = "data_normalize",
                 chunk_size: int = 100_000_000) -> None:
     """
     1e8 级 CSR 安全的 log1p 实现
@@ -386,9 +389,9 @@ def log1p(
 #   data_log1p	     对表达值进行 log(1+x) 转换
 
 
-'''===== exp1 是  log1p的逆运算 ========== '''
+'''===== expm1 是  log1p的逆运算 ========== '''
 # 833206 * 17745  2.46 秒 运行完别的函数再运行这个， 16.65 秒，
-def exp1(
+def expm1(
         atlas: 'Atlas',
         base: Optional[Number] = None,
         add_field: str = "data_exp1",
@@ -401,8 +404,8 @@ def exp1(
     - 按 X_CSRO_data.id 分块，支持 1e8 CSR
     """
 
-    logger.info("开始执行 exp1 (chunked)...")
-    print("==== exp1 (chunked) ====")
+    logger.info("开始执行 expm1 (chunked)...")
+    print("==== expm1 (chunked) ====")
     start = datetime.now()
 
     conn = atlas.connection
@@ -475,7 +478,7 @@ def exp1(
     # -------------------------------------------------
     # 5. 结束
     # -------------------------------------------------
-    print("exp1 (chunked) 完成")
+    print("expm1 (chunked) 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 # 运行结果
@@ -594,23 +597,213 @@ def normalize_and_log1p(
 
 '''===== highly_variable_genes：  识别高变基因 - 在 X_CSRO 表上进行操作 '''
 # 833206 * 17745  1.51 秒
+# def highly_variable_genes(
+#                         atlas: Atlas,
+#                         flavor: Literal["var", "cv"] = "var",
+#                         n_top_genes: int = 2000,
+#                         add_key: str = "highly_variable_genes",
+#                         select_data: str = "data_log1p"
+#                     ) -> None:
+#     """
+#     类似 sc.pp.highly_variable_genes（简化版）
+#     - 不修改 X_CSRO_data
+#     - 在 var 表中新建布尔字段 add_key
+#     - flavor: flavor 这个参数只能取 "var" 或 "cv" 这两个字符串之一
+#         - "var": 按方差排序
+#         - "cv" : 按变异系数（std / mean）排序
+#     """
+#
+#     print("==== highly_variable_genes (CSR + DuckDB) ====")
+#     start = datetime.now()
+#
+#     conn = atlas.connection
+#     try:
+#         conn.execute(f"PRAGMA threads={os.cpu_count()}")
+#     except:
+#         pass
+#
+#     # 0. 检查字段存在
+#     col_exists = conn.execute(f"""
+#         SELECT COUNT(*)
+#         FROM information_schema.columns
+#         WHERE table_name = 'X_CSRO_data'
+#           AND column_name = '{select_data}'
+#     """).fetchone()[0]
+#
+#     if col_exists == 0:
+#         raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+#
+#     # -------------------------------------------------
+#     # ✅【修改1】确保 var 表有可复用统计列
+#     # -------------------------------------------------
+#     conn.execute("""
+#         ALTER TABLE var
+#         ADD COLUMN IF NOT EXISTS hvg_mean DOUBLE
+#     """)
+#     conn.execute("""
+#         ALTER TABLE var
+#         ADD COLUMN IF NOT EXISTS hvg_var DOUBLE
+#     """)
+#     conn.execute("""
+#         ALTER TABLE var
+#         ADD COLUMN IF NOT EXISTS hvg_std DOUBLE
+#     """)
+#     conn.execute("""
+#         ALTER TABLE var
+#         ADD COLUMN IF NOT EXISTS hvg_score DOUBLE
+#     """)
+#
+#     # 1. 计算每个 gene 的 mean / var / std
+#     print("Step 1: 计算 gene-level 统计量")
+#
+#     conn.execute(f"""
+#         CREATE OR REPLACE TEMP TABLE _gene_stats AS
+#         SELECT
+#             atlas_gene_id,
+#             COUNT(*)                      AS n,
+#             AVG({select_data})            AS mean,
+#             VAR_POP({select_data})        AS var,
+#             STDDEV_POP({select_data})     AS std
+#         FROM X_CSRO_data
+#         WHERE {select_data} IS NOT NULL
+#         GROUP BY atlas_gene_id
+#     """)
+#
+#     # -------------------------------------------------
+#     # 2. 计算排序指标
+#     # -------------------------------------------------
+#     if flavor == "var":
+#         score_expr = "var"
+#     elif flavor == "cv":
+#         # CV = std / mean（避免除 0）
+#         score_expr = "CASE WHEN mean > 0 THEN std / mean ELSE 0 END"
+#     else:
+#         raise ValueError(f"不支持的 flavor: {flavor}")
+#
+#     conn.execute(f"""
+#         CREATE OR REPLACE TEMP TABLE _gene_score AS
+#         SELECT
+#             atlas_gene_id,
+#             {score_expr} AS score
+#         FROM _gene_stats
+#     """)
+#
+#     # -------------------------------------------------
+#     # ✅【修改2】把统计量和 score 写回 var，供后续直接画图复用
+#     # -------------------------------------------------
+#     print("Step 1.5: 写入 var.hvg_mean / hvg_var / hvg_std / hvg_score")
+#
+#     conn.execute("""
+#         UPDATE var
+#         SET
+#             hvg_mean = NULL,
+#             hvg_var = NULL,
+#             hvg_std = NULL,
+#             hvg_score = NULL
+#     """)
+#
+#     conn.execute("""
+#         UPDATE var v
+#         SET
+#             hvg_mean = s.mean,
+#             hvg_var  = s.var,
+#             hvg_std  = s.std
+#         FROM _gene_stats s
+#         WHERE v.atlas_gene_id = s.atlas_gene_id
+#     """)
+#
+#     conn.execute("""
+#         UPDATE var v
+#         SET
+#             hvg_score = gs.score
+#         FROM _gene_score gs
+#         WHERE v.atlas_gene_id = gs.atlas_gene_id
+#     """)
+#
+#     # 3. 选 top genes
+#     if n_top_genes is not None:
+#         print(f"Step 2: 选取 top {n_top_genes} genes")
+#
+#         conn.execute(f"""
+#             CREATE OR REPLACE TEMP TABLE _hvg AS
+#             SELECT atlas_gene_id
+#             FROM _gene_score
+#             ORDER BY score DESC
+#             LIMIT {int(n_top_genes)}
+#         """)
+#     else:
+#         # 全部保留
+#         print("Step 2: n_top_genes=None，全部标记为 True")
+#
+#         conn.execute("""
+#             CREATE OR REPLACE TEMP TABLE _hvg AS
+#             SELECT atlas_gene_id
+#             FROM _gene_score
+#         """)
+#
+#     # 4. 在 var 表中写入布尔结果
+#     print(f"Step 3: 写入 var.{add_key}")
+#
+#     conn.execute(f"""
+#         ALTER TABLE var
+#         ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN
+#     """)
+#
+#     # 默认 False
+#     conn.execute(f"""
+#         UPDATE var
+#         SET {add_key} = FALSE
+#     """)
+#
+#     # Top genes → True
+#     conn.execute(f"""
+#         UPDATE var
+#         SET {add_key} = TRUE
+#         FROM _hvg
+#         WHERE var.atlas_gene_id = _hvg.atlas_gene_id
+#     """)
+#
+#     # -------------------------------------------------
+#     # ✅【修改3】清理临时表（保持工程整洁）
+#     # -------------------------------------------------
+#     conn.execute("DROP TABLE IF EXISTS _gene_stats")
+#     conn.execute("DROP TABLE IF EXISTS _gene_score")
+#     conn.execute("DROP TABLE IF EXISTS _hvg")
+#
+#     # -------------------------------------------------
+#     # 5. 结束
+#     # -------------------------------------------------
+#     print("highly_variable_genes 完成")
+#     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+# 运行结果
+#   var 表
+#     新增字段	                     含义
+#   highly_variable_genes	     对 n_top_genes 标记为true
+
+
+# 类似 sc.pp.highly_variable_genes（全细胞含0统计版，最小化修改）
 def highly_variable_genes(
                         atlas: Atlas,
                         flavor: Literal["var", "cv"] = "var",
                         n_top_genes: int = 2000,
                         add_key: str = "highly_variable_genes",
-                        select_data: str = "data"
+                        select_data: str = "data_log1p"
                     ) -> None:
     """
-    类似 sc.pp.highly_variable_genes（简化版）
+    类似 sc.pp.highly_variable_genes（全细胞含0统计版，最小化修改）
+
     - 不修改 X_CSRO_data
     - 在 var 表中新建布尔字段 add_key
-    - flavor: flavor 这个参数只能取 "var" 或 "cv" 这两个字符串之一
+    - 使用“全细胞（含0）”定义的 mean / var / std
+    - 不会真的补 0，仍然保持稀疏、大数据安全
+
+    flavor:
         - "var": 按方差排序
         - "cv" : 按变异系数（std / mean）排序
     """
 
-    print("==== highly_variable_genes (CSR + DuckDB) ====")
+    print("==== highly_variable_genes (CSR + DuckDB, all-cells stats) ====")
     start = datetime.now()
 
     conn = atlas.connection
@@ -619,7 +812,9 @@ def highly_variable_genes(
     except:
         pass
 
-    # 0. 检查字段存在
+    # -------------------------------------------------
+    # 0️⃣ 检查字段存在
+    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -630,24 +825,81 @@ def highly_variable_genes(
     if col_exists == 0:
         raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
 
-    # 1. 计算每个 gene 的 mean / var / std
-    print("Step 1: 计算 gene-level 统计量")
-
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _gene_stats AS
-        SELECT
-            atlas_gene_id,
-            COUNT(*)                      AS n,
-            AVG({select_data})            AS mean,
-            VAR_POP({select_data})        AS var,
-            STDDEV_POP({select_data})     AS std
-        FROM X_CSRO_data
-        WHERE {select_data} IS NOT NULL
-        GROUP BY atlas_gene_id
+    # -------------------------------------------------
+    # ✅【修改1】确保 var 表有可复用统计列
+    # -------------------------------------------------
+    conn.execute("""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS hvg_mean DOUBLE
+    """)
+    conn.execute("""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS hvg_var DOUBLE
+    """)
+    conn.execute("""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS hvg_std DOUBLE
+    """)
+    conn.execute("""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS hvg_score DOUBLE
+    """)
+    conn.execute("""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS hvg_nnz BIGINT
     """)
 
     # -------------------------------------------------
-    # 2. 计算排序指标
+    # ✅【修改2】取总细胞数 N（全细胞统计的关键）
+    # -------------------------------------------------
+    n_cells = conn.execute("""
+        SELECT COUNT(*) FROM obs
+    """).fetchone()[0]
+
+    if n_cells == 0:
+        raise ValueError("obs 为空，无法计算 highly_variable_genes")
+
+    # -------------------------------------------------
+    # 1️⃣ 计算每个 gene 的全细胞 mean / var / std
+    #    不补 0，直接用 sum / sumsq / N_cells 推导
+    # -------------------------------------------------
+    print("Step 1: 计算 gene-level 统计量（全细胞含0）")
+
+    conn.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _gene_stats AS
+        WITH gene_sum AS (
+            SELECT
+                atlas_gene_id,
+                COUNT(*) AS nnz,
+                SUM({select_data}) AS sum_x,
+                SUM(({select_data}) * ({select_data})) AS sum_x2
+            FROM X_CSRO_data
+            WHERE {select_data} IS NOT NULL
+            GROUP BY atlas_gene_id
+        )
+        SELECT
+            v.atlas_gene_id,
+            COALESCE(g.nnz, 0) AS nnz,
+            COALESCE(g.sum_x, 0.0) / {n_cells} AS mean,
+            GREATEST(
+                COALESCE(g.sum_x2, 0.0) / {n_cells}
+                - POWER(COALESCE(g.sum_x, 0.0) / {n_cells}, 2),
+                0.0
+            ) AS var,
+            SQRT(
+                GREATEST(
+                    COALESCE(g.sum_x2, 0.0) / {n_cells}
+                    - POWER(COALESCE(g.sum_x, 0.0) / {n_cells}, 2),
+                    0.0
+                )
+            ) AS std
+        FROM var v
+        LEFT JOIN gene_sum g
+          ON v.atlas_gene_id = g.atlas_gene_id
+    """)
+
+    # -------------------------------------------------
+    # 2️⃣ 计算排序指标
     # -------------------------------------------------
     if flavor == "var":
         score_expr = "var"
@@ -665,7 +917,43 @@ def highly_variable_genes(
         FROM _gene_stats
     """)
 
-    # 3. 选 top genes
+    # -------------------------------------------------
+    # ✅【修改3】把统计量和 score 写回 var，后续画图直接复用
+    # -------------------------------------------------
+    print("Step 1.5: 写入 var.hvg_mean / hvg_var / hvg_std / hvg_score")
+
+    conn.execute("""
+        UPDATE var
+        SET
+            hvg_mean = NULL,
+            hvg_var = NULL,
+            hvg_std = NULL,
+            hvg_score = NULL,
+            hvg_nnz = NULL
+    """)
+
+    conn.execute("""
+        UPDATE var v
+        SET
+            hvg_mean = s.mean,
+            hvg_var  = s.var,
+            hvg_std  = s.std,
+            hvg_nnz  = s.nnz
+        FROM _gene_stats s
+        WHERE v.atlas_gene_id = s.atlas_gene_id
+    """)
+
+    conn.execute("""
+        UPDATE var v
+        SET
+            hvg_score = gs.score
+        FROM _gene_score gs
+        WHERE v.atlas_gene_id = gs.atlas_gene_id
+    """)
+
+    # -------------------------------------------------
+    # 3️⃣ 选 top genes
+    # -------------------------------------------------
     if n_top_genes is not None:
         print(f"Step 2: 选取 top {n_top_genes} genes")
 
@@ -677,7 +965,6 @@ def highly_variable_genes(
             LIMIT {int(n_top_genes)}
         """)
     else:
-        # 全部保留
         print("Step 2: n_top_genes=None，全部标记为 True")
 
         conn.execute("""
@@ -686,7 +973,9 @@ def highly_variable_genes(
             FROM _gene_score
         """)
 
-    # 4. 在 var 表中写入布尔结果
+    # -------------------------------------------------
+    # 4️⃣ 在 var 表中写入布尔结果
+    # -------------------------------------------------
     print(f"Step 3: 写入 var.{add_key}")
 
     conn.execute(f"""
@@ -694,13 +983,11 @@ def highly_variable_genes(
         ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN
     """)
 
-    # 默认 False
     conn.execute(f"""
         UPDATE var
         SET {add_key} = FALSE
     """)
 
-    # Top genes → True
     conn.execute(f"""
         UPDATE var
         SET {add_key} = TRUE
@@ -709,26 +996,292 @@ def highly_variable_genes(
     """)
 
     # -------------------------------------------------
-    # 5. 结束
+    # 5️⃣ 清理临时表
     # -------------------------------------------------
-    print("highly_variable_genes 完成")
+    conn.execute("DROP TABLE IF EXISTS _gene_stats")
+    conn.execute("DROP TABLE IF EXISTS _gene_score")
+    conn.execute("DROP TABLE IF EXISTS _hvg")
+
+    # -------------------------------------------------
+    # 6️⃣ 结束
+    # -------------------------------------------------
+    print("highly_variable_genes 完成（全细胞含0统计版）")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
-# 运行结果
-#   var 表
-#     新增字段	                     含义
-#   highly_variable_genes	     对 n_top_genes 标记为true
+
+# highly_variable_genes_seurat_v3
+def highly_variable_genes_seurat_v3(
+        atlas,
+        n_top_genes: int = 2000,
+        add_key: str = "highly_variable_genes",
+        select_data: str = "data",          # ✅ seurat_v3 用原始 counts
+        n_bins: int = 20,
+        min_mean: float | None = None,
+        max_mean: float | None = None,
+        inplace: bool = True
+):
+    """
+    数据库版 flavor="seurat_v3"（第二版：bin 内标准化 variances_norm）
+
+    思路
+    ----
+    1. SQL 在 X_CSRO_data 上按 gene 聚合：
+       - nnz
+       - sum_x
+       - sum_x2
+    2. 用全细胞（含0）公式在 Python 小表上算：
+       - means
+       - variances
+    3. 对 genes 按 mean 分箱（qcut）
+    4. 在 bin 内做标准化：
+       variances_norm = (variance - mean_bin) / std_bin
+    5. 按 variances_norm 排序，取 top n_top_genes
+    6. 把结果写回 var：
+       - add_key
+       - highly_variable_rank
+       - means
+       - variances
+       - variances_norm
+
+    参数
+    ----
+    atlas : Atlas
+    n_top_genes : int
+        选前多少个高变基因
+    add_key : str
+        写回 var 的布尔列名，默认 "highly_variable_genes"
+    select_data : str
+        X_CSRO_data 中用于 HVG 的数据列，seurat_v3 推荐原始 counts，所以默认 "data"
+    n_bins : int
+        按 mean 分箱数量
+    min_mean / max_mean : float | None
+        可选 mean 过滤范围
+    inplace : bool
+        True -> 结果写回 var
+        False -> 返回 DataFrame
+    """
+
+    print("==== highly_variable_genes_seurat_v3 (v2: bin-standardized) ====")
+    start = datetime.now()
+    conn = atlas.connection
+
+    try:
+        conn.execute(f"PRAGMA threads={os.cpu_count()}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 0️⃣ 检查输入列
+    # -------------------------------------------------
+    col_exists = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = '{select_data}'
+    """).fetchone()[0]
+
+    if col_exists == 0:
+        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+
+    n_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
+    if n_cells == 0:
+        raise ValueError("obs 为空，无法计算 HVG")
+
+    # -------------------------------------------------
+    # 1️⃣ SQL：按 gene 聚合基础统计（只扫稀疏表一次）
+    # -------------------------------------------------
+    print("Step 1: SQL 聚合 gene-level 基础统计量")
+
+    conn.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _gene_sum AS
+        SELECT
+            atlas_gene_id,
+            COUNT(*) AS nnz,
+            SUM({select_data}) AS sum_x,
+            SUM(({select_data}) * ({select_data})) AS sum_x2
+        FROM X_CSRO_data
+        WHERE {select_data} IS NOT NULL
+        GROUP BY atlas_gene_id
+    """)
+
+    gene_df = conn.execute("""
+        SELECT
+            v.atlas_gene_id,
+            v.atlas_gene_name,
+            COALESCE(g.nnz, 0) AS nnz,
+            COALESCE(g.sum_x, 0.0) AS sum_x,
+            COALESCE(g.sum_x2, 0.0) AS sum_x2
+        FROM var v
+        LEFT JOIN _gene_sum g
+          ON v.atlas_gene_id = g.atlas_gene_id
+        ORDER BY v.atlas_gene_id
+    """).fetchdf()
+
+    # -------------------------------------------------
+    # 2️⃣ Python：全细胞（含0）统计
+    # -------------------------------------------------
+    print("Step 2: Python 计算全细胞 means / variances")
+
+    means = gene_df["sum_x"].to_numpy(dtype=np.float64) / float(n_cells)
+    variances = gene_df["sum_x2"].to_numpy(dtype=np.float64) / float(n_cells) - means ** 2
+    variances = np.maximum(variances, 0.0)
+
+    gene_df["means"] = means
+    gene_df["variances"] = variances
+
+    # -------------------------------------------------
+    # 3️⃣ 可选 mean 过滤
+    # -------------------------------------------------
+    valid = np.ones(len(gene_df), dtype=bool)
+
+    if min_mean is not None:
+        valid &= gene_df["means"].to_numpy() >= float(min_mean)
+    if max_mean is not None:
+        valid &= gene_df["means"].to_numpy() <= float(max_mean)
+
+    # 去掉完全0均值的基因
+    valid &= gene_df["means"].to_numpy() > 0
+    valid &= gene_df["variances"].to_numpy() >= 0
+
+    gene_df["variances_norm"] = np.nan
+    gene_df["highly_variable_rank"] = np.nan
+    gene_df[add_key] = False
+
+    work = gene_df.loc[valid, ["atlas_gene_id", "means", "variances"]].copy()
+
+    if len(work) == 0:
+        raise ValueError("没有可用于 seurat_v3 HVG 的基因（检查 select_data / min_mean / max_mean）")
+
+    # -------------------------------------------------
+    # 4️⃣ mean 分箱
+    # -------------------------------------------------
+    print("Step 3: mean 分箱")
+
+    work["_mean_log1p"] = np.log1p(work["means"].to_numpy())
+
+    try:
+        work["_mean_bin"] = pd.qcut(
+            work["_mean_log1p"],
+            q=n_bins,
+            labels=False,
+            duplicates="drop"
+        )
+    except ValueError:
+        work["_mean_bin"] = 0
+
+    # -------------------------------------------------
+    # 5️⃣ ✅【核心修改】bin 内标准化 variances_norm
+    #     第一版是 ratio：
+    #         var / median(var_bin)
+    #     第二版改成 z-score 风格：
+    #         (var - mean_bin) / std_bin
+    # -------------------------------------------------
+    print("Step 4: bin 内标准化 variances_norm")
+
+    bin_mean = work.groupby("_mean_bin")["variances"].transform("mean").to_numpy()
+    bin_std = work.groupby("_mean_bin")["variances"].transform("std").to_numpy()
+
+    # 防止 std 为 0 或 NaN
+    bin_std = np.where(np.isnan(bin_std), 0.0, bin_std)
+    bin_std = np.maximum(bin_std, 1e-12)
+
+    work["variances_norm"] = (work["variances"].to_numpy() - bin_mean) / bin_std
+
+    # -------------------------------------------------
+    # 6️⃣ 排序 + 选 top genes
+    # -------------------------------------------------
+    print(f"Step 5: 选取 top {n_top_genes} genes")
+
+    work = work.sort_values(
+        by=["variances_norm", "atlas_gene_id"],
+        ascending=[False, True]
+    ).reset_index(drop=True)
+
+    work["highly_variable_rank"] = np.arange(len(work), dtype=np.float64)
+
+    top_n = min(int(n_top_genes), len(work))
+    top_ids = set(work.loc[:top_n - 1, "atlas_gene_id"].tolist())
+
+    rank_map = dict(zip(work["atlas_gene_id"], work["highly_variable_rank"]))
+    varnorm_map = dict(zip(work["atlas_gene_id"], work["variances_norm"]))
+
+    gene_df["variances_norm"] = gene_df["atlas_gene_id"].map(varnorm_map)
+    gene_df["highly_variable_rank"] = gene_df["atlas_gene_id"].map(rank_map)
+    gene_df[add_key] = gene_df["atlas_gene_id"].isin(top_ids)
+
+    # -------------------------------------------------
+    # 7️⃣ 写回 var
+    # -------------------------------------------------
+    if inplace:
+        print("Step 6: 写回 var")
+
+        conn.execute(f"""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN
+        """)
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS highly_variable_rank DOUBLE
+        """)
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS means DOUBLE
+        """)
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS variances DOUBLE
+        """)
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS variances_norm DOUBLE
+        """)
+
+        write_df = gene_df[[
+            "atlas_gene_id",
+            add_key,
+            "highly_variable_rank",
+            "means",
+            "variances",
+            "variances_norm"
+        ]].copy()
+
+        conn.register("_hvg_py", write_df)
+
+        conn.execute(f"""
+            UPDATE var AS v
+            SET
+                {add_key} = p.{add_key},
+                highly_variable_rank = p.highly_variable_rank,
+                means = p.means,
+                variances = p.variances,
+                variances_norm = p.variances_norm
+            FROM _hvg_py AS p
+            WHERE v.atlas_gene_id = p.atlas_gene_id
+        """)
+
+        conn.unregister("_hvg_py")
+
+    # 清理
+    conn.execute("DROP TABLE IF EXISTS _gene_sum")
+
+    print("highly_variable_genes_seurat_v3 完成（v2）")
+    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+    if not inplace:
+        return gene_df
 
 
-'''=====  scale ：  进行 z-score转换 - 分块，大数据安全 '''
+
+
+'''=====  scale ：  进行 z-score转换 - 大数据安全 '''
 # 833206 * 17745   21.48 秒 大数据安全
 def scale(
             atlas,
-            select_data: str = "data",
+            select_data: str = "data_log1p",
             add_field: str = "data_scale",
             add_field_to_var: str = "zero_scale_transform",
             max_value: float = 10.0,
-            use_hvg: bool = False,
+            use_hvg: bool = True,
             hvg_key: str = "highly_variable_genes"):
     """
     Gene-wise z-score scale（chunk 内 in-place UPDATE 版）
@@ -814,8 +1367,7 @@ def scale(
         gene_ids = [g[0] for g in gene_ids]
     else:
         gene_ids = conn.execute("""
-            SELECT DISTINCT atlas_gene_id
-            FROM X_CSRO_data
+            SELECT atlas_gene_id FROM var
             ORDER BY atlas_gene_id
         """).fetchall()
         gene_ids = [g[0] for g in gene_ids]
@@ -911,15 +1463,839 @@ def scale(
 #   zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
 
 
+# todo  CTAS 新建表 再替换 原表 + 按照id重新排序 （保证数据有序）
+# todo 2840130 x 24552     577.65 秒
+def scale_CTAS(
+        atlas,
+        select_data: str = "data_log1p",
+        add_field: str = "data_scale",
+        add_field_to_var: str = "zero_scale_transform",
+        max_value: float = 10.0,
+        use_hvg: bool = True,
+        hvg_key: str = "highly_variable_genes"):
+    """
+    Gene-wise z-score scale（最小改动 + X_CSRO_data 改 CTAS 版）
+
+    相比你原版：
+    1. 不再按 gene chunk 循环
+    2. 一次性计算所有目标 gene 的 mean/std
+    3. var 仍然一次性 UPDATE
+    4. X_CSRO_data 不再 UPDATE，改为 CTAS 重建（更适合大数据）
+    5. 增加事务，减少很多小事务开销
+
+    特点：
+    - 尽量保留你原来的结构
+    - 尽量少改
+    - 对大表更安全
+    - 比 inplace UPDATE 更适合小内存跑大数据
+    """
+
+    print("\n==== scale_gene_minimal_ctas ====")
+    start_all = datetime.now()
+    conn = atlas.connection
+
+    # -------------------------------------------------
+    # 0. 并行
+    # -------------------------------------------------
+    try:
+        # n_threads = os.cpu_count() or 1
+        n_threads =  1
+        conn.execute(f"PRAGMA threads={n_threads}")
+        print(f"-> DuckDB threads = {n_threads}")
+    except Exception:
+        pass
+
+    # ✅【修改】可选：关闭插入顺序保护，CTAS 常常更友好
+    try:
+        conn.execute("PRAGMA preserve_insertion_order=false")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 1. 输入字段检查
+    # -------------------------------------------------
+    if conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name='X_CSRO_data'
+          AND column_name='{select_data}'
+    """).fetchone()[0] == 0:
+        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+
+    # -------------------------------------------------
+    # 2. 输出字段准备（var）
+    # -------------------------------------------------
+    conn.execute(f"""
+        ALTER TABLE var
+        ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL
+    """)
+
+    # ✅【修改】这里不再先 ALTER TABLE X_CSRO_data ADD COLUMN
+    # 因为 X_CSRO_data 改成 CTAS，新列会在 CREATE TABLE AS SELECT 时直接生成
+
+    # ✅【修改】开始事务
+    conn.execute("BEGIN")
+    try:
+        # -------------------------------------------------
+        # 3. gene 集合
+        # -------------------------------------------------
+        conn.execute("DROP TABLE IF EXISTS _target_genes")
+
+        if use_hvg:
+            print("-> 使用 HVG gene 子集")
+            conn.execute(f"""
+                CREATE TEMP TABLE _target_genes AS
+                SELECT atlas_gene_id
+                FROM var
+                WHERE {hvg_key} = TRUE
+            """)
+        else:
+            conn.execute("""
+                CREATE TEMP TABLE _target_genes AS
+                SELECT atlas_gene_id
+                FROM var
+            """)
+
+        n_genes = conn.execute("""
+            SELECT COUNT(*) FROM _target_genes
+        """).fetchone()[0]
+
+        if n_genes == 0:
+            print("无 gene，退出")
+            conn.execute("COMMIT")
+            return
+
+        print(f"-> Total genes: {n_genes}")
+
+        # -------------------------------------------------
+        # 4. 一次性计算所有目标 gene 的 mean / std
+        # -------------------------------------------------
+        conn.execute("DROP TABLE IF EXISTS _gene_stat")
+        conn.execute(f"""
+            CREATE TEMP TABLE _gene_stat AS
+            SELECT
+                x.atlas_gene_id,
+                AVG(x.{select_data})        AS mean,
+                STDDEV_POP(x.{select_data}) AS std
+            FROM X_CSRO_data x
+            JOIN _target_genes t
+              ON x.atlas_gene_id = t.atlas_gene_id
+            WHERE x.{select_data} IS NOT NULL
+            GROUP BY x.atlas_gene_id
+        """)
+
+        # -------------------------------------------------
+        # 5. 一次性 UPDATE var：zero -> z-score
+        # -------------------------------------------------
+        conn.execute(f"""
+            UPDATE var
+            SET {add_field_to_var} = NULL
+        """)
+
+        conn.execute(f"""
+            UPDATE var v
+            SET {add_field_to_var} =
+                CASE
+                    WHEN g.std > 0 THEN
+                        LEAST(
+                            {float(max_value)},
+                            GREATEST(
+                                -{float(max_value)},
+                                (0 - g.mean) / g.std
+                            )
+                        )
+                    ELSE 0
+                END
+            FROM _gene_stat g
+            WHERE v.atlas_gene_id = g.atlas_gene_id
+        """)
+
+        # -------------------------------------------------
+        # 6. X_CSRO_data 改成 CTAS
+        # -------------------------------------------------
+        # ✅【修改】原来这里是：
+        # UPDATE X_CSRO_data x
+        # SET {add_field} = ...
+        #
+        # ✅【修改】现在改成 CTAS：
+        # 1. 读取原表列名
+        # 2. 排除旧 add_field（如果已存在）
+        # 3. CREATE TABLE AS SELECT 一次生成新表
+        # 4. 原子替换旧表
+
+        print("-> CTAS 重建 X_CSRO_data ...")
+
+        conn.execute("DROP TABLE IF EXISTS X_CSRO_data_new")
+
+        cols_info = conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'X_CSRO_data'
+            ORDER BY ordinal_position
+        """).fetchall()
+
+        old_cols = [row[0] for row in cols_info]
+
+        # ✅【修改】如果旧表里已经有 add_field，先排除，避免重名
+        base_cols = [c for c in old_cols if c != add_field]
+
+        if len(base_cols) == 0:
+            raise ValueError("X_CSRO_data 没有可用列，无法 CTAS 重建")
+
+        base_cols_sql = ",\n                ".join([f"x.{c}" for c in base_cols])
+
+        # ✅【修改】LEFT JOIN _gene_stat
+        # - 目标 gene：计算 z-score
+        # - 非目标 gene：写 NULL
+        # - select_data 为 NULL：写 NULL
+        #
+        # 这种写法是顺序扫描 + 顺序写新表，
+        # 比对大表反复 UPDATE 更适合 DuckDB 和大数据
+        conn.execute(f"""
+            CREATE TABLE X_CSRO_data_new AS
+            SELECT
+                {base_cols_sql},
+                CASE
+                    WHEN g.atlas_gene_id IS NULL THEN NULL
+                    WHEN x.{select_data} IS NULL THEN NULL
+                    WHEN g.std > 0 THEN
+                        LEAST(
+                            {float(max_value)},
+                            GREATEST(
+                                -{float(max_value)},
+                                (x.{select_data} - g.mean) / g.std
+                            )
+                        )
+                    ELSE 0
+                END AS {add_field}
+            FROM X_CSRO_data x
+            LEFT JOIN _gene_stat g
+              ON x.atlas_gene_id = g.atlas_gene_id
+            ORDER BY x.atlas_cell_id, x.atlas_gene_id
+        """)
+
+        # ✅【修改】原子替换旧表
+        conn.execute("DROP TABLE X_CSRO_data")
+        conn.execute("ALTER TABLE X_CSRO_data_new RENAME TO X_CSRO_data")
+
+        # -------------------------------------------------
+        # 7. 清理临时表
+        # -------------------------------------------------
+        conn.execute("DROP TABLE IF EXISTS _target_genes")
+        conn.execute("DROP TABLE IF EXISTS _gene_stat")
+
+        # ✅【修改】提交事务
+        conn.execute("COMMIT")
+
+    except Exception:
+        # ✅【修改】异常回滚
+        conn.execute("ROLLBACK")
+        raise
+
+    print("\n==== scale_gene_minimal_ctas 完成 ====")
+    print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
+
+
+
+# todo  保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写
+#   2840130 x 24552 总耗时: 2118.96 秒
+def scale_id_chunk(
+        atlas,
+        select_data: str = "data_log1p",
+        add_field: str = "data_scale",
+        add_field_to_var: str = "zero_scale_transform",
+        max_value: float = 10.0,
+        use_hvg: bool = True,
+        hvg_key: str = "highly_variable_genes",
+        id_chunk_size: int = 20_000_000,
+        ):
+    """
+    Gene-wise z-score scale（超大数据安全版：保留原结构 + 按 id 分块回写）
+
+    设计目标
+    ----------
+    1. 保留 X_CSRO_data 原表，不做 CTAS 替换
+    2. 保留原有业务列 id / 原有顺序 / 原有结构
+    3. 一次性计算所有目标 gene 的 mean/std（_gene_stat 很小，安全）
+    4. 按 id 范围分块回写，避免生成整张超大 _scale_result
+    5. 适合小内存跑超大 nnz
+
+    参数
+    ----------
+    atlas : Atlas
+    select_data : str
+        输入表达值列，例如 data_log1p
+    add_field : str
+        输出 scale 列，例如 data_scale
+    add_field_to_var : str
+        写入 var 表的 zero -> z-score 变换列
+    max_value : float
+        裁剪上限
+    use_hvg : bool
+        是否只对 HVG 基因做 scale
+    hvg_key : str
+        var 表里的 HVG 标记列名
+    id_chunk_size : int
+        每次按 id 回写的块大小
+        超大数据建议：
+        - 10_000_000
+        - 50_000_000
+        - 100_000_000
+        具体看磁盘 / 机器配置
+    """
+
+    print("\n==== scale_ultra_safe_update_by_id_chunk ====")
+    start_all = datetime.now()
+    conn = atlas.connection
+
+    # -------------------------------------------------
+    # 0. 并行
+    # -------------------------------------------------
+    try:
+        # n_threads = os.cpu_count() or 1
+        n_threads = 8
+        conn.execute(f"PRAGMA threads={n_threads}")
+        print(f"-> DuckDB threads = {n_threads}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 1. 输入字段检查
+    # -------------------------------------------------
+    if conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = '{select_data}'
+    """).fetchone()[0] == 0:
+        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+
+    if conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = 'id'
+    """).fetchone()[0] == 0:
+        raise ValueError("X_CSRO_data 中不存在 id 字段，无法按 id 分块回写")
+
+    if conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = 'atlas_gene_id'
+    """).fetchone()[0] == 0:
+        raise ValueError("X_CSRO_data 中不存在 atlas_gene_id 字段")
+
+    # -------------------------------------------------
+    # 2. 输出字段准备
+    # -------------------------------------------------
+
+    conn.execute(f""" ALTER TABLE X_CSRO_data DROP COLUMN IF EXISTS {add_field} """)
+    conn.execute(f""" ALTER TABLE X_CSRO_data ADD COLUMN IF NOT EXISTS {add_field} REAL """)
+
+    conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_field_to_var} """)
+    conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL """)
+
+    # -------------------------------------------------
+    # 3. 准备目标 gene 集合
+    # -------------------------------------------------
+    print("-> 准备 target genes ...")
+    conn.execute("DROP TABLE IF EXISTS _target_genes")
+
+    if use_hvg:
+        print("-> 使用 HVG gene 子集")
+        conn.execute(f"""
+            CREATE TEMP TABLE _target_genes AS
+            SELECT atlas_gene_id
+            FROM var
+            WHERE {hvg_key} = TRUE
+        """)
+    else:
+        conn.execute("""
+            CREATE TEMP TABLE _target_genes AS
+            SELECT atlas_gene_id
+            FROM var
+        """)
+
+    n_genes = conn.execute("""
+        SELECT COUNT(*) FROM _target_genes
+    """).fetchone()[0]
+
+    if n_genes == 0:
+        print("无 gene，退出")
+        conn.execute("DROP TABLE IF EXISTS _target_genes")
+        return
+
+    print(f"-> Total target genes: {n_genes}")
+
+    # -------------------------------------------------
+    # 4. 一次性计算所有目标 gene 的 mean/std
+    # -------------------------------------------------
+    # 这一张表很小（每个 gene 一行），可以一次性做
+    print("-> 计算 _gene_stat（一次，全局）...")
+    t0 = datetime.now()
+
+    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+    conn.execute(f"""
+        CREATE TEMP TABLE _gene_stat AS
+        SELECT
+            x.atlas_gene_id,
+            AVG(x.{select_data})        AS mean,
+            STDDEV_POP(x.{select_data}) AS std
+        FROM X_CSRO_data x
+        JOIN _target_genes t
+          ON x.atlas_gene_id = t.atlas_gene_id
+        WHERE x.{select_data} IS NOT NULL
+        GROUP BY x.atlas_gene_id
+    """)
+    # 为每个目标 gene 计算：mean   std
+    # 也就是给每个 gene 生成一张“缩放公式表”。
+
+    print("   _gene_stat 完成，耗时: {:.2f} 秒".format(
+        (datetime.now() - t0).total_seconds()
+    ))
+
+    # -------------------------------------------------
+    # 5. 更新 var：记录 0 值 的缩放因子  -> z-score
+    # -------------------------------------------------
+    print("-> 更新 var ...")
+    t0 = datetime.now()
+
+    conn.execute("BEGIN")
+    try:
+
+        conn.execute(f"""
+            UPDATE var v
+            SET {add_field_to_var} =
+                CASE
+                    WHEN g.std > 0 THEN
+                        LEAST(
+                            {float(max_value)},
+                            GREATEST(
+                                -{float(max_value)},
+                                (0 - g.mean) / g.std
+                            )
+                        )
+                    ELSE 0
+                END
+            FROM _gene_stat g
+            WHERE v.atlas_gene_id = g.atlas_gene_id
+        """)
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    print("   var 更新完成，耗时: {:.2f} 秒".format(
+        (datetime.now() - t0).total_seconds()
+    ))
+
+    # -------------------------------------------------
+    # 6. 获取 id 范围
+    # -------------------------------------------------
+    print("-> 获取 id 范围 ...")
+    min_id, max_id, total_rows = conn.execute("""
+        SELECT MIN(id), MAX(id), COUNT(*)
+        FROM X_CSRO_data
+    """).fetchone()
+
+    print(f"-> X_CSRO_data rows: {total_rows}")
+    print(f"-> id range: {min_id} ~ {max_id}")
+    print(f"-> id_chunk_size: {id_chunk_size}")
+
+    n_chunks = math.ceil((max_id - min_id + 1) / id_chunk_size)
+    print(f"-> Total id chunks: {n_chunks}")
+
+    # -------------------------------------------------
+    # 8. 按 id 分块回写
+    # -------------------------------------------------
+    print("-> 开始按 id 分块回写 ...")
+
+    done_chunks = 0
+    done_rows_est = 0
+    update_start_all = datetime.now()
+
+    for chunk_idx in range(n_chunks):
+        chunk_start = min_id + chunk_idx * id_chunk_size
+        chunk_end = min(chunk_start + id_chunk_size - 1, max_id)
+
+        t0 = datetime.now()
+        print(
+            f"\n[Chunk {chunk_idx + 1}/{n_chunks}] "
+            f"id: {chunk_start} ~ {chunk_end}"
+        )
+
+        conn.execute("BEGIN")
+        try:
+            # 只生成当前 id 范围的临时结果，避免整张 _scale_result 爆大
+            conn.execute("DROP TABLE IF EXISTS _scale_chunk")
+
+            conn.execute(f"""
+                CREATE TEMP TABLE _scale_chunk AS
+                SELECT
+                    x.id,
+                    CASE
+                        WHEN g.atlas_gene_id IS NULL THEN NULL
+                        WHEN x.{select_data} IS NULL THEN NULL
+                        WHEN g.std > 0 THEN
+                            LEAST(
+                                {float(max_value)},
+                                GREATEST(
+                                    -{float(max_value)},
+                                    (x.{select_data} - g.mean) / g.std
+                                )
+                            )
+                        ELSE 0
+                    END AS {add_field}
+                FROM X_CSRO_data x
+                LEFT JOIN _gene_stat g
+                  ON x.atlas_gene_id = g.atlas_gene_id
+                WHERE x.id BETWEEN {chunk_start} AND {chunk_end}
+            """)
+
+            # 当前块按 id 回写
+            conn.execute(f"""
+                UPDATE X_CSRO_data x
+                SET {add_field} = s.{add_field}
+                FROM _scale_chunk s
+                WHERE x.id = s.id
+            """)
+
+            conn.execute("DROP TABLE IF EXISTS _scale_chunk")
+            conn.execute("COMMIT")
+
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        chunk_seconds = (datetime.now() - t0).total_seconds()
+        done_chunks += 1
+        done_rows_est += (chunk_end - chunk_start + 1)
+
+        avg_chunk_seconds = (
+            (datetime.now() - update_start_all).total_seconds() / done_chunks
+        )
+        remain_chunks = n_chunks - done_chunks
+        eta_seconds = avg_chunk_seconds * remain_chunks
+
+        print(
+            "   本块完成，耗时: {:.2f} 秒 | 进度: {}/{} | 预计剩余: {:.2f} 分钟".format(
+                chunk_seconds, done_chunks, n_chunks, eta_seconds / 60
+            )
+        )
+
+    # -------------------------------------------------
+    # 9. 清理临时表
+    # -------------------------------------------------
+    print("\n-> 清理临时表 ...")
+    conn.execute("DROP TABLE IF EXISTS _target_genes")
+    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+    conn.execute("DROP TABLE IF EXISTS _scale_chunk")
+
+
+    print("\n==== scale_ultra_safe_update_by_id_chunk 完成 ====")
+    print("总耗时: {:.2f} 秒".format(
+        (datetime.now() - start_all).total_seconds()
+    ))
+
+
+# todo  保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写 + 直接 update
+#   2840130 x 24552
+#   20_000_000  4  总耗时:  2072.52 秒
+#   20_000_000  8  总耗时:  1187.70 秒
+#   20_000_000  15 总耗时:  1405.14 秒
+def scale_id_chunk_update(
+        atlas,
+        select_data: str = "data_log1p",
+        add_field: str = "data_scale",
+        add_field_to_var: str = "zero_scale_transform",
+        max_value: float = 10.0,
+        use_hvg: bool = True,
+        hvg_key: str = "highly_variable_genes",
+        id_chunk_size: int = 20_000_000,
+        ):
+    """
+    Gene-wise z-score scale（超大数据安全版：保留原结构 + 按 id 分块回写）
+
+    ✅【修改版思路】
+    1. 保留原有 scale_id_chunk 的整体框架
+    2. 仍然一次性计算 _gene_stat
+    3. 仍然按 id 范围分块
+    4. ❌不再 CREATE TEMP TABLE _scale_chunk
+    5. ✅改为当前 id chunk 直接 UPDATE X_CSRO_data
+    6. 保留原顺序，不做 CTAS，不做 ORDER BY
+    """
+
+    print("\n==== scale_ultra_safe_update_by_id_chunk_direct ====")
+    start_all = datetime.now()
+    conn = atlas.connection
+
+    # -------------------------------------------------
+    # 0. 并行
+    # -------------------------------------------------
+    try:
+        # ✅【保留】线程不要太大，避免 spill / temp 文件过多
+        n_threads = 4
+        conn.execute(f"PRAGMA threads={n_threads}")
+        print(f"-> DuckDB threads = {n_threads}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 1. 输入字段检查
+    # -------------------------------------------------
+    if conn.execute(f"""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = '{select_data}'
+    """).fetchone()[0] == 0:
+        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+
+    if conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = 'id'
+    """).fetchone()[0] == 0:
+        raise ValueError("X_CSRO_data 中不存在 id 字段，无法按 id 分块回写")
+
+    if conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = 'atlas_gene_id'
+    """).fetchone()[0] == 0:
+        raise ValueError("X_CSRO_data 中不存在 atlas_gene_id 字段")
+
+    # -------------------------------------------------
+    # 2. 输出字段准备
+    # -------------------------------------------------
+    # ✅【修改】尽量最小改动：保留你的写法
+    # 如果你后面想再优化，这里可以改成只 ADD，不 DROP/ADD
+    conn.execute(f""" ALTER TABLE X_CSRO_data DROP COLUMN IF EXISTS {add_field} """)
+    conn.execute(f""" ALTER TABLE X_CSRO_data ADD COLUMN IF NOT EXISTS {add_field} REAL """)
+
+    conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_field_to_var} """)
+    conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL """)
+
+    # -------------------------------------------------
+    # 3. 准备目标 gene 集合
+    # -------------------------------------------------
+    print("-> 准备 target genes ...")
+    conn.execute("DROP TABLE IF EXISTS _target_genes")
+
+    if use_hvg:
+        print("-> 使用 HVG gene 子集")
+        conn.execute(f"""
+            CREATE TEMP TABLE _target_genes AS
+            SELECT atlas_gene_id
+            FROM var
+            WHERE {hvg_key} = TRUE
+        """)
+    else:
+        conn.execute("""
+            CREATE TEMP TABLE _target_genes AS
+            SELECT atlas_gene_id
+            FROM var
+        """)
+
+    n_genes = conn.execute("""
+        SELECT COUNT(*) FROM _target_genes
+    """).fetchone()[0]
+
+    if n_genes == 0:
+        print("无 gene，退出")
+        conn.execute("DROP TABLE IF EXISTS _target_genes")
+        return
+
+    print(f"-> Total target genes: {n_genes}")
+
+    # -------------------------------------------------
+    # 4. 一次性计算所有目标 gene 的 mean/std
+    # -------------------------------------------------
+    print("-> 计算 _gene_stat（一次，全局）...")
+    t0 = datetime.now()
+
+    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+    conn.execute(f"""
+        CREATE TEMP TABLE _gene_stat AS
+        SELECT
+            x.atlas_gene_id,
+            AVG(x.{select_data})        AS mean,
+            STDDEV_POP(x.{select_data}) AS std
+        FROM X_CSRO_data x
+        JOIN _target_genes t
+          ON x.atlas_gene_id = t.atlas_gene_id
+        WHERE x.{select_data} IS NOT NULL
+        GROUP BY x.atlas_gene_id
+    """)
+
+    print("   _gene_stat 完成，耗时: {:.2f} 秒".format(
+        (datetime.now() - t0).total_seconds()
+    ))
+
+    # -------------------------------------------------
+    # 5. 更新 var：记录 0 值 的缩放因子 -> z-score
+    # -------------------------------------------------
+    print("-> 更新 var ...")
+    t0 = datetime.now()
+
+    conn.execute("BEGIN")
+    try:
+        conn.execute(f"""
+            UPDATE var v
+            SET {add_field_to_var} =
+                CASE
+                    WHEN g.std > 0 THEN
+                        LEAST(
+                            {float(max_value)},
+                            GREATEST(
+                                -{float(max_value)},
+                                (0 - g.mean) / g.std
+                            )
+                        )
+                    ELSE 0
+                END
+            FROM _gene_stat g
+            WHERE v.atlas_gene_id = g.atlas_gene_id
+        """)
+
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+    print("   var 更新完成，耗时: {:.2f} 秒".format(
+        (datetime.now() - t0).total_seconds()
+    ))
+
+    # -------------------------------------------------
+    # 6. 获取 id 范围
+    # -------------------------------------------------
+    print("-> 获取 id 范围 ...")
+    min_id, max_id, total_rows = conn.execute("""
+        SELECT MIN(id), MAX(id), COUNT(*)
+        FROM X_CSRO_data
+    """).fetchone()
+
+    print(f"-> X_CSRO_data rows: {total_rows}")
+    print(f"-> id range: {min_id} ~ {max_id}")
+    print(f"-> id_chunk_size: {id_chunk_size}")
+
+    n_chunks = math.ceil((max_id - min_id + 1) / id_chunk_size)
+    print(f"-> Total id chunks: {n_chunks}")
+
+    # -------------------------------------------------
+    # 7. 按 id 分块直接 UPDATE
+    # -------------------------------------------------
+    print("-> 开始按 id 分块直接回写 ...")
+
+    done_chunks = 0
+    update_start_all = datetime.now()
+
+    for chunk_idx in range(n_chunks):
+        chunk_start = min_id + chunk_idx * id_chunk_size
+        chunk_end = min(chunk_start + id_chunk_size - 1, max_id)
+
+        t0 = datetime.now()
+        print(
+            f"\n[Chunk {chunk_idx + 1}/{n_chunks}] "
+            f"id: {chunk_start} ~ {chunk_end}"
+        )
+
+        conn.execute("BEGIN")
+        try:
+            # =================================================
+            # ✅【核心修改 1】先把当前 chunk 全部置 NULL
+            # 这样：
+            # - 非目标 gene 会保持 NULL
+            # - select_data 为 NULL 的行也保持 NULL
+            # - 避免旧值残留
+            # =================================================
+            conn.execute(f"""
+                UPDATE X_CSRO_data
+                SET {add_field} = NULL
+                WHERE id BETWEEN {chunk_start} AND {chunk_end}
+            """)
+
+            # =================================================
+            # ✅【核心修改 2】不再 CREATE TEMP TABLE _scale_chunk
+            # ✅【核心修改 3】改为当前 chunk 直接 UPDATE
+            #
+            # 只更新：
+            # - 在 _gene_stat 中能匹配到的目标 gene
+            # - select_data 非 NULL 的行
+            #
+            # 保留原顺序：
+            # - 不 CTAS
+            # - 不 ORDER BY
+            # - 不重建表
+            # =================================================
+            conn.execute(f"""
+                UPDATE X_CSRO_data x
+                SET {add_field} =
+                    CASE
+                        WHEN g.std > 0 THEN
+                            LEAST(
+                                {float(max_value)},
+                                GREATEST(
+                                    -{float(max_value)},
+                                    (x.{select_data} - g.mean) / g.std
+                                )
+                            )
+                        ELSE 0
+                    END
+                FROM _gene_stat g
+                WHERE x.atlas_gene_id = g.atlas_gene_id
+                  AND x.id BETWEEN {chunk_start} AND {chunk_end}
+                  AND x.{select_data} IS NOT NULL
+            """)
+
+            conn.execute("COMMIT")
+
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+
+        chunk_seconds = (datetime.now() - t0).total_seconds()
+        done_chunks += 1
+
+        avg_chunk_seconds = (
+            (datetime.now() - update_start_all).total_seconds() / done_chunks
+        )
+        remain_chunks = n_chunks - done_chunks
+        eta_seconds = avg_chunk_seconds * remain_chunks
+
+        print(
+            "   本块完成，耗时: {:.2f} 秒 | 进度: {}/{} | 预计剩余: {:.2f} 分钟".format(
+                chunk_seconds, done_chunks, n_chunks, eta_seconds / 60
+            )
+        )
+
+    # -------------------------------------------------
+    # 8. 清理临时表
+    # -------------------------------------------------
+    print("\n-> 清理临时表 ...")
+    conn.execute("DROP TABLE IF EXISTS _target_genes")
+    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+
+    print("\n==== scale_ultra_safe_update_by_id_chunk_direct 完成 ====")
+    print("总耗时: {:.2f} 秒".format(
+        (datetime.now() - start_all).total_seconds()
+    ))
+
+
 '''=====  scale_fast ： 进行 z-score转换 - 在 X_CSRO 表上进行操作 '''
 # 833206 * 17745    3.67 秒 大数据不安全
 def scale_fast(
         atlas,
-        select_data: str = "data",
+        select_data: str = "data_log1p",
         add_field: str = "data_scale",
         add_field_to_var: str = "zero_scale_transform",
         max_value: float = 10.0,
-        use_hvg: bool = False,
+        use_hvg: bool = True,
         hvg_key: str = "highly_variable_genes"):
     """
     工业级 Gene-wise z-score scale（超大数据版）
@@ -931,8 +2307,6 @@ def scale_fast(
     - var 表：写入 zero -> z-score 的变换值 (0 - mean) / std
     - 支持 HVG 子集
     """
-    import os
-    from datetime import datetime
 
     print("\n==== scale_ultra (industrial OLAP optimized) ====")
     start_all = datetime.now()

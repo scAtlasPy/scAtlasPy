@@ -117,6 +117,13 @@ class MinibatchFetchMultiThreads:
         self.batch_size = batch_size
         self.producer_num = producer_num # 线程数量
         self.gene_num = self._get_gene_num() # 获取基因数量
+        self.zero_scale_transform = self._get_zero_scale_transform()
+        # 获取var 表的 zero_scale_transform ，就是每个基因的 ( 0 - g.mean) / g.std
+        # gene_id 的索引数组
+
+        # 🔥 修改1：新增输出队列（用于解耦 yield）
+        self.out_queue = queue.Queue(maxsize=20)
+
         self.fetch_size = 1_0000_0000 # fetch_record_batch 流式读取的size
         self.pass_mode = pass_mode    # single-pass 单次遍历 ，multi-pass 多次遍历
         self.buffer_batch_num = buffer_batch_num  # 多次遍历 ，缓冲区的容量，n: 表示batch_size * n
@@ -142,12 +149,31 @@ class MinibatchFetchMultiThreads:
         self.total_batches = 0 #计数器 todo 和 batch_idx一样，是否可以删掉
 
 
+    """ 获取基因( 0 - g.mean) / g.std """
+    def _get_zero_scale_transform(self):
+        """
+        获取每个基因的 zero_scale_transform
+        返回：np.ndarray（index == filter_gene_id）
+        """
+        conn = duckdb.connect(self.file_path)
+
+        arr = conn.execute("""
+            SELECT zero_scale_transform
+            FROM var
+            WHERE filter_gene_id IS NOT NULL
+            ORDER BY filter_gene_id
+        """).fetchnumpy()["zero_scale_transform"]
+
+        conn.close()
+        return arr.astype("float32")
+
     """ 获取基因数量 """
     def _get_gene_num(self):
         conn = duckdb.connect(self.file_path)
         gene_num = conn.execute(
             "SELECT COUNT(*) FROM var WHERE filter_gene_id IS NOT NULL"
         ).fetchone()[0]
+        print("gene_num:", gene_num)
         conn.close()
         return gene_num
 
@@ -358,26 +384,53 @@ class MinibatchFetchMultiThreads:
                     X.data = vals
                     X.indices = cols
                     X.indptr = indptr_now
+                    # print(" 输出一个 CSR")
+                    self.out_queue.put(X)
+                    # yield X
 
                 if (self.X_type == "dense"):
                     # 输出 ：2 .构建 宽表
-                    X_dense.fill(0)
-                    for r in range(self.batch_size):
-                        start = indptr_now[r]
-                        end = indptr_now[r + 1]
-                        X_dense[r, cols[start:end]] = vals[start:end]
+
+                    # X_dense.fill(0)  # todo 原来
+                    # for r in range(self.batch_size):
+                    #     start = indptr_now[r]
+                    #     end = indptr_now[r + 1]
+                    #     X_dense[r, cols[start:end]] = vals[start:end]
+
+                    X_dense[:] = self.zero_scale_transform # todo 修改： 按gene_id填充，self.zero_scale_transform
+                    #  zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
+                    # X_dense =
+                    # [ 填充每个基因的 zero_scale_transform
+                    #  [-0.5, 0.2, -1.1, ...],
+                    #  [-0.5, 0.2, -1.1, ...],
+                    #  ...
+                    # ]
+                    rows = np.repeat( # [0,0, 1, 2,2,2] 👉 每个非零元素对应的“行号”
+                        np.arange(self.batch_size), # [0,1,2,...] 👉 表示每个 cell（行）
+                        np.diff(indptr_now)  # [2, 1, 3, ...]  👉 每个 cell 有多少个非零值（nnz）
+                    )
+                    X_dense[rows, cols] = vals
+                    # 将非零值写入对应的 行列
+                    # X_dense[0,1] = 10
+                    # X_dense[0,3] = 20
+                    # X_dense[1,0] = 30
+                    # X_dense[2,2] = 40
+
 
                     if self.pass_mode == "single-pass": # 单次遍历
-                        print("single-pass 输出一个 随机 batch")
-                        pass
+                        # print("single-pass 输出一个 随机 batch")
+                        self.out_queue.put(X_dense.copy())
+
                     if self.pass_mode == "multi-pass":  # 多次遍历 （加入缓存区，保证多次的随机性）
 
                         shuffle_buffer.add_batch(X_dense) # 写入 输出缓存区 shuffle buffer
-
                         X_dense_random = shuffle_buffer.sample_batch() # 从 输出缓存区 随机采样 batch ， 保证多次遍历的随机性
                         if X_dense_random is not None:
-                            print("multi-pass 输出一个 随机 batch")
-                            pass
+                            # print("multi-pass 输出一个 随机 batch")
+                            self.out_queue.put(X_dense_random.copy())
+                            # 你每轮都会复用同一块 buffer
+                            # 👉 不 copy 会被覆盖
+                            # yield X_dense_random
 
                 elapsed = time.time() - t_start
                 print(f"[Consumer] batch {self.batch_idx}, batch/s={self.batch_idx / (elapsed + 1e-8):.2f}")
@@ -386,6 +439,9 @@ class MinibatchFetchMultiThreads:
                 self.total_batches += 1
 
         print(f"[Done] total_batches={self.total_batches}")
+
+        # 🆕 通知 run() 结束
+        self.out_queue.put(None)
 
 
     ''' 多线程 运行函数  '''
@@ -401,6 +457,22 @@ class MinibatchFetchMultiThreads:
         consumer = threading.Thread(target=self._consumer)
         consumer.start()
 
+        # 🔥 修改4：从 out_queue 统一 yield
+        while True:
+            batch = self.out_queue.get()  # 阻塞
+            if batch is None:  # 👈 收到哨兵，说明所有 batch 都吐完
+                break
+            yield batch  # 正常 batch 继续向外 yield
+
+        print("  while ... 处理完毕 ✅")
+
         for t in producers:
             t.join()
+
         consumer.join()
+
+# [Consumer] batch 405, batch/s=362.03
+# [Done] total_batches=406
+
+# [Consumer] batch 405, batch/s=410.40
+# [Done] total_batches=406

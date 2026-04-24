@@ -64,7 +64,6 @@ from datetime import datetime
 #     id // fetch_size               = 0,0,1,1,2,2
 # (id // fetch_size) % producer_num  = 0,0,1,1,0,0
 
-# todo 从头到尾运行一遍，并对比时间 ， 大小两个数据集
 '''过滤 obs / var + 建新表 X_CSRO_data_filtered  + 建立索引   '''
 class FilterBuildIndex:
     """
@@ -85,6 +84,8 @@ class FilterBuildIndex:
         chunk_size: int = 5_0000_0000,
         cell_condition: str = "filter_cells",
         gene_condition: str = "filter_genes",
+        use_hvg: bool = True,
+        select_data: str = "data_scale",  # 🔥 新增
     ):
         self.file_path = file_path       # sasql 文件绝对路径
         self.fetch_size = fetch_size     # minibatch 流式读取的size
@@ -93,6 +94,8 @@ class FilterBuildIndex:
 
         self.cell_condition = cell_condition
         self.gene_condition = gene_condition
+        self.use_hvg = use_hvg    # 使用hvg基因
+        self.select_data = select_data  # 🔥 将 X_CSRO_data.data ， 变成 输入 条件 { select_data = “ data ” }
 
         self.conn = duckdb.connect(file_path)
         self.conn.execute("PRAGMA preserve_insertion_order=false")
@@ -142,21 +145,34 @@ class FilterBuildIndex:
         print("✅ obs 重排完成")
 
 
-    # Step 2：重排 var（生成 filter_gene_id）
+    # Step 2：重排 var（生成 filter_gene_id） + HVG基因过滤
     def _rebuild_var_filter_id(self):
         print("Step 2：重排 var（生成 filter_gene_id）")
 
-        # 删除旧列
+        # -----------------------------
+        # 1️⃣ 删除旧列 + 新增列
+        # -----------------------------
         self.conn.execute("""
         ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id
         """)
 
-        # 新增列
         self.conn.execute("""
         ALTER TABLE var ADD COLUMN filter_gene_id INTEGER
         """)
 
-        # 只对满足过滤条件的 gene 重新编号
+        # -----------------------------
+        # 2️⃣ 构建过滤条件（🔥核心）
+        # -----------------------------
+        # 基础过滤条件（比如 filter_genes）
+        condition = f"({self.gene_condition})=TRUE"
+
+        # 如果启用 HVG，则叠加条件
+        if self.use_hvg:
+            condition += " AND highly_variable_genes=TRUE"
+
+        # -----------------------------
+        # 3️⃣ 重排 gene_id（只对符合条件的基因）
+        # -----------------------------
         self.conn.execute(f"""
         UPDATE var
         SET filter_gene_id = sub.new_id
@@ -165,19 +181,16 @@ class FilterBuildIndex:
                 atlas_gene_id,
                 ROW_NUMBER() OVER (ORDER BY atlas_gene_id) - 1 AS new_id
             FROM var
-            WHERE {self.gene_condition}=TRUE
+            WHERE {condition}
         ) AS sub
         WHERE var.atlas_gene_id = sub.atlas_gene_id
         """)
 
-        print("✅ var 重排完成")
-
+        print(f"✅ var 重排完成（use_hvg={self.use_hvg}）")
 
     # Step 3：重建 X_CSRO_data（核心逻辑）--> 直接生成新表：X_CSRO_data_filtered
     def _rebuild_X_chunked(self):
-        """
-        小内存 + 大数据版本（去掉 new_id，tid 均匀分片，带 tqdm 剩余时间）
-        """
+
         print("Step 3：重建 X_CSRO_data_filtered（去掉 new_id，tid 均匀分片）")
 
         # 删除旧表
@@ -189,7 +202,7 @@ class FilterBuildIndex:
             filter_cell_id INTEGER,    -- 新 cell id
             filter_gene_id USMALLINT,  -- 新 gene id
             data REAL,                 -- float32
-            tid TINYINT                -- 分片 id   可改 TINYINT	INT1	有符号的一字节整数
+            tid TINYINT                -- 分片 id   可改 TINYINT	INT1	有符号的一字节整数 -128 ~ 127
         )
         """)
 
@@ -211,7 +224,7 @@ class FilterBuildIndex:
             SELECT
                 obs.filter_cell_id,
                 var.filter_gene_id,
-                X_CSRO_data.data,
+                X_CSRO_data.{self.select_data},   -- 只取需要的列
                 ((ROW_NUMBER() OVER () - 1 + {global_offset}) // {self.fetch_size}) % {self.producer_num} AS tid
             FROM X_CSRO_data
             JOIN obs
