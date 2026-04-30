@@ -9,11 +9,11 @@ from ._kmeans import (
 )
 
 from ._qc import (
-    plot_highest_expr_genes_sql,
+    highest_expr_genes_sql,
     violin_qc_metrics,
     scatter_qc_metrics,
     highly_variable_genes_plot,
-    highly_variable_genes_plot_seurat_v3,
+    highly_variable_genes_plot_like_seurat_v3,
 )
 
 from ._umap import (

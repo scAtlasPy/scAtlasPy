@@ -1,7 +1,7 @@
 from ._pca import (
     StreamingPCA,
-    OnePassPCA,
     pca,
+    pca_simple,
 )
 
 from ._kmeans import (
@@ -11,6 +11,7 @@ from ._kmeans import (
 
 from ._umap import (
     umap,
+    parametric_umap,
 )
 
 from ._annotation import (

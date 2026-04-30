@@ -105,12 +105,19 @@ class FilterBuildIndex:
     def run(self):
         print("🚀 开始 CSR 过滤构建流程")
 
+        start = datetime.now()
+
         self._rebuild_obs_filter_id() # todo 补充，不需要过滤的情况 以及 其他过滤条件的情况
         self._rebuild_var_filter_id()
         self._rebuild_X_chunked()
         self._rebuild_indptr()
 
         self.conn.close()
+
+        print(" filter_build_index ，耗时: {:.2f} 秒".format(
+            (datetime.now() - start).total_seconds()
+        ))
+
         print("🎉 全流程完成（已得到真正 CSR 结构）")
 
 
@@ -212,20 +219,21 @@ class FilterBuildIndex:
         print(f"rowid 范围: {min_id} ~ {max_id}, 总行数: {total_rows}")
 
         current = min_id
-        global_offset = 0  # 🔥 保证全局连续行号
+        # global_offset = 0  # 🔥 保证全局连续行号 # todo 删掉
         pbar = tqdm(total=total_rows, unit="rows", desc="Processing X_CSRO_data", ncols=120)
 
         while current <= max_id:
             end = min(current + self.chunk_size, max_id + 1)
 
             # 使用 ROW_NUMBER() + global_offset 临时计算 tid，但不写入表
+            # 删掉 ((ROW_NUMBER() OVER () - 1 + {global_offset}) // {self.fetch_size}) % {self.producer_num} AS tid
             self.conn.execute(f"""
             INSERT INTO X_CSRO_data_filtered
             SELECT
                 obs.filter_cell_id,
                 var.filter_gene_id,
-                X_CSRO_data.{self.select_data},   -- 只取需要的列
-                ((ROW_NUMBER() OVER () - 1 + {global_offset}) // {self.fetch_size}) % {self.producer_num} AS tid
+                X_CSRO_data.{self.select_data},   -- 只取需要的列 
+                ((X_CSRO_data.rowid - {min_id}) // {self.fetch_size}) % {self.producer_num} AS tid
             FROM X_CSRO_data
             JOIN obs
               ON X_CSRO_data.atlas_cell_id = obs.atlas_cell_id
@@ -236,9 +244,10 @@ class FilterBuildIndex:
               AND var.filter_gene_id IS NOT NULL
             """)
 
-            # 更新 global_offset（累计已插入行数）
-            inserted = self.conn.execute("SELECT COUNT(*) FROM X_CSRO_data_filtered").fetchone()[0]
-            global_offset = inserted
+            # todo 删掉
+            # # 更新 global_offset（累计已插入行数）
+            # inserted = self.conn.execute("SELECT COUNT(*) FROM X_CSRO_data_filtered").fetchone()[0]
+            # global_offset = inserted
 
             # 更新进度条
             pbar.update(end - current)

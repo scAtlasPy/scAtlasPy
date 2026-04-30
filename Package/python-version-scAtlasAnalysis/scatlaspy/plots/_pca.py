@@ -82,12 +82,12 @@ def pca(
     # -------------------------------------------------
     if sample_n is None:
         pca_query = f"""
-            SELECT cell_id AS atlas_cell_id, {pcx}, {pcy}
+            SELECT atlas_cell_id, {pcx}, {pcy}
             FROM obsm_X_pca
         """
     else:
         pca_query = f"""
-            SELECT cell_id AS atlas_cell_id, {pcx}, {pcy}
+            SELECT atlas_cell_id, {pcx}, {pcy}
             FROM obsm_X_pca
             USING SAMPLE {int(sample_n)} ROWS
         """

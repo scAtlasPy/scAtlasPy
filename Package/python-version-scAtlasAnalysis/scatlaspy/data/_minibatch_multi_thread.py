@@ -104,6 +104,36 @@ class ShuffleBuffer:
 
         return batch
 
+    def flush_remaining(self):
+        """
+        ✅【新增】输出未凑满 buffer 的剩余 batch
+        防止数据集 batch 数 < buffer_batch_num 时，一个 batch 都不输出
+        """
+
+        if self.write_ptr == 0:
+            return []
+
+        n_cells = self.write_ptr
+
+        # 只打乱已经写入的 cell
+        perm = np.random.permutation(n_cells)
+        X_remain = self.X[:n_cells][perm]
+
+        batches = []
+
+        start = 0
+        while start < n_cells:
+            end = min(start + self.batch_size, n_cells)
+            batches.append(X_remain[start:end].copy())
+            start = end
+
+        # reset
+        self.write_ptr = 0
+        self.output_batch_id = 0
+        self.shuffled = False
+
+        return batches
+
 
 
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
@@ -181,6 +211,9 @@ class MinibatchFetchMultiThreads:
     """ 获取 indptr 的 rb 读取数据流 """
     def _prepare_indptr(self):
         conn = duckdb.connect(self.file_path)
+        conn.execute("PRAGMA enable_progress_bar=false")
+
+
         fetch_record_indptr = conn.execute(
             "SELECT indptr FROM X_CSRO_indptr_filtered"
         ).fetch_record_batch(rows_per_batch=self.batch_size)
@@ -195,6 +228,7 @@ class MinibatchFetchMultiThreads:
     """ 获取 batch_nnz : SQL 计算 """
     def _prepare_batch_nnz_sql(self):
         conn = duckdb.connect(self.file_path)
+        conn.execute("PRAGMA enable_progress_bar=false")
 
         query = f"""
         WITH t AS (
@@ -220,6 +254,7 @@ class MinibatchFetchMultiThreads:
 
         t0 = time.time()
         conn = duckdb.connect(self.file_path)
+        conn.execute("PRAGMA enable_progress_bar=false")
 
         batch_nnz = []  # 每个 batch 的 nnz 数
         prev = 0  # 上一个 batch 的 nnz 累积值
@@ -257,11 +292,24 @@ class MinibatchFetchMultiThreads:
 
     """ producer: 多线程 切分data ，写入queue中  """
     def _producer(self, tid):
-        
+
         conn = duckdb.connect(self.file_path)
+        conn.execute("PRAGMA enable_progress_bar=false")
+        # ✅ 修改1：producer 总计时开始
+        t0 = time.time()
+        print(f"[Producer-{tid}] start")
 
         query = f"SELECT filter_gene_id, data FROM X_CSRO_data_filtered WHERE tid={tid};"
         result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
+
+        # ✅ 修改3：记录 SQL 创建/启动耗时
+        t_query = time.time()
+        result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
+        print(f"[Producer-{tid}] query ready, cost={time.time() - t_query:.2f}s")
+
+        # ✅ 修改4：统计这个 producer 读了多少个 record batch / nnz
+        rb_count = 0
+        nnz_count = 0
 
         for rb in result: # fetch_record_batch 流式读取的 结果 rb =（ gene_id ，data ）
 
@@ -277,12 +325,28 @@ class MinibatchFetchMultiThreads:
             #  [ 0 , gene_id, data ] --- 表示第0块数据
             #  [ 1 , gene_id, data ] --- 表示第1块数据
 
-            print(f"[Producer-{tid}] seq={seq_id}, nnz={len(gene_id)}")
+            # print(f"[Producer-{tid}] seq={seq_id}, nnz={len(gene_id)}")
+            # ✅ 修改5：每读 5 个 record batch 打印一次进度
+            if rb_count % 5 == 0:
+                elapsed = time.time() - t0
+                print(
+                    f"[Producer-{tid}] rb={rb_count}, "
+                    f"nnz={nnz_count:,}, "
+                    f"speed={nnz_count / (elapsed + 1e-8):,.0f} nnz/s"
+                )
 
         conn.close()
 
+        # ✅ 修改6：producer 完成总耗时
+        print(
+            f"[Producer-{tid}] done, "
+            f"rb={rb_count}, "
+            f"nnz={nnz_count:,}, "
+            f"time={time.time() - t0:.2f}s"
+        )
+
         self.queue.put(None)  # 哨兵，结束信号（poison pill），告诉 Consumer：这个 Producer 已经“没数据了”
-        print(f"[Producer-{tid}] 完成")
+        # print(f"[Producer-{tid}] 完成")
 
 
     ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''
@@ -418,7 +482,7 @@ class MinibatchFetchMultiThreads:
 
 
                     if self.pass_mode == "single-pass": # 单次遍历
-                        # print("single-pass 输出一个 随机 batch")
+                        print("single-pass 输出一个 随机 batch")
                         self.out_queue.put(X_dense.copy())
 
                     if self.pass_mode == "multi-pass":  # 多次遍历 （加入缓存区，保证多次的随机性）
@@ -426,17 +490,25 @@ class MinibatchFetchMultiThreads:
                         shuffle_buffer.add_batch(X_dense) # 写入 输出缓存区 shuffle buffer
                         X_dense_random = shuffle_buffer.sample_batch() # 从 输出缓存区 随机采样 batch ， 保证多次遍历的随机性
                         if X_dense_random is not None:
-                            # print("multi-pass 输出一个 随机 batch")
+                            print("multi-pass 输出一个 随机 batch")
                             self.out_queue.put(X_dense_random.copy())
                             # 你每轮都会复用同一块 buffer
                             # 👉 不 copy 会被覆盖
-                            # yield X_dense_random
 
                 elapsed = time.time() - t_start
                 print(f"[Consumer] batch {self.batch_idx}, batch/s={self.batch_idx / (elapsed + 1e-8):.2f}")
 
                 self.batch_idx += 1
                 self.total_batches += 1
+
+        # todo 修改
+        #  ✅【新增】multi-pass 模式：输出 ShuffleBuffer 里没凑满的尾部 batch
+        if self.X_type == "dense" and self.pass_mode == "multi-pass":
+            remain_batches = shuffle_buffer.flush_remaining()
+
+            for X_remain in remain_batches:
+                print("multi-pass 输出尾部随机 batch")
+                self.out_queue.put(X_remain.copy())
 
         print(f"[Done] total_batches={self.total_batches}")
 
@@ -464,7 +536,7 @@ class MinibatchFetchMultiThreads:
                 break
             yield batch  # 正常 batch 继续向外 yield
 
-        print("  while ... 处理完毕 ✅")
+        # print("  while ... 处理完毕 ✅")
 
         for t in producers:
             t.join()

@@ -1,3 +1,8 @@
+import matplotlib
+matplotlib.use("Agg")
+# Matplotlib 正在用 tkagg 图形后端。
+# 但你前面代码里有多线程、UMAP、可能还有旧图窗口对象。Tkinter 要求 GUI 操作必须在主线程，结果对象析构时不在主线程，就打印了这个异常。
+# 在导入 scanpy / matplotlib / scatlaspy 之前，强制换成非交互后端：
 import scatlaspy as sap
 
 # 1. 建立数据库
@@ -5,10 +10,14 @@ import scatlaspy as sap
 # file_path = r"E:\python\data\FullMouseBrain_raw.h5ad" # 833206 * 17745
 
 # atlas = sap.Atlas("test_jax",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
-file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\adata_JAX_dataset_1.h5ad"
+# file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\adata_JAX_dataset_1.h5ad"
 # 2840130 x 24552
 
-atlas = sap.Atlas("test_pbmc3k",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
+atlas = sap.Atlas("ParseGigalab_1",path=r"Y:\scAtlaspy-database")
+file_path = r"Y:\scAtlaspy-Dataset\100M\tahoe100M_2025-02-25_h5ad_plate1_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad"
+# [数据规模]: 5481420 x 62710
+
+# atlas = sap.Atlas("test_pbmc3k",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
 # import scanpy as sc
 # adata = sc.datasets.pbmc3k()
 # sap.io.load_AnnData(adata,atlas)
@@ -28,39 +37,44 @@ sap.io.load_big_h5ad_to_duckdb_random(file_path , atlas) # 大数据导入 ，�
 # # “最高表达基因占比图（highest expressed genes）”
 # # 👉 用来检查 有没有少数基因“垄断”表达（技术偏差）
 # 画图：
-# 1. 日常 / 大数据 / 正式流程
-sap.pl.plot_highest_expr_genes_sql(
+#  日常 / 大数据 / 正式流程
+sap.pl.highest_expr_genes_sql(
     atlas,
     n_top=20,
-    use_all_cells=False,
-    show_outliers=False,
+    use_all_cells=False, # 不用所有细胞
+    show_outliers=False, # 不绘制离群点
 )
-# 2. 小数据 / 和 Scanpy 对齐 / 做展示图
-sap.pl.plot_highest_expr_genes_sql(
+#  小数据 / 和 Scanpy 对齐 / 做展示图
+sap.pl.highest_expr_genes_sql(
     atlas,
     n_top=20,
     use_all_cells=True,
     show_outliers=True,
-    max_outliers=5000,
+    max_outliers=5000, # 每个基因最多绘制多少个离群点
 )
 
 # 3. 过滤 filter_cells & filter_genes
 sap.pp.filter_cells(atlas, min_genes=200)
+sap.pp.filter_cells_chunked(atlas, min_genes=200) # todo 理论上可支持 1亿 细胞
 sap.pp.filter_genes(atlas, min_cells=3)
+sap.pp.filter_genes_no_fetchall(atlas, min_cells=3) # todo 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
 
 # 4. QC
+sap.pp.calculate_qc_metrics_fast(atlas)
 sap.pp.calculate_qc_metrics(atlas)
+sap.pp.calculate_qc_metrics_new(atlas) # todo 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
 
 # 可视化QC指标（这里放！） 画 QC 小提琴图（这里最合适）
 sap.pl.violin_qc_metrics(atlas)
-sap.pl.violin_qc_metrics( atlas,sample_n = 50000 ) # 数据特别大，想限制绘图点数
+sap.pl.violin_qc_metrics( atlas,sample_n = 100000 ) # 数据特别大，想限制绘图点数
 
 # QC 散点图（scatter plot
 sap.pl.scatter_qc_metrics(atlas)   # 👈 这个就放这里
-sap.pl.scatter_qc_metrics(atlas,sample_n=20000)
+sap.pl.scatter_qc_metrics(atlas,sample_n=100000)
 
 # 5. calculate_cell_total_counts & calculate_gene_total_counts
 sap.pp.calculate_cell_total_counts(atlas)
+sap.pp.calculate_cell_total_counts_chunked(atlas) # todo 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
 sap.pp.calculate_gene_total_counts(atlas)
 
 # 6. 归一化 normalize_total
@@ -77,14 +91,13 @@ sap.pp.normalize_and_log1p(atlas) # normalize 法2  + log1p法1
 
 # 8. 特征选择：识别高变基因
 sap.pp.highly_variable_genes(atlas) # 识别高变基因
-sap.pp.highly_variable_genes_seurat_v3(atlas)  # 识别高变基因 seurat_v3
+sap.pp.highly_variable_genes_like_seurat_v3(atlas)  # 识别高变基因 seurat_v3
 sap.pl.highly_variable_genes_plot(atlas) # 高变基因 可视化
-sap.pl.highly_variable_genes_plot_seurat_v3(atlas)
+sap.pl.highly_variable_genes_plot_like_seurat_v3(atlas)
 
 # 9. scale：进行 z-score转换
-sap.pp.scale(atlas)       # 法1：分块,内存安全，适合大数据，稍慢
+sap.pp.scale(atlas)       # 法1：分块,内存安全，适合大数据，稍慢，不产生大量临时数据
 sap.pp.scale_fast(atlas)  # 法2：不分块，内存不安全，适合小数据，较快
-sap.pp.scale_id_chunk(atlas) # 法3 ：不产生大量临时数据
 
 # 10.sqrt
 sap.pp.sqrt(atlas)        # 法1：分块,内存安全，适合大数据，稍慢
@@ -107,7 +120,9 @@ sap.io.export_duckdb_to_h5ad(atlas,file_path) # 导出文件
 # =========================================================
 
 # 计算层：训练 PCA + 写入 obsm_X_pca / varm_PCs / uns_pca_stats
-sap.tl.pca(atlas, n_components=50)
+sap.tl.pca(atlas, n_components=50) # 神经网络训练 minibatch pca
+sap.tl.pca_simple(atlas, n_components=50) # 全量的pca
+# [PCA] total time = 3277.15 seconds
 
 # 可视化层：只读 PCA 结果
 sap.pl.pca_variance_ratio(atlas, n_pcs=50)
@@ -135,16 +150,111 @@ sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
 # =========================================================
 
 # 计算层：基于 obsm_X_pca 计算 UMAP，写入 obsm_X_umap
+# todo 方法 1 ： 传统 umap 抽样转换显示
 sap.tl.umap(
     atlas,
-    fit_sample_n=50000,
-    transform_batch_size=50000,
+    fit_sample_n=50000,          # ✅ 抽样训练
+    transform_batch_size=50000,  # ✅ 全量分批 transform
     n_neighbors=15,
     min_dist=0.5
 )
+# 全量分批画 gene feature
+# ⚠️ 目前不支持
+sap.pl.umap(
+    atlas,
+    color="kmeans",
+    sample_n=200000,    # ✅ 全量画图
+    point_size=1.0,
+    alpha=0.8,
+    plot_batch_size=200000   # ✅ 分批加载画图
+)
+
+
+
+# todo 方法 2 ： parametric_umap 神经网络训练
+sap.tl.parametric_umap(
+    atlas,
+    fit_sample_n = 100_000, # ⭐ graph规模（最重要）
+    transform_batch_size=50_000,
+    n_neighbors = 15, # ⭐ UMAP参数
+    min_dist = 0.3,
+    hidden_units = (256,128),  # ⭐ 模型
+    n_training_epochs = 2,  # ⭐ 训练强度  10 * n_training_epochs 轮
+    batch_size = 4096,
+    eval_sample_n=10_000 # ⭐ 评估
+)
+
+# fit_sample_n = 200,000
+# 全量 transform = 831,488 cells
+# 总耗时 = 104.69s
+# 指标	当前	解读
+# Trustworthiness	0.8745	可用，但局部结构保留一般
+# KNN overlap	0.1649	偏低，近邻保持不强
+
+# 训练样本	831,488	真正全量训练了
+# fit 耗时	463.94s	CPU 下正常
+# transform 耗时	2.94s	非常快
+# Trustworthiness	0.8911	中等，接近可用
+# KNN overlap	0.1833	偏低
+# loss	0.1676 → 0.1605	收敛了
+# 结论：代码跑通，训练稳定，但 embedding 质量还可以继续调。
+
+# n_neighbors=30
+# min_dist=0.3
+# batch_size=4096
+# fit_sample_n=None  # 全量 831,488
+# 指标	上一次	这一次	变化
+# Trustworthiness	0.8911	0.9085	✅ 提升
+# KNN overlap	0.1833	0.2710	✅ 明显提升
+# 总耗时	466.89s	495.27s	稍慢
+# transform 全量	2.94s	2.91s	基本一样
+
+
+# 2800000细胞
+# [ParametricUMAP] All done in 454.34s ✅
+# Trustworthiness = 0.8349  → ✅ 可用 / 中等偏上
+# KNN overlap = 0.1497  → ❌ 偏低
+
+# ③ 网络太小
+# 你现在：
+# 50 → 256 → 128 → 2
+# 👉 参数：
+# 47K
+# 👉 对 50万细胞：
+# 👉 有点小了
+
+# sap.tl.parametric_umap(
+#     atlas,
+#     # ⭐ graph规模（最重要）
+#     fit_sample_n = 200_000,
+#     transform_batch_size = 50_000,
+#     # ⭐ UMAP参数
+#     n_neighbors = 15,
+#     min_dist = 0.3,
+#     # ⭐ 模型
+#     hidden_units = (512, 256, 64),
+#     # ⭐ 训练强度
+#     n_training_epochs = 5,
+#     # ⭐ edge batch
+#     batch_size = 4096,
+#     # ⭐ 评估
+#     eval_sample_n = 10_000
+# )
+#  1550 秒 ≈ 26 分钟
+# Trustworthiness 0.88 → 正常（可用） 0.90+ → 很好
+# KNN overlap  0.14 → 偏低
 
 # 可视化层：按 cluster 上色
-sap.pl.umap(atlas, color="kmeans")
+sap.pl.umap(atlas, color="kmeans" , use_expr_field="data_scale")
+# 分批加载 全量画图 ， 和sap.pl.umap(atlas, color="kmeans") 更像的参数
+sap.pl.umap(
+    atlas,
+    color="kmeans",
+    sample_n=None,    # ✅ 全量画图 None
+    point_size=1.0,
+    alpha=0.8,
+    plot_batch_size=200000   # ✅ 分批加载画图
+)
 
 # 可视化层：多个 marker gene 上色
 sap.pl.umap(

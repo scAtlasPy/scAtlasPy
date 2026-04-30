@@ -39,12 +39,12 @@ import math
 # 导入完数据，直接画图:
 # “最高表达基因占比图（highest expressed genes）”
 # 👉 用来检查 有没有少数基因“垄断”表达（技术偏差）
-def plot_highest_expr_genes_sql(
+def highest_expr_genes_sql(
         atlas,
         n_top: int = 20,
         use_all_cells: bool = True,     # ✅ 更接近 Scanpy 语义
         show_outliers: bool = False,    # ✅ 是否绘制离群点
-        max_outliers: int = 2000,       # ✅ 每个基因最多绘制多少个离群点
+        max_outliers: int = 5000,       # ✅ 每个基因最多绘制多少个离群点
         figsize=(12, 10)
 ):
     """
@@ -1060,7 +1060,7 @@ def highly_variable_genes_plot(
 
 
 
-def highly_variable_genes_plot_seurat_v3(
+def highly_variable_genes_plot_like_seurat_v3(
         atlas,
         hvg_key: str = "highly_variable_genes",
         mean_key: str = "means",

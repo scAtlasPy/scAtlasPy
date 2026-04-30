@@ -113,10 +113,13 @@ from ..data import Atlas
 # Scanpy 风格 UMAP 可视化入口。
 # 只负责画图，不计算 UMAP，不训练 KMeans。
 # 统一入口
+# Scanpy 风格 UMAP 可视化入口。
+# 只负责画图，不计算 UMAP，不训练 KMeans。
 def umap(
         atlas: Atlas,
         color: str | list[str] = "kmeans",
         sample_n: int | None = 50000,
+        where: str | None = None,
         use_expr_field: str = "data_log1p",
         ncols: int = 3,
         figsize=None,
@@ -124,32 +127,25 @@ def umap(
         alpha: float = 0.9,
         legend_loc: str = "right_margin",
         frameon: bool = False,
-        save_path: str | None = None
+        save_path: str | None = None,
+        # ✅【新增】sample_n=None 全量绘图时，每批读取多少细胞
+        plot_batch_size: int = 200000
 ):
     """
-    Scanpy 风格 UMAP 可视化入口。
+    Scanpy 风格 UMAP 可视化入口（简化版）
 
-    只负责画图，不计算 UMAP，不训练 KMeans。
-
-    前提
-    ----
-    请先运行：
-        sap.tl.pca(atlas)
-        sap.tl.kmeans(atlas)
-        sap.tl.umap(atlas)
+    支持：
+    - SQL过滤（where）
+    - SQL抽样（sample_n）
+    - obs 分类 / gene feature 混合绘图
 
     用法
     ----
-    sap.pl.umap(atlas, color="kmeans")
-
     sap.pl.umap(
         atlas,
-        color="CST3"
-    )
-
-    sap.pl.umap(
-        atlas,
-        color=["kmeans", "CST3", "NKG7"]
+        color="cell_type_auto",
+        where="cell_type_auto_confidence IN ('high','medium')",
+        sample_n=100000
     )
     """
 
@@ -167,6 +163,12 @@ def umap(
 
     if len(color_list) == 0:
         raise ValueError("color 不能为空")
+
+    print(f"[UMAP] color = {color_list}")
+    print(f"[UMAP] sample_n = {sample_n}")
+
+    if where is not None and str(where).strip() != "":
+        print(f"[UMAP] where = {where}")
 
     # -------------------------------------------------
     # 1️⃣ 检查 obsm_X_umap 是否存在
@@ -196,7 +198,7 @@ def umap(
     gene_set = set(gene_df["atlas_gene_name"].astype(str).tolist())
 
     # -------------------------------------------------
-    # 3️⃣ 判断 color 是 obs 列还是 gene
+    # 3️⃣ 判断 color 类型
     # -------------------------------------------------
     obs_colors = []
     gene_colors = []
@@ -212,8 +214,8 @@ def umap(
 
         else:
             raise ValueError(
-                f"color='{c}' 既不是 obs 中的列，也不是 var 中的基因名。\n"
-                f"如果你想按聚类上色，请确认已经运行 sap.tl.kmeans(atlas)，并且 obs 中存在 kmeans 列。"
+                f"color='{c}' 既不是 obs 列，也不是 gene 名。\n"
+                f"请确认 obs 或 var 中存在该字段。"
             )
 
     # -------------------------------------------------
@@ -224,21 +226,24 @@ def umap(
             atlas=atlas,
             color=obs_colors[0],
             sample_n=sample_n,
+            where=where,
             legend_loc=legend_loc,
             point_size=point_size,
             alpha=alpha,
             frameon=frameon,
-            save_path=save_path
+            save_path=save_path,
+            plot_batch_size=plot_batch_size,  # ✅【新增】
         )
 
     # -------------------------------------------------
-    # 5️⃣ 单个 / 多个 gene feature 图
+    # 5️⃣ 纯 gene feature 图
     # -------------------------------------------------
     if len(obs_colors) == 0 and len(gene_colors) > 0:
         return plot_umap_features(
             atlas=atlas,
             genes=gene_colors,
             sample_n=sample_n,
+            where=where,
             use_expr_field=use_expr_field,
             ncols=ncols,
             figsize=figsize,
@@ -247,8 +252,7 @@ def umap(
         )
 
     # -------------------------------------------------
-    # 6️⃣ 混合模式：obs + genes
-    #    最小稳定版：分开画
+    # 6️⃣ 混合模式
     # -------------------------------------------------
     result = {}
 
@@ -257,11 +261,13 @@ def umap(
             atlas=atlas,
             color=obs_col,
             sample_n=sample_n,
+            where=where,
             legend_loc=legend_loc,
             point_size=point_size,
             alpha=alpha,
             frameon=frameon,
-            save_path=None
+            save_path=None,
+            plot_batch_size=plot_batch_size,  # ✅【新增】
         )
 
     if len(gene_colors) > 0:
@@ -269,6 +275,7 @@ def umap(
             atlas=atlas,
             genes=gene_colors,
             sample_n=sample_n,
+            where=where,
             use_expr_field=use_expr_field,
             ncols=ncols,
             figsize=figsize,
@@ -293,7 +300,9 @@ def plot_umap_obs(
         point_size: float = 8,
         alpha: float = 0.9,
         frameon: bool = False,
-        save_path: str | None = None
+        save_path: str | None = None,
+        # ✅【新增】全量绘图分批读取
+        plot_batch_size: int = 200000
 ):
     """
     数据库版 Scanpy 风格 UMAP categorical plot
@@ -356,8 +365,8 @@ def plot_umap_obs(
         raise ValueError(f"obs 中不存在列: {color}")
     if "atlas_cell_id" not in obs_cols:
         raise ValueError("obs 中不存在 atlas_cell_id")
-    if "cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
-        raise ValueError("obsm_X_umap 需要包含 cell_id / umap1 / umap2")
+    if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
+        raise ValueError("obsm_X_umap 需要包含 atlas_cell_id / umap1 / umap2")
 
     # -------------------------------------------------
     # 1️⃣ 构造过滤条件
@@ -379,34 +388,50 @@ def plot_umap_obs(
     if sample_n is None:
         query = f"""
             SELECT
-                u.cell_id,
+                u.atlas_cell_id,
                 u.umap1,
                 u.umap2,
                 CAST(o.{color} AS TEXT) AS color_label
             FROM obsm_X_umap u
             JOIN obs o
-              ON u.cell_id = o.atlas_cell_id
+              ON u.atlas_cell_id = o.atlas_cell_id
             WHERE {where_sql}
-            ORDER BY u.cell_id
+            ORDER BY u.atlas_cell_id
         """
     else:
         query = f"""
             SELECT *
             FROM (
                 SELECT
-                    u.cell_id,
+                    u.atlas_cell_id,
                     u.umap1,
                     u.umap2,
                     CAST(o.{color} AS TEXT) AS color_label
                 FROM obsm_X_umap u
                 JOIN obs o
-                  ON u.cell_id = o.atlas_cell_id
+                  ON u.atlas_cell_id = o.atlas_cell_id
                 WHERE {where_sql}
-                USING SAMPLE {int(sample_n)} ROWS
             ) t
-            ORDER BY cell_id
+            USING SAMPLE {int(sample_n)} ROWS
+            ORDER BY atlas_cell_id
         """
 
+    # ✅【新增】sample_n=None 时，走全量 streaming 绘图，避免一次性 fetchdf 爆内存
+    if sample_n is None:
+        return _draw_umap_obs_streaming(
+            atlas=atlas,
+            color=color,
+            where_sql=where_sql,
+            legend_loc=legend_loc,
+            title=title,
+            point_size=point_size,
+            alpha=alpha,
+            frameon=frameon,
+            save_path=save_path,
+            plot_batch_size=plot_batch_size
+        )
+
+    # ✅ sample_n 不是 None 时，仍然走原来的抽样绘图
     plot_df = conn.execute(query).fetchdf()
 
     if len(plot_df) == 0:
@@ -532,13 +557,233 @@ def plot_umap_obs(
     return plot_df
 
 
+def _draw_umap_obs_streaming(
+        atlas,
+        color: str,
+        where_sql: str,
+        legend_loc: str = "right_margin",
+        title: str | None = None,
+        point_size: float = 0.3,
+        alpha: float = 0.5,
+        frameon: bool = False,
+        save_path: str | None = None,
+        plot_batch_size: int = 200000
+):
+    """
+    小内存全量 UMAP 分类图。
+
+    sample_n=None 时使用：
+    - 不一次性 fetchdf 全量
+    - 每次只读取 plot_batch_size 行
+    - 分批 scatter 到同一张图
+    """
+
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    print("\n==== plot_umap_obs_streaming_full ====")
+
+    conn = atlas.connection
+
+    # -------------------------------------------------
+    # 1️⃣ 先取全部类别，用于固定颜色
+    # -------------------------------------------------
+    label_df = conn.execute(f"""
+        SELECT DISTINCT CAST(o.{color} AS TEXT) AS color_label
+        FROM obsm_X_umap u
+        JOIN obs o
+          ON u.atlas_cell_id = o.atlas_cell_id
+        WHERE {where_sql}
+        ORDER BY color_label
+    """).fetchdf()
+
+    if len(label_df) == 0:
+        raise ValueError("筛选后没有可绘制的细胞")
+
+    unique_labels = label_df["color_label"].astype(str).tolist()
+
+    # -------------------------------------------------
+    # 2️⃣ 调色板
+    # -------------------------------------------------
+    palette = []
+
+    for cmap_name in ["tab20", "tab20b", "tab20c", "Set3", "Paired", "Accent", "Dark2"]:
+        cmap = plt.get_cmap(cmap_name)
+        if hasattr(cmap, "colors"):
+            palette.extend(list(cmap.colors))
+
+    if len(palette) < len(unique_labels):
+        hsv = plt.get_cmap("hsv")
+        palette.extend([
+            hsv(i / max(len(unique_labels), 1))
+            for i in range(len(unique_labels))
+        ])
+
+    palette = palette[:len(unique_labels)]
+
+    label_to_color = {
+        lab: palette[i]
+        for i, lab in enumerate(unique_labels)
+    }
+
+    # -------------------------------------------------
+    # 3️⃣ 建图
+    # -------------------------------------------------
+    fig, ax = plt.subplots(figsize=(7.0, 6.5), facecolor="white")
+    ax.set_facecolor("white")
+
+    # -------------------------------------------------
+    # 4️⃣ 分批读取 + 分批画图
+    # -------------------------------------------------
+    last_cell_id = -1
+    total_drawn = 0
+
+    while True:
+
+        batch_df = conn.execute(f"""
+            SELECT
+                u.atlas_cell_id,
+                u.umap1,
+                u.umap2,
+                CAST(o.{color} AS TEXT) AS color_label
+            FROM obsm_X_umap u
+            JOIN obs o
+              ON u.atlas_cell_id = o.atlas_cell_id
+            WHERE {where_sql}
+              AND u.atlas_cell_id > {int(last_cell_id)}
+            ORDER BY u.atlas_cell_id
+            LIMIT {int(plot_batch_size)}
+        """).fetchdf()
+
+        if len(batch_df) == 0:
+            break
+
+        last_cell_id = int(batch_df["atlas_cell_id"].iloc[-1])
+        total_drawn += len(batch_df)
+
+        for lab in unique_labels:
+            sub = batch_df[batch_df["color_label"].astype(str) == lab]
+
+            if len(sub) == 0:
+                continue
+
+            ax.scatter(
+                sub["umap1"].to_numpy(),
+                sub["umap2"].to_numpy(),
+                s=point_size,
+                alpha=alpha,
+                c=[label_to_color[lab]],
+                linewidths=0,
+                rasterized=True
+            )
+
+        print(f"[UMAP streaming] drawn cells = {total_drawn:,}")
+
+    # -------------------------------------------------
+    # 5️⃣ 标题
+    # -------------------------------------------------
+    if title is None:
+        title = color
+
+    ax.set_title(title, fontsize=18, weight="normal", pad=10)
+    ax.set_xlabel("UMAP1", fontsize=16)
+    ax.set_ylabel("UMAP2", fontsize=16)
+
+    # -------------------------------------------------
+    # 6️⃣ 图例
+    # -------------------------------------------------
+    if legend_loc == "right_margin":
+        legend_handles = [
+            Line2D(
+                [0], [0],
+                marker="o",
+                color="w",
+                label=str(lab),
+                markerfacecolor=label_to_color[lab],
+                markersize=9
+            )
+            for lab in unique_labels
+        ]
+
+        ax.legend(
+            handles=legend_handles,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=False,
+            borderaxespad=0.0,
+            handlelength=0.8,
+            handletextpad=0.4,
+            fontsize=11
+        )
+
+    elif legend_loc == "on_data":
+        center_df = conn.execute(f"""
+            SELECT
+                CAST(o.{color} AS TEXT) AS color_label,
+                AVG(u.umap1) AS x_center,
+                AVG(u.umap2) AS y_center
+            FROM obsm_X_umap u
+            JOIN obs o
+              ON u.atlas_cell_id = o.atlas_cell_id
+            WHERE {where_sql}
+            GROUP BY CAST(o.{color} AS TEXT)
+        """).fetchdf()
+
+        for _, row in center_df.iterrows():
+            ax.text(
+                row["x_center"],
+                row["y_center"],
+                str(row["color_label"]),
+                fontsize=12,
+                weight="bold",
+                ha="center",
+                va="center"
+            )
+
+    else:
+        raise ValueError("legend_loc 只能是 'right_margin' 或 'on_data'")
+
+    # -------------------------------------------------
+    # 7️⃣ 样式
+    # -------------------------------------------------
+    ax.grid(False)
+
+    if not frameon:
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_visible(False)
+        ax.spines["bottom"].set_visible(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+    else:
+        ax.spines["left"].set_linewidth(1.0)
+        ax.spines["bottom"].set_linewidth(1.0)
+        ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
+
+    plt.tight_layout()
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.show()
+
+    print(f"[UMAP streaming] Done, total drawn = {total_drawn:,}")
+
+    return None
+
+
+
 # UMAP 基因表达图
 # 把已经算好的 UMAP 坐标，按多个基因表达值着色，画成 Scanpy 那种 sc.pl.umap(..., color=[...]) 风格图。
+# UMAP 基因表达图
+# 把已经算好的 UMAP 坐标，按多个基因表达值着色，
+# 画成 Scanpy 那种 sc.pl.umap(..., color=[...]) 风格图。
 def plot_umap_features(
         atlas,
         genes,
-        sample_n: int | None = 50000,         # SQL先抽样，适合大数据
-        use_expr_field: str = "data_scale",   # "data" / "data_log1p" / "data_scale"
+        sample_n: int | None = 50000,          # SQL先抽样，适合大数据
+        where: str | None = None,              # ✅【新增】：SQL过滤条件
+        use_expr_field: str = "data_scale",    # "data" / "data_log1p" / "data_scale"
         ncols: int = 3,
         figsize=None,
         point_size: float = 8,
@@ -547,25 +792,17 @@ def plot_umap_features(
     """
     数据库版 Scanpy 风格 UMAP feature plot
 
-    参数
-    ----
-    atlas : Atlas
-        Atlas 对象
-    genes : list[str] | str
-        要上色的基因名，比如 ["CST3", "NKG7", "PPBP"]
-    sample_n : int | None
-        抽样多少细胞。None 表示不抽样（大数据不推荐）
-    use_expr_field : str
-        表达值列名，比如 "data" / "data_log1p" / "data_scale"
-    ncols : int
-        每行多少列
-    figsize : tuple | None
-        图大小；None 时自动计算
-    point_size : float
-        点大小
-    alpha : float
-        点透明度
+    支持：
+    1. SQL 过滤 where
+    2. SQL 抽样 sample_n
+    3. 多基因 feature plot
+    4. data_scale 缺失值自动补 zero_scale_transform
     """
+
+    import math
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from datetime import datetime
 
     print("\n==== plot_umap_features ====")
     start = datetime.now()
@@ -577,58 +814,107 @@ def plot_umap_features(
     if len(genes) == 0:
         raise ValueError("genes 不能为空")
 
+    print(f"[UMAP features] genes = {genes}")
+    print(f"[UMAP features] sample_n = {sample_n}")
+    if where is not None and str(where).strip() != "":
+        print(f"[UMAP features] where = {where}")
+
     # -------------------------------------------------
     # 0️⃣ 检查表和列
     # -------------------------------------------------
     tables = conn.execute("""
         SELECT table_name
         FROM information_schema.tables
-        WHERE table_name = 'obsm_X_umap'
-    """).fetchdf()
+        WHERE table_name IN ('obsm_X_umap', 'obs', 'var', 'X_CSRO_data')
+    """).fetchdf()["table_name"].tolist()
 
-    if len(tables) == 0:
+    if "obsm_X_umap" not in tables:
         raise ValueError("数据库中不存在 obsm_X_umap，请先运行 sap.tl.umap(atlas)")
+    if "obs" not in tables:
+        raise ValueError("数据库中不存在 obs")
+    if "var" not in tables:
+        raise ValueError("数据库中不存在 var")
+    if "X_CSRO_data" not in tables:
+        raise ValueError("数据库中不存在 X_CSRO_data")
 
     umap_cols = [r[1] for r in conn.execute("PRAGMA table_info(obsm_X_umap)").fetchall()]
-    if "umap1" not in umap_cols or "umap2" not in umap_cols:
-        raise ValueError("obsm_X_umap 中不存在 umap1 / umap2")
-
+    obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_CSRO_data)").fetchall()]
+    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
+
+    if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
+        raise ValueError("obsm_X_umap 需要包含 atlas_cell_id / umap1 / umap2")
+
+    if "atlas_cell_id" not in obs_cols:
+        raise ValueError("obs 中不存在 atlas_cell_id")
+
+    if "atlas_cell_id" not in x_cols or "atlas_gene_id" not in x_cols:
+        raise ValueError("X_CSRO_data 需要包含 atlas_cell_id / atlas_gene_id")
+
     if use_expr_field not in x_cols:
         raise ValueError(f"X_CSRO_data 中不存在字段: {use_expr_field}")
 
-    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
+    if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
+        raise ValueError("var 需要包含 atlas_gene_id / atlas_gene_name")
 
     # -------------------------------------------------
-    # 1️⃣ SQL 先抽样 UMAP 细胞
+    # 1️⃣ SQL 先过滤，再抽样 UMAP 细胞
     # -------------------------------------------------
+    where_sql = ""
+
+    if where is not None and str(where).strip() != "":
+        # ✅ 这里允许用户写：
+        # where="cell_type_auto_confidence IN ('high','medium')"
+        # 或者：
+        # where="o.cell_type_auto_confidence IN ('high','medium')"
+        where_sql = f"WHERE {where}"
+
     if sample_n is None:
-        umap_query = """
-            SELECT cell_id AS atlas_cell_id, umap1, umap2
-            FROM obsm_X_umap
+        umap_query = f"""
+            SELECT
+                u.atlas_cell_id,
+                u.umap1,
+                u.umap2
+            FROM obsm_X_umap u
+            JOIN obs o
+              ON u.atlas_cell_id = o.atlas_cell_id
+            {where_sql}
+            ORDER BY u.atlas_cell_id
         """
     else:
         umap_query = f"""
-            SELECT cell_id AS atlas_cell_id, umap1, umap2
-            FROM obsm_X_umap
+            SELECT *
+            FROM (
+                SELECT
+                    u.atlas_cell_id,
+                    u.umap1,
+                    u.umap2
+                FROM obsm_X_umap u
+                JOIN obs o
+                  ON u.atlas_cell_id = o.atlas_cell_id
+                {where_sql}
+            ) t
             USING SAMPLE {int(sample_n)} ROWS
+            ORDER BY atlas_cell_id
         """
 
     umap_df = conn.execute(umap_query).fetchdf()
 
     if len(umap_df) == 0:
-        raise ValueError("obsm_X_umap 为空，无法作图")
+        raise ValueError("筛选 / 抽样后没有可绘制的细胞")
+
+    print(f"[UMAP features] plotted cells = {len(umap_df):,}")
 
     # -------------------------------------------------
-    # 2️⃣ 先查 gene_id（以及 data_scale 时需要的 zero_scale_transform）
+    # 2️⃣ 查询 gene_id
     # -------------------------------------------------
-    gene_name_sql = ", ".join([f"'{g}'" for g in genes])
+    gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
 
     if use_expr_field == "data_scale":
         if "zero_scale_transform" not in var_cols:
             raise ValueError(
                 "var 中不存在 zero_scale_transform。\n"
-                "请先运行你那套会写入 zero_scale_transform 的 scale 流程。"
+                "请先运行 scale 流程写入 zero_scale_transform。"
             )
 
         gene_map_df = conn.execute(f"""
@@ -639,6 +925,7 @@ def plot_umap_features(
             FROM var
             WHERE atlas_gene_name IN ({gene_name_sql})
         """).fetchdf()
+
     else:
         gene_map_df = conn.execute(f"""
             SELECT
@@ -676,7 +963,6 @@ def plot_umap_features(
 
     # -------------------------------------------------
     # 4️⃣ 逐个 gene 取表达
-    #     🔥关键修改：data_scale 时，缺失补 zero_scale_transform，不补0
     # -------------------------------------------------
     plot_data = {}
 
@@ -709,9 +995,14 @@ def plot_umap_features(
             """).fetchdf()
 
         df = umap_df.merge(expr_df, on="atlas_cell_id", how="left")
-        df["expr"] = df["expr"].fillna(0.0)
 
-        # ✅ 高表达点后画，避免被低表达点盖住（更像 Scanpy）
+        if use_expr_field == "data_scale":
+            _, zero_fill = gene_map[gene]
+            df["expr"] = df["expr"].fillna(zero_fill)
+        else:
+            df["expr"] = df["expr"].fillna(0.0)
+
+        # ✅ 高表达点后画，避免被低表达点盖住
         df = df.sort_values("expr", ascending=True).reset_index(drop=True)
 
         plot_data[gene] = df
@@ -727,7 +1018,12 @@ def plot_umap_features(
     if figsize is None:
         figsize = (5.3 * ncols, 5.0 * nrows)
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize, facecolor="white")
+    fig, axes = plt.subplots(
+        nrows,
+        ncols,
+        figsize=figsize,
+        facecolor="white"
+    )
 
     if nrows == 1 and ncols == 1:
         axes = [[axes]]
@@ -739,7 +1035,7 @@ def plot_umap_features(
     axes_flat = [ax for row in axes for ax in row]
 
     # -------------------------------------------------
-    # 6️⃣ 作图（Scanpy-like style）
+    # 6️⃣ 作图
     # -------------------------------------------------
     for ax, gene in zip(axes_flat, genes):
         df = plot_data[gene]
@@ -763,8 +1059,10 @@ def plot_umap_features(
 
         ax.set_facecolor("white")
         ax.grid(False)
+
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
+
         ax.spines["left"].set_linewidth(1.0)
         ax.spines["bottom"].set_linewidth(1.0)
         ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
@@ -776,7 +1074,7 @@ def plot_umap_features(
     plt.tight_layout(pad=1.0)
     plt.show()
 
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
+    print(f"[UMAP features] Done in {(datetime.now() - start).total_seconds():.2f}s")
 
     return plot_data
 

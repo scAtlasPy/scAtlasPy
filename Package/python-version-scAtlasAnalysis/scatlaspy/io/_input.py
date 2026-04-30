@@ -795,6 +795,27 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
         raise
 
 
+
+# todo
+# 10 个 h5ad 文件
+#     ↓
+# 第 1 个文件：建表 + 写 var + 写 obs + 写 X
+# 第 2 个文件：不建表，只追加 obs + X
+# 第 3 个文件：继续追加 obs + X
+# ...
+# 第 10 个文件：继续追加 obs + X
+#     ↓
+# 最后统一加主键
+
+# for h5ad_path in h5ad_paths:
+#     不重置 global_cell_id
+#     不重置 global_indptr_offset
+#     不重置 global_data_id
+#     只在第一个文件建表
+#     只在第一个文件写 var
+#     后续文件只 INSERT 追加
+
+
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
 def clean_genes_in_database(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """

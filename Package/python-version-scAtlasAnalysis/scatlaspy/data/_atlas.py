@@ -295,22 +295,22 @@ class Atlas:
     #                  buffer_batch_num = 20  19.94 batch/s
     def minibatch_dense( self , pass_mode = "single-pass" ,buffer_batch_num = 5 ):
 
-        # fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
-        # for X_batch in fetcher.run():
-        #     pass
-        #     # yield X_batch
-
-
-        # todo PCA 用
-        buffer = []  # 设置大的缓冲区
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
         for X_batch in fetcher.run():
-            buffer.append(X_batch)
-            if len(buffer) == 1 :
-                X_big = np.vstack(buffer)  # 纵向拼接 成一个大的batch
-                print("纵向拼接 成一个大的batch")
-                yield X_big
-                buffer = []  # 清空
+            # pass
+            yield X_batch
+
+        # todo PCA 用
+        # buffer = []  # 设置大的缓冲区
+        # fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
+        # for X_batch in fetcher.run():
+        #     buffer.append(X_batch)
+        #     if len(buffer) == 1 :
+        #         X_big = np.vstack(buffer)  # 纵向拼接 成一个大的batch
+        #         print("纵向拼接 成一个大的batch")
+        #         # yield X_big
+        #         buffer = []  # 清空
+        #         pass
 
     # minibatch kmeans
     def kmeans(self):

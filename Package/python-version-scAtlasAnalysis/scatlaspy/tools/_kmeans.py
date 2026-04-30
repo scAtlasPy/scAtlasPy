@@ -52,7 +52,7 @@ class StreamingPCAMiniBatchKMeans:
 
         atlas.connection.execute(f"""
             CREATE TABLE {cluster_table} (
-                cell_id INTEGER,
+                atlas_cell_id INTEGER,
                 cluster_id INTEGER
             );
         """)
@@ -69,7 +69,7 @@ class StreamingPCAMiniBatchKMeans:
     def _write_clusters(self, atlas, cell_ids, labels, table_name):
 
         df = pd.DataFrame({
-            "cell_id": cell_ids,
+            "atlas_cell_id": cell_ids,
             "cluster_id": labels.astype(np.int32)
         })
 
@@ -147,7 +147,7 @@ class StreamingPCAMiniBatchKMeans:
             # 2️⃣ KMeans online train
             self.kmeans.partial_fit(X_pca)
 
-            print(f"cluster_centers : {self.kmeans.cluster_centers_}")
+            # print(f"cluster_centers : {self.kmeans.cluster_centers_}")
 
     # 3. 转换 pca + minibatch kmeans 聚类 预测
     def predict_kmeans(
@@ -219,7 +219,7 @@ class StreamingPCAMiniBatchKMeans:
             # 2️⃣ predict
             labels = self.kmeans.predict(X_pca).astype(np.int32)
 
-            # 3️⃣ 当前 batch 对应的 cell_id
+            # 3️⃣ 当前 batch 对应的 atlas_cell_id
             n = len(labels)
             atlas_cell_ids = np.arange(cell_offset, cell_offset + n, dtype=np.int64)
 
@@ -282,11 +282,11 @@ class StreamingPCAMiniBatchKMeans:
         # 1️⃣ 读取整张表
         df = conn.execute(f"""
             SELECT * FROM {table_name}
-            ORDER BY gene_id
+            ORDER BY atlas_gene_id
         """).fetchdf()
 
-        # 2️⃣ 去掉 gene_id
-        pcs = df.drop(columns=["gene_id"]).values
+        # 2️⃣ 去掉 atlas_gene_id
+        pcs = df.drop(columns=["atlas_gene_id"]).values
 
         # 3️⃣ 转置回 PCA 原始格式
         # (gene, pc) -> (pc, gene)
