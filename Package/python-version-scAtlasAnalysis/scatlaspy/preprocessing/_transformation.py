@@ -1380,9 +1380,564 @@ def highly_variable_genes_like_seurat_v3(
 # 写回 var.highly_variable_genes
 
 
+# todo 补充
+def highly_variable_genes_seurat(
+        atlas,
+        n_top_genes: int = 2000,
+        add_key: str = "highly_variable_genes",
+        select_data: str = "data_log1p",
+        n_bins: int = 20,
+        min_mean: float = 0.0125,
+        max_mean: float = 3.0,
+        min_disp: float = 0.5,
+        max_disp: float = float("inf"),
+        use_filtered: bool = True,
+        obs_filter_col: str = "filter_cells",
+        var_filter_col: str = "filter_genes",
+        inplace: bool = True,
+):
+    """
+    数据库版 Scanpy flavor='seurat' HVG。
+
+    尽量对齐 scanpy.pp.highly_variable_genes(flavor='seurat') 的核心逻辑：
+
+    1. 输入默认使用 log-normalized data，例如 data_log1p
+    2. 内部先 expm1 还原：
+           x = exp(data_log1p) - 1
+    3. 对每个 gene 计算全细胞含 0 的 mean / variance
+       注意：variance 使用 sample variance，近似 Scanpy correction=1
+    4. 计算 dispersion:
+           dispersion = variance / mean
+    5. Seurat flavor:
+           means = log1p(mean)
+           dispersions = log(dispersion)
+    6. 按 means 等宽分箱，默认 n_bins=20
+    7. 每个 bin 内：
+           dispersions_norm = (dispersions - bin_mean) / bin_std
+       如果某个 bin 只有一个 gene，则 dispersions_norm 设为 1
+    8. 如果 n_top_genes 不为 None：
+           按 dispersions_norm 选 top n_top_genes
+       否则按 min_mean / max_mean / min_disp / max_disp cutoffs 选
+    9. 写回 var:
+           add_key
+           means
+           dispersions
+           dispersions_norm
+           highly_variable_rank
+
+    Parameters
+    ----------
+    atlas
+        scAtlasPy Atlas 对象，要求 atlas.connection 已连接。
+
+    n_top_genes
+        选取前多少个 HVG。
+        如果不为 None，则 min_mean / max_mean / min_disp / max_disp 会被忽略，
+        这和 Scanpy 的行为一致。
+
+    add_key
+        写回 var 的 HVG 布尔列名。
+
+    select_data
+        X_CSRO_data 中用于计算 HVG 的字段。
+        对 flavor='seurat'，推荐使用 data_log1p。
+
+    n_bins
+        mean 分箱数量，Scanpy 默认 20。
+
+    min_mean / max_mean / min_disp / max_disp
+        当 n_top_genes=None 时使用的筛选阈值。
+        当 n_top_genes 不为 None 时忽略。
+
+    use_filtered
+        如果 True，并且 obs.filter_cells / var.filter_genes 存在，
+        则只在过滤后的 cells / genes 上计算 HVG。
+
+    inplace
+        True：写回 var。
+        False：返回 gene_df，不写回。
+    """
+
+    import os
+    import numpy as np
+    import pandas as pd
+    from datetime import datetime
+
+    print("==== highly_variable_genes_seurat (Scanpy-like) ====")
+    start = datetime.now()
+
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection 为空，请先连接数据库")
+
+    try:
+        conn.execute(f"PRAGMA threads={os.cpu_count()}")
+    except Exception:
+        pass
+
+    # -------------------------------------------------
+    # 0. DuckDB 字段安全引用
+    # -------------------------------------------------
+    def _q(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    # -------------------------------------------------
+    # 1. 检查基础表
+    # -------------------------------------------------
+    for table_name in ["obs", "var", "X_CSRO_data"]:
+        exists = conn.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = ?
+        """, [table_name]).fetchone()[0]
+
+        if exists == 0:
+            raise ValueError(f"数据库中不存在表: {table_name}")
+
+    # -------------------------------------------------
+    # 2. 检查 select_data 字段
+    # -------------------------------------------------
+    col_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_CSRO_data'
+          AND column_name = ?
+    """, [select_data]).fetchone()[0]
+
+    if col_exists == 0:
+        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+
+    # -------------------------------------------------
+    # 3. 检查 filter 字段是否存在
+    # -------------------------------------------------
+    obs_cols = [
+        r[0]
+        for r in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'obs'
+        """).fetchall()
+    ]
+
+    var_cols = [
+        r[0]
+        for r in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'var'
+        """).fetchall()
+    ]
+
+    has_obs_filter = obs_filter_col in obs_cols
+    has_var_filter = var_filter_col in var_cols
+
+    if use_filtered:
+        print("[INFO] use_filtered=True")
+
+        if has_obs_filter:
+            print(f"[INFO] 使用 obs.{obs_filter_col}=TRUE 的 cells")
+        else:
+            print(f"[WARN] obs 中不存在 {obs_filter_col}，将使用全部 cells")
+
+        if has_var_filter:
+            print(f"[INFO] 使用 var.{var_filter_col}=TRUE 的 genes")
+        else:
+            print(f"[WARN] var 中不存在 {var_filter_col}，将使用全部 genes")
+    else:
+        print("[INFO] use_filtered=False，使用全部 cells / genes")
+
+    # -------------------------------------------------
+    # 4. 构建临时 keep 表
+    # -------------------------------------------------
+    conn.execute("DROP TABLE IF EXISTS _hvg_obs_keep")
+    conn.execute("DROP TABLE IF EXISTS _hvg_var_keep")
+
+    if use_filtered and has_obs_filter:
+        conn.execute(f"""
+            CREATE TEMP TABLE _hvg_obs_keep AS
+            SELECT atlas_cell_id
+            FROM obs
+            WHERE {_q(obs_filter_col)} = TRUE
+        """)
+    else:
+        conn.execute("""
+            CREATE TEMP TABLE _hvg_obs_keep AS
+            SELECT atlas_cell_id
+            FROM obs
+        """)
+
+    if use_filtered and has_var_filter:
+        conn.execute(f"""
+            CREATE TEMP TABLE _hvg_var_keep AS
+            SELECT atlas_gene_id, atlas_gene_name
+            FROM var
+            WHERE {_q(var_filter_col)} = TRUE
+        """)
+    else:
+        conn.execute("""
+            CREATE TEMP TABLE _hvg_var_keep AS
+            SELECT atlas_gene_id, atlas_gene_name
+            FROM var
+        """)
+
+    n_cells = conn.execute("""
+        SELECT COUNT(*)
+        FROM _hvg_obs_keep
+    """).fetchone()[0]
+
+    n_genes = conn.execute("""
+        SELECT COUNT(*)
+        FROM _hvg_var_keep
+    """).fetchone()[0]
+
+    if n_cells == 0:
+        raise ValueError("用于 HVG 的 cell 数量为 0")
+
+    if n_genes == 0:
+        raise ValueError("用于 HVG 的 gene 数量为 0")
+
+    print(f"[INFO] HVG cells = {n_cells:,}")
+    print(f"[INFO] HVG genes = {n_genes:,}")
+    print(f"[INFO] select_data = {select_data}")
+
+    # -------------------------------------------------
+    # 5. SQL 聚合 gene-level sum / sumsq
+    #
+    # Scanpy flavor='seurat' 输入是 log-normalized data，
+    # 内部先 expm1(x)。
+    #
+    # 所以这里:
+    #     x_raw = EXP(select_data) - 1
+    #
+    # 然后全细胞含 0 统计：
+    #     sum_x
+    #     sum_x2
+    # -------------------------------------------------
+    print("Step 1: SQL 聚合 gene-level sum / sumsq（expm1 后）")
+
+    conn.execute(f"""
+        CREATE OR REPLACE TEMP TABLE _gene_sum AS
+        SELECT
+            x.atlas_gene_id,
+            COUNT(*) AS nnz,
+            SUM(EXP(x.{_q(select_data)}) - 1.0) AS sum_x,
+            SUM(POWER(EXP(x.{_q(select_data)}) - 1.0, 2)) AS sum_x2
+        FROM X_CSRO_data AS x
+        JOIN _hvg_obs_keep AS o
+          ON x.atlas_cell_id = o.atlas_cell_id
+        JOIN _hvg_var_keep AS v
+          ON x.atlas_gene_id = v.atlas_gene_id
+        WHERE x.{_q(select_data)} IS NOT NULL
+        GROUP BY x.atlas_gene_id
+    """)
+
+    gene_df = conn.execute("""
+        SELECT
+            v.atlas_gene_id,
+            v.atlas_gene_name,
+            COALESCE(g.nnz, 0) AS nnz,
+            COALESCE(g.sum_x, 0.0) AS sum_x,
+            COALESCE(g.sum_x2, 0.0) AS sum_x2
+        FROM _hvg_var_keep AS v
+        LEFT JOIN _gene_sum AS g
+          ON v.atlas_gene_id = g.atlas_gene_id
+        ORDER BY v.atlas_gene_id
+    """).fetchdf()
+
+    # -------------------------------------------------
+    # 6. Python 小表计算 mean / variance / dispersion
+    # -------------------------------------------------
+    print("Step 2: Python 计算 means / dispersions")
+
+    sum_x = gene_df["sum_x"].to_numpy(dtype=np.float64)
+    sum_x2 = gene_df["sum_x2"].to_numpy(dtype=np.float64)
+
+    # mean：全细胞含 0
+    mean_raw = sum_x / float(n_cells)
+
+    # variance：sample variance，尽量对齐 Scanpy correction=1
+    if n_cells > 1:
+        var_raw = (sum_x2 - (sum_x ** 2) / float(n_cells)) / float(n_cells - 1)
+    else:
+        var_raw = np.zeros_like(mean_raw)
+
+    var_raw = np.maximum(var_raw, 0.0)
+
+    # Scanpy:
+    # mean[mean == 0] = 1e-12
+    mean_safe = mean_raw.copy()
+    mean_safe[mean_safe == 0] = 1e-12
+
+    dispersion = var_raw / mean_safe
+
+    # Scanpy seurat:
+    # dispersion[dispersion == 0] = nan
+    # dispersion = log(dispersion)
+    # mean = log1p(mean)
+    dispersion = dispersion.astype(np.float64)
+    dispersion[dispersion == 0] = np.nan
+
+    dispersions = np.log(dispersion)
+    means = np.log1p(mean_raw)
+
+    gene_df["means"] = means
+    gene_df["dispersions"] = dispersions
+
+    # -------------------------------------------------
+    # 7. mean 分箱：Scanpy seurat 使用 pd.cut(means, bins=n_bins)
+    # -------------------------------------------------
+    print("Step 3: mean 分箱")
+
+    work = gene_df[[
+        "atlas_gene_id",
+        "atlas_gene_name",
+        "means",
+        "dispersions"
+    ]].copy()
+
+    # 注意：
+    # pd.cut 和 Scanpy 一致，是等宽分箱；
+    # 不是 qcut。
+    try:
+        work["mean_bin"] = pd.cut(
+            work["means"],
+            bins=n_bins
+        )
+    except ValueError:
+        # 极端情况下 means 全一样
+        work["mean_bin"] = pd.Series(["single_bin"] * len(work), index=work.index)
+
+    # -------------------------------------------------
+    # 8. bin 内计算 avg/dev
+    #
+    # Scanpy seurat:
+    #     avg = mean(dispersions)
+    #     dev = std(dispersions)
+    #
+    # 单 gene bin：
+    #     dev = avg
+    #     avg = 0
+    # 这样 normalized dispersion = dispersion / dispersion = 1
+    # -------------------------------------------------
+    print("Step 4: bin 内标准化 dispersions_norm")
+
+    disp_stats = work.groupby("mean_bin", observed=True)["dispersions"].agg(
+        avg="mean",
+        dev="std",
+        count="count",
+    )
+
+    # 单 gene bin：模拟 Scanpy _postprocess_dispersions_seurat
+    one_gene_bins = disp_stats["dev"].isna()
+
+    if one_gene_bins.any():
+        disp_stats.loc[one_gene_bins, "dev"] = disp_stats.loc[one_gene_bins, "avg"]
+        disp_stats.loc[one_gene_bins, "avg"] = 0.0
+
+    # 防止 dev 为 0
+    disp_stats["dev"] = disp_stats["dev"].replace(0, np.nan)
+
+    # 映射回每个 gene
+    avg_map = disp_stats["avg"]
+    dev_map = disp_stats["dev"]
+
+    work["_disp_avg"] = work["mean_bin"].map(avg_map).astype(float)
+    work["_disp_dev"] = work["mean_bin"].map(dev_map).astype(float)
+
+    work["dispersions_norm"] = (
+        (work["dispersions"] - work["_disp_avg"])
+        / work["_disp_dev"]
+    )
+
+    # -------------------------------------------------
+    # 9. 选择 HVG
+    #
+    # Scanpy 行为：
+    # - 如果 n_top_genes 不为 None，则 cutoffs 被忽略
+    # - 选 normalized dispersion 最高的 n_top_genes
+    # - ties 可能导致数量略多；这里为了工程可控，严格选 top N
+    # -------------------------------------------------
+    print("Step 5: 选择 highly variable genes")
+
+    work["highly_variable_rank"] = np.nan
+    work[add_key] = False
+
+    if n_top_genes is not None:
+        valid_score = work["dispersions_norm"].replace([np.inf, -np.inf], np.nan)
+
+        rank_df = work.loc[valid_score.notna()].copy()
+
+        rank_df = rank_df.sort_values(
+            by=["dispersions_norm", "atlas_gene_id"],
+            ascending=[False, True],
+        ).reset_index(drop=True)
+
+        top_n = min(int(n_top_genes), len(rank_df))
+
+        rank_df["highly_variable_rank"] = np.arange(
+            len(rank_df),
+            dtype=np.float64,
+        )
+
+        top_ids = set(rank_df.loc[:top_n - 1, "atlas_gene_id"].tolist())
+
+        rank_map = dict(zip(
+            rank_df["atlas_gene_id"],
+            rank_df["highly_variable_rank"],
+        ))
+
+        work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
+        work[add_key] = work["atlas_gene_id"].isin(top_ids)
+
+        print(f"[INFO] n_top_genes={n_top_genes}，cutoffs 已忽略")
+
+    else:
+        # Scanpy cutoff 模式：nan_to_num 后判断范围
+        score = work["dispersions_norm"].replace([np.inf, -np.inf], np.nan)
+        score_for_cutoff = score.fillna(0.0)
+
+        hv_mask = (
+            (work["means"] > float(min_mean))
+            & (work["means"] < float(max_mean))
+            & (score_for_cutoff > float(min_disp))
+            & (score_for_cutoff < float(max_disp))
+        )
+
+        work[add_key] = hv_mask.to_numpy()
+
+        rank_df = work.loc[score.notna()].copy()
+        rank_df = rank_df.sort_values(
+            by=["dispersions_norm", "atlas_gene_id"],
+            ascending=[False, True],
+        ).reset_index(drop=True)
+
+        rank_df["highly_variable_rank"] = np.arange(
+            len(rank_df),
+            dtype=np.float64,
+        )
+
+        rank_map = dict(zip(
+            rank_df["atlas_gene_id"],
+            rank_df["highly_variable_rank"],
+        ))
+
+        work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
+
+        print(
+            f"[INFO] cutoff 模式: "
+            f"min_mean={min_mean}, max_mean={max_mean}, "
+            f"min_disp={min_disp}, max_disp={max_disp}"
+        )
+
+    # -------------------------------------------------
+    # 10. 合并回 gene_df
+    # -------------------------------------------------
+    gene_df = gene_df.drop(
+        columns=[
+            c for c in [
+                "means",
+                "dispersions",
+                "dispersions_norm",
+                "highly_variable_rank",
+                add_key,
+            ]
+            if c in gene_df.columns
+        ],
+        errors="ignore",
+    )
+
+    gene_df = gene_df.merge(
+        work[[
+            "atlas_gene_id",
+            "means",
+            "dispersions",
+            "dispersions_norm",
+            "highly_variable_rank",
+            add_key,
+        ]],
+        on="atlas_gene_id",
+        how="left",
+    )
+
+    gene_df[add_key] = gene_df[add_key].fillna(False).astype(bool)
+
+    hvg_count = int(gene_df[add_key].sum())
+    print(f"[INFO] selected HVGs = {hvg_count:,}")
+
+    # -------------------------------------------------
+    # 11. 写回 var
+    # -------------------------------------------------
+    if inplace:
+        print("Step 6: 写回 var")
+
+        conn.execute(f"""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS {_q(add_key)} BOOLEAN
+        """)
+
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS highly_variable_rank REAL
+        """)
+
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS means REAL
+        """)
+
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS dispersions REAL
+        """)
+
+        conn.execute("""
+            ALTER TABLE var
+            ADD COLUMN IF NOT EXISTS dispersions_norm REAL
+        """)
+
+        write_df = gene_df[[
+            "atlas_gene_id",
+            add_key,
+            "highly_variable_rank",
+            "means",
+            "dispersions",
+            "dispersions_norm",
+        ]].copy()
+
+        conn.register("_hvg_seurat_py", write_df)
+
+        conn.execute(f"""
+            UPDATE var AS v
+            SET
+                {_q(add_key)} = p.{_q(add_key)},
+                highly_variable_rank = p.highly_variable_rank,
+                means = p.means,
+                dispersions = p.dispersions,
+                dispersions_norm = p.dispersions_norm
+            FROM _hvg_seurat_py AS p
+            WHERE v.atlas_gene_id = p.atlas_gene_id
+        """)
+
+        conn.unregister("_hvg_seurat_py")
+
+    # -------------------------------------------------
+    # 12. 清理临时表
+    # -------------------------------------------------
+    conn.execute("DROP TABLE IF EXISTS _gene_sum")
+    conn.execute("DROP TABLE IF EXISTS _hvg_obs_keep")
+    conn.execute("DROP TABLE IF EXISTS _hvg_var_keep")
+
+    print("highly_variable_genes_seurat 完成")
+    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+    if not inplace:
+        return gene_df
+
+
 '''=====  scale ：  进行 z-score转换 - 大数据安全 '''
 # 保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写 + 直接 update
-#  2840130 x 24552  耗时:  1187.70 秒   833206 * 17745   秒 大数据安全
+#  2840130 x 24552  耗时:  1187.70 秒   833206 * 17745 51.21 秒 大数据安全
 def scale(
         atlas,
         select_data: str = "data_log1p",
@@ -1667,7 +2222,7 @@ def scale(
 
 
 # todo 含0值统计，不存储，和scanpy的计算相同
-# 保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写 + 直接 update
+# 保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写 + 直接 update 56.51 秒
 def scale_zero(
         atlas,
         select_data: str = "data_log1p",
@@ -1904,12 +2459,21 @@ def scale_zero(
 
         conn.execute("BEGIN")
         try:
+            # todo ✅ 修改：删除 chunk 内的 SET NULL
             # 当前 chunk 先置 NULL，避免旧值残留
-            conn.execute(f"""
-                UPDATE X_CSRO_data
-                SET {add_field} = NULL
-                WHERE id BETWEEN {chunk_start} AND {chunk_end}
-            """)
+            # conn.execute(f"""
+            #     UPDATE X_CSRO_data
+            #     SET {add_field} = NULL
+            #     WHERE id BETWEEN {chunk_start} AND {chunk_end}
+            # """)
+            #
+            # 原因：
+            # 前面已经 DROP COLUMN + ADD COLUMN，
+            # 新增的 {add_field} 默认就是 NULL。
+            #
+            # 所以这里不需要每个 chunk 再 UPDATE 成 NULL，
+            # 否则会导致每个 chunk 多写一遍大表。
+            # =================================================
 
             # 对显式存储的非零值写入 z-score
             conn.execute(f"""
