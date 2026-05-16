@@ -21,6 +21,7 @@ from ._transformation import (
     normalize_and_log1p,
     highly_variable_genes,
     highly_variable_genes_like_seurat_v3,
+    highly_variable_genes_seurat,
     scale,
     scale_zero,
     scale_fast,

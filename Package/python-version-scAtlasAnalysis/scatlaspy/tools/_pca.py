@@ -12,10 +12,15 @@ from datetime import datetime
 class StreamingPCA:
 
     # 初始化
-    def __init__(self, n_components = 50):
+    def __init__(self, n_components = 50,
+                 fit_batches: int = 1000,  # ✅ 新增
+                 buffer_batch_num: int = 5,  # ✅ 新增
+                 ):
 
         self.n_components = n_components # PCA 目标维度
         self.ipca = IncrementalPCA(n_components=n_components) # 创建 sklearn 的增量 PCA 模型
+        self.fit_batches = fit_batches
+        self.buffer_batch_num = buffer_batch_num
 
         # 假设你有一个表达矩阵（已经标准化）：
         # cell × gene：
@@ -167,53 +172,40 @@ class StreamingPCA:
         atlas.connection.append(table_name, df)
 
     # 训练 PCA
-    def fit(self,  atlas: Atlas ):
+    def fit(self, atlas: Atlas):
 
         print("[PCA] Start fitting...")
+        print(f"[PCA] fit_batches = {self.fit_batches}")
+        print(f"[PCA] buffer_batch_num = {self.buffer_batch_num}")
 
         batch_count = 0
-        prev_components = None # 上一轮 components_
-        buffer = [] # 减少 partial_fit 次数
-        epoch_num_need = 10  # 设置训练轮次
-        epoch_num_now = 0 # 当前训练轮次
 
-        while epoch_num_now < epoch_num_need:
+        for X_batch in tqdm(
+                atlas.minibatch_dense(
+                    pass_mode="multi-pass",
+                    buffer_batch_num=self.buffer_batch_num,
+                    max_batches=self.fit_batches,
+                ),
+                total=self.fit_batches,
+                desc="[PCA] partial_fit batches"
+        ):
+            self.ipca.partial_fit(X_batch)
 
-            for X_batch in tqdm( atlas.minibatch_dense(pass_mode = "multi-pass") ) :  # 获取minibatch
-                print(f"[PCA] 当前的批次编号 : {batch_count}")
+            batch_count += 1
 
-                self.ipca.partial_fit(X_batch)
+            if batch_count % 10 == 0:
+                print(f"[PCA] partial_fit batch = {batch_count}/{self.fit_batches}")
 
-                # todo 方法 3 ：减少 partial_fit 次数， 用大 batch 进行 fit
-                #  transfer 是否可以用类似的方法 ？ 在输出端进行控制会不会比较好一些 ；
-                # buffer.append(X_batch)
-                # if len(buffer) == 200 :
-                #     X_big = np.vstack(buffer) # 纵向拼接 成一个大的batch
-                #     self.ipca.partial_fit(X_big)
-                #     buffer = [] # 清空
-
-                # todo  pca
-                #   830000 * 2000  -->  830000 * 50
-                #   原始                         batch/s=1    710 s
-                #  buffer                                     耗时        不校验 （ 稍快一些 ）
-                #   5   [Consumer] batch 405, batch/s=1.51   295.48 s    208.09
-                #   10  [Consumer] batch 405, batch/s=2.16   211.59 s
-                #   20  [Consumer] batch 405, batch/s=2.78   167.53 s
-                #   50  [Consumer] batch 405, batch/s=3.60   143.95 s    140.77
-                #   100 [Consumer] batch 405, batch/s=4.49   138.48 s              1.6 GB 内存
-                #   200 [Consumer] batch 405, batch/s=9.03   135.57 s
-
-                batch_count += 1
-                print(f"[PCA] 当前的训练轮次 : { epoch_num_now}")
-                epoch_num_now +=1
+        if batch_count == 0:
+            raise RuntimeError("[PCA] 没有获得任何 minibatch，无法训练 PCA")
 
         # 保存结果
-        self.components_ = self.ipca.components_.astype(np.float32)                              # 方向（往哪里投影）
-        self.explained_variance_ = self.ipca.explained_variance_.astype(np.float32)              # 强度（这个方向多重要）
-        self.explained_variance_ratio_ = self.ipca.explained_variance_ratio_.astype(np.float32)  # 占比（解释了多少信息）
+        self.components_ = self.ipca.components_.astype(np.float32)
+        self.explained_variance_ = self.ipca.explained_variance_.astype(np.float32)
+        self.explained_variance_ratio_ = self.ipca.explained_variance_ratio_.astype(np.float32)
 
         print("[PCA] Fit done")
-
+        print(f"[PCA] actual fitted batches = {batch_count}")
 
         cum_ratio = np.cumsum(self.explained_variance_ratio_)
 
@@ -229,7 +221,6 @@ class StreamingPCA:
 
         total_ratio = cum_ratio[-1]
 
-        # ✅ 自动评价
         if total_ratio < 0.1:
             print("⚠️ PCA解释比例较低，可能需要检查数据或增加主成分数")
         elif total_ratio < 0.2:
@@ -322,13 +313,21 @@ class StreamingPCA:
 
         return components_
 
-
-    # 外部执行 run 函数
-    def run(self,atlas: Atlas):
+    def run(self, atlas: Atlas):
 
         # 建表
-        self._create_pca_table(atlas)
-        self._create_pcs_table(atlas)
+        # ✅ 修改：建表维度必须和本次 PCA 输出维度 self.n_components 对齐
+        self._create_pca_table(
+            atlas,
+            n_components=self.n_components
+        )
+
+        # ✅ 修改：varm_PCs 表维度必须和 self.components_.T 的列数一致
+        self._create_pcs_table(
+            atlas,
+            n_components=self.n_components
+        )
+
         self._create_pca_stats_table(atlas)
 
         # 运行PCA
@@ -341,34 +340,56 @@ class StreamingPCA:
         if np.allclose(components, self.components_):
             print(" components 提取正确")
 
+    # 外部执行 run 函数
+    # def run(self,atlas: Atlas):
+    #
+    #     # 建表
+    #     self._create_pca_table(atlas)
+    #     self._create_pcs_table(atlas)
+    #     self._create_pca_stats_table(atlas)
+    #
+    #     # 运行PCA
+    #     self.fit_transform(atlas)
+    #
+    #     # 对比信息
+    #     components = self.load_components(atlas)
+    #     if np.array_equal(components, self.components_):
+    #         print(" components 提取正确")
+    #     if np.allclose(components, self.components_):
+    #         print(" components 提取正确")
+
 
 #  PCA 总入口（Scanpy 风格）
-def pca( atlas: Atlas, n_components: int = 50 ):
+def pca(
+        atlas: Atlas,
+        n_components: int = 50,
+        fit_batches: int = 1000,        # ✅ 新增
+        buffer_batch_num: int = 5,      # ✅ 新增
+):
     """
     PCA 总入口（Scanpy 风格）
 
-    用法
+    示例
     ----
-    sap.pl.pca(atlas)
-
-    或
-    ----
-    sap.pl.pca(
+    sap.tl.pca(
         atlas,
-        n_components=50,
-        color="CST3"
+        n_components=30,
+        fit_batches=1000
     )
     """
+
     import time
 
     t_start = time.time()
 
-    print("\n==== sap.pl.pca ====")
+    print("\n==== sap.tl.pca ====")
 
-    # 1️⃣ 初始化 PCA 对象
-    pca_runner = StreamingPCA(n_components=n_components)
+    pca_runner = StreamingPCA(
+        n_components=n_components,
+        fit_batches=fit_batches,
+        buffer_batch_num=buffer_batch_num,
+    )
 
-    # 2️⃣ 运行 PCA：建表 + fit + transform + 写库
     pca_runner.run(atlas)
 
     t_end = time.time()

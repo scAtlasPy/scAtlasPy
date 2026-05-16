@@ -275,9 +275,9 @@ class Atlas:
 
     ''' minibatch_CSR 格式读取 '''
     # 833206 * 17745   203 batch/s
-    def minibatch_CSR(self):
+    def minibatch_CSR(self , X_type = "CSR" ):
 
-        fetcher = MinibatchFetchMultiThreads( file_path = self.file_path )
+        fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type =  X_type )
         for X_batch in fetcher.run():
             pass
             # yield X_batch
@@ -291,23 +291,125 @@ class Atlas:
     #                  buffer_batch_num = 10  19.93 batch/s
     #                  buffer_batch_num = 15  20.21 batch/s
     #                  buffer_batch_num = 20  19.94 batch/s
-    def minibatch_dense( self , pass_mode = "single-pass" ,buffer_batch_num = 5 ):
+    def minibatch_dense(
+            self,
+            pass_mode: str = "single-pass",
+            buffer_batch_num: int = 5,
+            max_batches: int | None = None,  # ✅ 新增：最多输出多少个 batch
+            max_passes: int | None = None,  # ✅ 新增：最多遍历多少遍
+            batch_size: int = 2048,  # ✅ 新增：传给 fetcher
+            producer_num: int = 10,  # ✅ 新增：传给 fetcher
+    ):
+        """
+        输出 dense minibatch。
 
-        fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
-        for X_batch in fetcher.run():
-            # pass
-            yield X_batch
+        pass_mode
+        ---------
+        single-pass:
+            只遍历数据库一遍。
 
-        # PCA 可用
-        # buffer = []  # 设置大的缓冲区
-        # fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type = "dense" , pass_mode = pass_mode , buffer_batch_num = buffer_batch_num )
-        # for X_batch in fetcher.run():
-        #     buffer.append(X_batch)
-        #     if len(buffer) == 1 :
-        #         X_big = np.vstack(buffer)  # 纵向拼接 成一个大的batch
-        #         print("纵向拼接 成一个大的batch")
-        #         # yield X_big
-        #         buffer = []  # 清空
-        #         pass
+        multi-pass:
+            遍历完一遍后，自动重新创建 fetcher，
+            继续第二遍、第三遍，直到满足 max_batches 或 max_passes。
+
+        max_batches
+        -----------
+        最多输出多少个 batch。
+        例如 PCA 训练需要 1000 个 batch：
+            atlas.minibatch_dense(pass_mode="multi-pass", max_batches=1000)
+
+        max_passes
+        ----------
+        最多遍历多少遍数据库。
+        如果 max_batches=None 且 max_passes=None，
+        multi-pass 会无限遍历，外部 break 后停止。
+        """
+
+        if pass_mode not in ("single-pass", "multi-pass"):
+            raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
+
+        # =====================================================
+        # 1. single-pass：只跑一遍
+        # =====================================================
+        if pass_mode == "single-pass":
+
+            fetcher = MinibatchFetchMultiThreads(
+                file_path=self.file_path,
+                batch_size=batch_size,
+                producer_num=producer_num,
+                X_type="dense",
+                pass_mode="single-pass",
+                buffer_batch_num=buffer_batch_num,
+                max_batches=max_batches,
+            )
+
+            for X_batch in fetcher.run():
+                yield X_batch
+
+            return
+
+        # =====================================================
+        # 2. multi-pass：自动循环多遍
+        # =====================================================
+        produced_batches = 0
+        pass_id = 0
+
+        while True:
+
+            # 如果达到 max_passes，停止
+            if max_passes is not None and pass_id >= max_passes:
+                print(f"[minibatch_dense] reach max_passes={max_passes}, stop")
+                break
+
+            # 如果达到 max_batches，停止
+            if max_batches is not None and produced_batches >= max_batches:
+                print(f"[minibatch_dense] reach max_batches={max_batches}, stop")
+                break
+
+            # 当前 pass 还需要输出多少 batch
+            if max_batches is None:
+                remain_batches = None
+            else:
+                remain_batches = max_batches - produced_batches
+
+            print(
+                f"[minibatch_dense] multi-pass start pass={pass_id + 1}, "
+                f"produced={produced_batches}, "
+                f"remain={remain_batches}"
+            )
+
+            fetcher = MinibatchFetchMultiThreads(
+                file_path=self.file_path,
+                batch_size=batch_size,
+                producer_num=producer_num,
+                X_type="dense",
+                pass_mode="multi-pass",
+                buffer_batch_num=buffer_batch_num,
+                max_batches=remain_batches,
+            )
+
+            pass_batches = 0
+
+            for X_batch in fetcher.run():
+                produced_batches += 1
+                pass_batches += 1
+
+                yield X_batch
+
+                if max_batches is not None and produced_batches >= max_batches:
+                    break
+
+            print(
+                f"[minibatch_dense] pass={pass_id + 1} done, "
+                f"pass_batches={pass_batches}, "
+                f"total_produced={produced_batches}"
+            )
+
+            pass_id += 1
+
+            # 防止异常情况下空 pass 无限循环
+            if pass_batches == 0:
+                print("[minibatch_dense] pass produced 0 batch, stop")
+                break
 
 

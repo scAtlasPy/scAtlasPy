@@ -140,7 +140,14 @@ class ShuffleBuffer:
 class MinibatchFetchMultiThreads:
 
     """ 初始化 """
-    def __init__(self, file_path, batch_size=2048, producer_num=10 , X_type = "CSR" , pass_mode = "single-pass" , buffer_batch_num = 5  ):
+    def __init__(self, file_path,
+                 batch_size=2048,
+                 producer_num=10 ,
+                 X_type = "CSR" ,
+                 pass_mode = "multi-pass" ,
+                 buffer_batch_num = 5  ,
+                 max_batches=None, # 新增：本轮最多输出多少个 batch
+                 ):
 
         self.X_type = X_type # 输出的X表格式 "CSR" "dense"(宽表)
         self.file_path = file_path    # sasql 文件的绝对路径
@@ -150,6 +157,12 @@ class MinibatchFetchMultiThreads:
         self.zero_scale_transform = self._get_zero_scale_transform()
         # 获取var 表的 zero_scale_transform ，就是每个基因的 ( 0 - g.mean) / g.std
         # gene_id 的索引数组
+
+        # ✅ 新增：本轮最多输出多少个 batch
+        self.max_batches = max_batches
+
+        # ✅ 新增：提前停止信号
+        self.stop_event = threading.Event()
 
         # 🔥 修改1：新增输出队列（用于解耦 yield）
         self.out_queue = queue.Queue(maxsize=20)
@@ -281,11 +294,11 @@ class MinibatchFetchMultiThreads:
                     batch_nnz.append(cur - prev)
                     prev = cur
 
-        print(
-            f"[Init] streaming 读取 indptr 完成，"
-            f"batch 数量 {len(batch_nnz)}, "
-            f"耗时 {time.time() - t0:.3f}s"
-        )
+        # print(
+        #     f"[Init] streaming 读取 indptr 完成，"
+        #     f"batch 数量 {len(batch_nnz)}, "
+        #     f"耗时 {time.time() - t0:.3f}s"
+        # )
 
         return batch_nnz
 
@@ -295,58 +308,73 @@ class MinibatchFetchMultiThreads:
 
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
-        # ✅ 修改1：producer 总计时开始
+
         t0 = time.time()
-        print(f"[Producer-{tid}] start")
+        # print(f"[Producer-{tid}] start")
 
-        query = f"SELECT filter_gene_id, data FROM X_CSRO_data_filtered WHERE tid={tid};"
-        result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
+        query = f"""
+            SELECT filter_gene_id, data
+            FROM X_CSRO_data_filtered
+            WHERE tid={tid};
+        """
 
-        # ✅ 修改3：记录 SQL 创建/启动耗时
         t_query = time.time()
-        result = conn.execute(query).fetch_record_batch(rows_per_batch=self.fetch_size)
-        print(f"[Producer-{tid}] query ready, cost={time.time() - t_query:.2f}s")
+        result = conn.execute(query).fetch_record_batch(
+            rows_per_batch=self.fetch_size
+        )
+        # print(f"[Producer-{tid}] query ready, cost={time.time() - t_query:.2f}s")
 
-        # ✅ 修改4：统计这个 producer 读了多少个 record batch / nnz
         rb_count = 0
         nnz_count = 0
 
-        for rb in result: # fetch_record_batch 流式读取的 结果 rb =（ gene_id ，data ）
+        try:
+            for rb in result:
 
-            gene_id = rb.column(0).to_numpy().astype(np.uint16)
-            data = rb.column(1).to_numpy().astype(np.float32)
+                # ✅ 新增：提前停止
+                if self.stop_event.is_set():
+                    break
 
-            # 关键 🔥 全局顺序ID ，唯一
-            with self.seq_lock:
-                seq_id = self.global_seq # 全局递增序号，用于标记每条数据的顺序
-                self.global_seq += 1
+                gene_id = rb.column(0).to_numpy().astype(np.uint16)
+                data = rb.column(1).to_numpy().astype(np.float32)
 
-            self.queue.put((seq_id, gene_id, data)) # 将标记有唯一顺序id的 数据块放入 queue 中
-            #  [ 0 , gene_id, data ] --- 表示第0块数据
-            #  [ 1 , gene_id, data ] --- 表示第1块数据
+                with self.seq_lock:
+                    seq_id = self.global_seq
+                    self.global_seq += 1
 
-            # print(f"[Producer-{tid}] seq={seq_id}, nnz={len(gene_id)}")
-            # ✅ 修改5：每读 5 个 record batch 打印一次进度
-            if rb_count % 5 == 0:
-                elapsed = time.time() - t0
-                print(
-                    f"[Producer-{tid}] rb={rb_count}, "
-                    f"nnz={nnz_count:,}, "
-                    f"speed={nnz_count / (elapsed + 1e-8):,.0f} nnz/s"
-                )
+                # ✅ 修改：防止 out/queue 满时死锁
+                while not self.stop_event.is_set():
+                    try:
+                        self.queue.put((seq_id, gene_id, data), timeout=0.5)
+                        break
+                    except queue.Full:
+                        continue
 
-        conn.close()
+                rb_count += 1
+                nnz_count += len(gene_id)
 
-        # ✅ 修改6：producer 完成总耗时
-        print(
-            f"[Producer-{tid}] done, "
-            f"rb={rb_count}, "
-            f"nnz={nnz_count:,}, "
-            f"time={time.time() - t0:.2f}s"
-        )
+                if rb_count % 5 == 0:
+                    elapsed = time.time() - t0
+                    # print(
+                    #     f"[Producer-{tid}] rb={rb_count}, "
+                    #     f"nnz={nnz_count:,}, "
+                    #     f"speed={nnz_count / (elapsed + 1e-8):,.0f} nnz/s"
+                    # )
 
-        self.queue.put(None)  # 哨兵，结束信号（poison pill），告诉 Consumer：这个 Producer 已经“没数据了”
-        # print(f"[Producer-{tid}] 完成")
+        finally:
+            conn.close()
+
+            # print(
+            #     f"[Producer-{tid}] done, "
+            #     f"rb={rb_count}, "
+            #     f"nnz={nnz_count:,}, "
+            #     f"time={time.time() - t0:.2f}s"
+            # )
+
+            # ✅ 通知 consumer：这个 producer 完成
+            try:
+                self.queue.put(None, timeout=0.5)
+            except queue.Full:
+                pass
 
 
     ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''
@@ -354,10 +382,120 @@ class MinibatchFetchMultiThreads:
 
         reorder_buffer = {}  # 乱序数据 缓存区 : reorder_buffer[seq_id] = (gene_id, data) ； 大小是动态的
 
-        expected_seq = 0          # 下一个想要的的 batch 序号
+        expected_seq = 0  # 下一个想要的的 batch 序号
         global_indptr_offset = 0  # 用于修正 indptr 的累积偏移量
 
         t_start = time.time()
+
+        # ✅【新增】速度统计用, 瞬时速度
+        # -----------------------------------------------------
+        # last_log_time:
+        #   上一次打印日志的时间，用来计算“瞬时速度”
+        #
+        # last_batch_idx:
+        #   上一次打印时已经处理的 batch 数
+        #
+        # last_output_batches:
+        #   上一次打印时已经输出的 batch 数
+        #
+        # log_every:
+        #   每多少个 batch 打印一次日志
+        #   不建议每个 batch 都打印，否则控制台 IO 会拖慢速度
+        # =====================================================
+        last_log_time = t_start
+        last_batch_idx = 0
+        last_output_batches = 0
+        log_every = 20
+        # =====================================================
+        # ✅【新增1】支持 max_batches / stop_event
+        # -----------------------------------------------------
+        # max_batches:
+        #   本次 fetcher 最多向外输出多少个 batch
+        #
+        # stop_event:
+        #   通知 producer 可以提前停止，避免 consumer 已经够了，
+        #   producer 还在继续读数据库。
+        #
+        # 注意：
+        #   为了兼容旧代码，这里用 getattr。
+        #   但更推荐你在 __init__ 里显式加：
+        #
+        #   self.max_batches = max_batches
+        #   self.stop_event = threading.Event()
+        # =====================================================
+        max_batches = getattr(self, "max_batches", None)
+        stop_event = getattr(self, "stop_event", None)
+
+        def _set_stop_event():
+            """✅【新增】安全设置停止信号"""
+            if stop_event is not None:
+                stop_event.set()
+
+        def _output_limit_reached():
+            """
+            ✅【新增】是否已经输出够 max_batches。
+
+            self.total_batches 在这个版本里表示：
+                已经真正 put 到 out_queue、外部可以 yield 的 batch 数。
+            """
+            return max_batches is not None and self.total_batches >= max_batches
+
+        # ✅【新增】multi-pass dense 特殊计数：
+        # prepared_batches 表示已经读入并加入 ShuffleBuffer 的 batch 数。
+        #
+        # 为什么需要它？
+        #   multi-pass 下 batch 先进入 ShuffleBuffer，
+        #   不一定马上输出。
+        #
+        #   如果 max_batches < buffer_batch_num，
+        #   只看 self.total_batches 会一直是 0，
+        #   consumer 就会继续读很多无用 batch。
+        #
+        # 所以：
+        #   multi-pass dense 下，prepared_batches 达到 max_batches 后，
+        #   就停止继续读取，然后 flush_remaining() 输出尾部。
+        prepared_batches = 0
+
+        def _read_limit_reached():
+            """
+            ✅【新增】是否应该停止继续从 RingBuffer / Queue 读新 batch。
+
+            - dense + multi-pass:
+                看 prepared_batches，因为 batch 会先进入 ShuffleBuffer。
+            - 其他模式:
+                看 self.total_batches，因为读取后会立即输出。
+            """
+            if max_batches is None:
+                return False
+
+            if self.X_type == "dense" and self.pass_mode == "multi-pass":
+                return prepared_batches >= max_batches
+
+            return self.total_batches >= max_batches
+
+        def _safe_put_output(X_batch, msg: str | None = None):
+            """
+            ✅【新增】统一输出 batch，并计数。
+
+            返回：
+                True  -> 成功输出
+                False -> 已达到 max_batches，没有输出
+            """
+            if _output_limit_reached():
+                _set_stop_event()
+                return False
+
+            if msg is not None:
+                print(msg)
+
+            self.out_queue.put(X_batch)
+            self.total_batches += 1
+
+            if _output_limit_reached():
+                print(f"[Consumer] reach max_batches={max_batches}, stop")
+                _set_stop_event()
+
+            return True
 
         # 用于宽表生成
         template = np.empty((self.batch_size, self.gene_num), dtype=np.float32)
@@ -365,40 +503,67 @@ class MinibatchFetchMultiThreads:
 
         # 构建宽表的输出缓冲区
         shuffle_buffer = ShuffleBuffer(
-            gene_num = self.gene_num,
-            batch_size = self.batch_size,
-            buffer_batch_num = self.buffer_batch_num
+            gene_num=self.gene_num,
+            batch_size=self.batch_size,
+            buffer_batch_num=self.buffer_batch_num
         )
 
         # 当前批次号 < 批次数量
         while self.batch_idx < self.batch_num:
+
+            # =====================================================
+            # ✅【新增2】如果已经准备/输出够 max_batches，提前结束本轮
+            # =====================================================
+            if _read_limit_reached():
+                print(
+                    f"[Consumer] read limit reached, "
+                    f"batch_idx={self.batch_idx}, "
+                    f"prepared_batches={prepared_batches}, "
+                    f"output_batches={self.total_batches}"
+                )
+                _set_stop_event()
+                break
 
             need = self.batch_nnz[self.batch_idx]  # 当前 batch 所需 nnz
 
             # RingBuffer 中的数据不够， 填充 RingBuffer，直到够一个 batch
             while self.used_size < need:
 
-                item = self.queue.get()  # # 从 Queue 获取下一条数据 ，阻塞等待，自带锁
-                if item is None: #  某个 Producer 已完成任务 → 哨兵数据None，不存入 buffer
+                # =================================================
+                # ✅【新增3】如果已经不需要继续读，跳出，避免死等 queue
+                # =================================================
+                if _read_limit_reached():
+                    _set_stop_event()
+                    break
+
+                # ✅【修改1】加 timeout，避免 producer 提前停止后 consumer 永久阻塞
+                try:
+                    item = self.queue.get(timeout=0.5)  # 从 Queue 获取下一条数据，阻塞等待，自带锁
+                except queue.Empty:
+                    if stop_event is not None and stop_event.is_set():
+                        break
                     continue
 
-                seq_id, gene_id, data = item # 解析 queue 中的数据 item = (seq_id, gene_id, data)
+                if item is None:  # 某个 Producer 已完成任务 → 哨兵数据None，不存入 buffer
+                    continue
+
+                seq_id, gene_id, data = item  # 解析 queue 中的数据 item = (seq_id, gene_id, data)
                 reorder_buffer[seq_id] = (gene_id, data)  # 存入 乱序数据 缓存区
 
                 # 按序取数据，当前需要的批次编号 expected_seq， 数据在 乱序数据 缓存区 reorder_buffer 中
                 while expected_seq in reorder_buffer:
 
-                    gene_id, data = reorder_buffer.pop(expected_seq) # 取出需要的数据
+                    gene_id, data = reorder_buffer.pop(expected_seq)  # 取出需要的数据
                     length = len(gene_id)
 
                     # 写入 Ring Buffer ：切分出batch的环形缓冲池
                     end_space = self.pool_size - self.write_ptr
 
-                    if length <= end_space: # 顺序写
+                    if length <= end_space:  # 顺序写
                         self.pool_gene_id[self.write_ptr:self.write_ptr + length] = gene_id
                         self.pool_data[self.write_ptr:self.write_ptr + length] = data
 
-                    else: # 跨界写
+                    else:  # 跨界写
                         self.pool_gene_id[self.write_ptr:] = gene_id[:end_space]
                         self.pool_gene_id[:length - end_space] = gene_id[end_space:]
 
@@ -409,16 +574,23 @@ class MinibatchFetchMultiThreads:
                     self.used_size += length
                     expected_seq += 1
 
+            # =====================================================
+            # ✅【新增4】如果因为 max_batches / stop_event 跳出，
+            # 且 RingBuffer 还不够当前 batch，就结束主循环
+            # =====================================================
+            if self.used_size < need:
+                break
+
             # RingBuffer 中的数据 够一个 batch
             if self.used_size >= need:
 
                 end_space = self.pool_size - self.read_ptr
 
-                if need <= end_space: # 顺序读
+                if need <= end_space:  # 顺序读
                     vals = self.pool_data[self.read_ptr:self.read_ptr + need]
                     cols = self.pool_gene_id[self.read_ptr:self.read_ptr + need]
 
-                else: # 跨界，两段读取
+                else:  # 跨界，两段读取
                     first_len = end_space
                     second_len = need - first_len
 
@@ -442,17 +614,20 @@ class MinibatchFetchMultiThreads:
                 indptr_now = np.concatenate(([0], indptr_now - global_indptr_offset))
                 global_indptr_offset = last_val
 
-                if(self.X_type == "CSR"):
+                if self.X_type == "CSR":
                     # 输出 ： 1.构建 CSR 格式
                     X = sp.csr_matrix((self.batch_size, self.gene_num), dtype=np.float32)
-                    X.data = vals
-                    X.indices = cols
+
+                    # ✅【修改2】建议 copy，避免 RingBuffer 后续覆盖导致外部 batch 数据被污染
+                    X.data = vals.copy()
+                    X.indices = cols.copy()
                     X.indptr = indptr_now
+
                     # print(" 输出一个 CSR")
-                    self.out_queue.put(X)
+                    _safe_put_output(X)
                     # yield X
 
-                if (self.X_type == "dense"):
+                if self.X_type == "dense":
                     # 输出 ：2 .构建 宽表
 
                     # X_dense.fill(0)  # todo 原来
@@ -461,7 +636,7 @@ class MinibatchFetchMultiThreads:
                     #     end = indptr_now[r + 1]
                     #     X_dense[r, cols[start:end]] = vals[start:end]
 
-                    X_dense[:] = self.zero_scale_transform # todo 修改： 按gene_id填充，self.zero_scale_transform
+                    X_dense[:] = self.zero_scale_transform  # todo 修改： 按gene_id填充，self.zero_scale_transform
                     #  zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
                     # X_dense =
                     # [ 填充每个基因的 zero_scale_transform
@@ -469,8 +644,8 @@ class MinibatchFetchMultiThreads:
                     #  [-0.5, 0.2, -1.1, ...],
                     #  ...
                     # ]
-                    rows = np.repeat( # [0,0, 1, 2,2,2] 👉 每个非零元素对应的“行号”
-                        np.arange(self.batch_size), # [0,1,2,...] 👉 表示每个 cell（行）
+                    rows = np.repeat(  # [0,0, 1, 2,2,2] 👉 每个非零元素对应的“行号”
+                        np.arange(self.batch_size),  # [0,1,2,...] 👉 表示每个 cell（行）
                         np.diff(indptr_now)  # [2, 1, 3, ...]  👉 每个 cell 有多少个非零值（nnz）
                     )
                     X_dense[rows, cols] = vals
@@ -480,37 +655,146 @@ class MinibatchFetchMultiThreads:
                     # X_dense[1,0] = 30
                     # X_dense[2,2] = 40
 
-
-                    if self.pass_mode == "single-pass": # 单次遍历
-                        print("single-pass 输出一个 随机 batch")
-                        self.out_queue.put(X_dense.copy())
+                    if self.pass_mode == "single-pass":  # 单次遍历
+                        _safe_put_output(
+                            X_dense.copy(),
+                            msg="single-pass 输出一个 随机 batch"
+                        )
 
                     if self.pass_mode == "multi-pass":  # 多次遍历 （加入缓存区，保证多次的随机性）
 
-                        shuffle_buffer.add_batch(X_dense) # 写入 输出缓存区 shuffle buffer
-                        X_dense_random = shuffle_buffer.sample_batch() # 从 输出缓存区 随机采样 batch ， 保证多次遍历的随机性
-                        if X_dense_random is not None:
-                            print("multi-pass 输出一个 随机 batch")
-                            self.out_queue.put(X_dense_random.copy())
+                        # =================================================
+                        # ✅【修改3】multi-pass 下，先统计 prepared_batches
+                        # -------------------------------------------------
+                        # 这个 batch 已经进入 ShuffleBuffer，
+                        # 即使暂时没输出，后面 flush_remaining 也会输出。
+                        # =================================================
+                        shuffle_buffer.add_batch(X_dense)  # 写入 输出缓存区 shuffle buffer
+                        prepared_batches += 1
+
+                        # =================================================
+                        # ✅【修改4】一旦 ShuffleBuffer 满了，不再像原来那样
+                        # 每读一个新 batch 才吐一个旧 batch；
+                        # 而是立刻把当前 shuffle 后的 buffer 全部吐出去。
+                        #
+                        # 好处：
+                        #   max_batches 比 buffer_batch_num 小时，不会额外读很多 batch。
+                        # =================================================
+                        while True:
+                            X_dense_random = shuffle_buffer.sample_batch()  # 从 输出缓存区 随机采样 batch ， 保证多次遍历的随机性
+
+                            if X_dense_random is None:
+                                break
+
+                            ok = _safe_put_output(
+                                X_dense_random.copy(),
+                                msg="multi-pass 输出一个 随机 batch"
+                            )
                             # 你每轮都会复用同一块 buffer
                             # 👉 不 copy 会被覆盖
 
-                elapsed = time.time() - t_start
-                print(f"[Consumer] batch {self.batch_idx}, batch/s={self.batch_idx / (elapsed + 1e-8):.2f}")
+                            if not ok or _output_limit_reached():
+                                break
+
+                        # ✅【新增5】如果已经准备够 max_batches，
+                        # 后面不再继续读新 batch，交给尾部 flush 输出剩余。
+                        if _read_limit_reached():
+                            _set_stop_event()
+
+                # elapsed = time.time() - t_start
+                # print(
+                #     f"[Consumer] batch {self.batch_idx}, "
+                #     f"batch/s={self.batch_idx / (elapsed + 1e-8):.2f}, "
+                #     f"output_batches={self.total_batches}"
+                # )
+                # =====================================================
+                # ✅【修改】更合理的中文速度统计
+                # -----------------------------------------------------
+                # processed_batches:
+                #   已经从 RingBuffer 构建出的原始 batch 数
+                #
+                # output_batches:
+                #   已经真正 put 到 out_queue、外部可以 yield 的 batch 数
+                #
+                # 瞬时处理速度：
+                #   距离上次打印期间，consumer 构建 batch 的速度
+                #
+                # 瞬时输出速度：
+                #   距离上次打印期间，真正输出给外部的速度
+                #
+                # 平均处理速度：
+                #   从 consumer 开始到现在的平均构建速度
+                #
+                # 平均输出速度：
+                #   从 consumer 开始到现在的平均输出速度
+                # =====================================================
+                processed_batches = self.batch_idx + 1
+
+                if processed_batches % log_every == 0 or processed_batches == 1:
+                    now = time.time()
+                    elapsed = now - t_start
+                    dt = now - last_log_time
+
+                    output_batches = self.total_batches
+
+                    avg_processed_bps = processed_batches / (elapsed + 1e-8)
+                    avg_output_bps = output_batches / (elapsed + 1e-8)
+
+                    inst_processed_bps = (
+                            (processed_batches - last_batch_idx) / (dt + 1e-8)
+                    )
+
+                    inst_output_bps = (
+                            (output_batches - last_output_batches) / (dt + 1e-8)
+                    )
+
+                    print(
+                        f"[Consumer] 处理 {processed_batches}/{self.batch_num} | "
+                        f"输出 {output_batches} | "
+                        f"瞬时处理 {inst_processed_bps:.2f} batch/s | "
+                        f"瞬时输出 {inst_output_bps:.2f} batch/s | "
+                        f"平均处理 {avg_processed_bps:.2f} batch/s | "
+                        f"平均输出 {avg_output_bps:.2f} batch/s"
+                    )
+
+                    last_log_time = now
+                    last_batch_idx = processed_batches
+                    last_output_batches = output_batches
 
                 self.batch_idx += 1
-                self.total_batches += 1
+
+                # =====================================================
+                # ✅【修改5】这里不再 self.total_batches += 1
+                # -----------------------------------------------------
+                # 原来 total_batches 表示“处理过多少个原始 batch”。
+                # 现在为了支持 max_batches，total_batches 改成：
+                #
+                #   实际输出给外部 yield 的 batch 数
+                #
+                # 所以 total_batches 统一在 _safe_put_output() 里增加。
+                # =====================================================
 
         # todo 修改
-        #  ✅【新增】multi-pass 模式：输出 ShuffleBuffer 里没凑满的尾部 batch
+        # ✅【新增】multi-pass 模式：输出 ShuffleBuffer 里没凑满的尾部 batch
         if self.X_type == "dense" and self.pass_mode == "multi-pass":
             remain_batches = shuffle_buffer.flush_remaining()
 
             for X_remain in remain_batches:
-                print("multi-pass 输出尾部随机 batch")
-                self.out_queue.put(X_remain.copy())
 
-        print(f"[Done] total_batches={self.total_batches}")
+                # ✅【新增6】防止尾部输出超过 max_batches
+                if _output_limit_reached():
+                    _set_stop_event()
+                    break
+
+                _safe_put_output(
+                    X_remain.copy(),
+                    msg="multi-pass 输出尾部随机 batch"
+                )
+
+        print(
+            f"[Done] processed_batches={self.batch_idx}, "
+            f"output_batches={self.total_batches}"
+        )
 
         # 🆕 通知 run() 结束
         self.out_queue.put(None)

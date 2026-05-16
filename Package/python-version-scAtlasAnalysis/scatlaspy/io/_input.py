@@ -15,44 +15,63 @@ import pyarrow as pa   # ✅ 新增：Arrow Table 加速 DuckDB INSERT
 logger = logging.getLogger('Atlas')
 
 ''' 大文件读取, 多文件 + subbatch级伪随机 + round-robin file shuffle + cell_pool随机 导入，只支持 h5ad格式 '''
+''' 大文件读取, 多文件 + 全局 block 随机 + cell_pool 随机 导入，只支持 h5ad格式 '''
 def load_big_h5ad_list_to_duckdb_random_batch_pool(
     h5ad_paths: list[str],
     atlas,
     batch_size: int = 4096,
     read_batch_factor: int = 1,
-    pool_rounds: int = 1,          # ✅ 新增：累计多少轮 file-shuffle 后 flush，一般 1 就够
+    pool_block_num: int = 5,       # ✅ 修改：每次从全局随机 block 池读取多少个 block 后 flush
     check_var: bool = True,
     random_seed: int | None = None,
     commit_every: int = 5,         # ✅ 每多少次 pool flush 提交一次
     gc_every: int = 5,             # ✅ 每多少次 pool flush 做一次 gc
 ):
     """
-    多个 h5ad 文件读取，subbatch 级伪随机导入 DuckDB。
+    多个 h5ad 文件读取，global-block 级随机导入 DuckDB。
 
     核心随机逻辑：
     ------------------------------------------------------------
     1. 每个文件内部：
        按 batch_size * read_batch_factor 切成连续 block。
-       每个文件自己的 block 顺序先打乱。
+       注意：不再对单个文件内部 block 单独 shuffle。
 
-    2. 文件之间：
-       每一轮取当前还没读完的 active_files。
-       对 active_files 打乱顺序。
-       然后每个 active file 读取一个 batch block。
+    2. 全局 block 索引池：
+       把所有文件的 block 都放入 all_block_refs。
+       例如：
+           A: A1,A2,A3
+           B: B1,B2,B3,B4
+           C: C1,C2,C3,C4,C5
 
-    3. cell_pool：
-       一轮中读取到的多个 batch 放入 cell_pool。
-       累计 pool_rounds 轮后，把 cell_pool 中所有 cell 整体随机打乱。
+       合并为：
+           [A1,A2,A3,B1,B2,B3,B4,C1,C2,C3,C4,C5]
 
-    4. 写入数据库：
-       将打乱后的 cell_pool 写入 obs / X_CSRO_indptr / X_CSRO_data。
+       然后整体随机打乱。
+
+    3. 每次读取 pool_block_num 个 block：
+       默认 pool_block_num=5。
+       例如随机后：
+           [C3,A1,B4,C1,B2, A3,C5,B1,C2,A2, B3,C4]
+
+       则每次读取：
+           第1组：C3,A1,B4,C1,B2
+           第2组：A3,C5,B1,C2,A2
+           第3组：B3,C4
+
+    4. cell_pool：
+       每组 block 读取后，直接放入 cell_pool。
+       不再做 block 内部 cell 随机。
+       只在 _flush_cell_pool() 里对整个 cell_pool 的所有 cell 整体随机一次。
+
+    5. 写入数据库：
+       将随机后的 cell_pool 写入 obs / X_CSRO_indptr / X_CSRO_data。
 
     适合：
     ------------------------------------------------------------
     - n 个 h5ad 文件
-    - 每个文件很大
-    - 需要比单文件 random_batch 更强的随机性
-    - 但又不想使用 cell 级 h5ad 随机读取
+    - 每个文件大小不一致
+    - 希望避免 round-robin 在后期只剩大文件的问题
+    - 希望保持连续 block 读取，避免 h5ad cell 级随机 IO
 
     注意：
     ------------------------------------------------------------
@@ -79,11 +98,17 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
     if len(h5ad_paths) == 0:
         raise ValueError("h5ad_paths 不能为空")
 
-    if pool_rounds <= 0:
-        raise ValueError("pool_rounds 必须 > 0")
-
     if read_batch_factor <= 0:
         raise ValueError("read_batch_factor 必须 > 0")
+
+    if pool_block_num <= 0:
+        raise ValueError("pool_block_num 必须 > 0")
+
+    if commit_every <= 0:
+        raise ValueError("commit_every 必须 > 0")
+
+    if gc_every <= 0:
+        raise ValueError("gc_every 必须 > 0")
 
     file_num = len(h5ad_paths)
 
@@ -113,18 +138,23 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
     print(f"[INFO] batch_size: {batch_size:,}")
     print(f"[INFO] read_batch_factor: {read_batch_factor:,}")
     print(f"[INFO] read_batch_size: {read_batch_size:,}")
-    print(f"[INFO] pool_rounds: {pool_rounds:,}")
+    print(f"[INFO] pool_block_num: {pool_block_num:,}")
     print(f"[INFO] commit_every: {commit_every:,}")
     print(f"[INFO] gc_every: {gc_every:,}")
-    print("[INFO] 每轮打乱 active files，每个文件读一次，然后 cell_pool 整体随机写入")
+    print("[INFO] 策略：全局 block 索引池随机打乱，每次读取 pool_block_num 个 block 后 cell_pool 整体随机写入")
+    print("[INFO] 注意：不再做单个 block 内部 cell 随机，只做 cell_pool 整体随机")
 
     # =====================================================
-    # ✅ 修改 3：打开所有 h5ad，并为每个文件生成随机 block 顺序
+    # ✅ 修改 3：打开所有 h5ad，并构建全局 block 索引池
     # =====================================================
     file_states = []
 
     ref_var_names = None
     ref_n_genes = None
+
+    # ✅ 新增：全局 block 索引池
+    # 每个元素记录一个 block 来自哪个文件、起止位置是多少
+    all_block_refs = []
 
     try:
         for file_idx, h5ad_path in enumerate(h5ad_paths):
@@ -162,8 +192,20 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
             # ---------------- 每个文件内部按 read_batch_size 切 block ----------------
             block_starts = np.arange(0, n_cells, read_batch_size, dtype=np.int64)
 
-            # ✅ 每个文件自己的 block 顺序先打乱
-            rng.shuffle(block_starts)
+            # ✅ 修改：
+            # 不再对每个文件自己的 block_starts 单独 shuffle。
+            # 而是把所有文件的 block 放进 all_block_refs，最后统一全局 shuffle。
+            for block_start in block_starts:
+                block_start = int(block_start)
+                block_end = min(block_start + read_batch_size, n_cells)
+
+                all_block_refs.append(
+                    {
+                        "file_idx": file_idx,
+                        "block_start": block_start,
+                        "block_end": block_end,
+                    }
+                )
 
             file_states.append(
                 {
@@ -172,13 +214,25 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                     "adata_backed": adata_backed,
                     "n_cells": n_cells,
                     "n_genes": n_genes,
-                    "block_starts": block_starts,
-                    "cursor": 0,
-                    "done": False,
                 }
             )
 
             print(f"[INFO] batch block 数量: {len(block_starts):,}")
+
+        # =====================================================
+        # ✅ 修改 4：全局 block 索引池统一随机打乱
+        # =====================================================
+        total_blocks = len(all_block_refs)
+
+        if total_blocks == 0:
+            raise ValueError("所有 h5ad 文件的 cell 数量为 0，无法导入")
+
+        rng.shuffle(all_block_refs)
+
+        print("\n" + "=" * 80)
+        print(f"[INFO] 全局 block 总数: {total_blocks:,}")
+        print(f"[INFO] 每次 flush 读取 block 数: {pool_block_num:,}")
+        print(f"[INFO] 预计 flush 次数: {(total_blocks + pool_block_num - 1) // pool_block_num:,}")
 
         # =====================================================
         # 2️⃣ 动态建表：只用第一个文件建表
@@ -190,8 +244,8 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
         _create_csro_tables(conn)
 
         # =====================================================
-        # ✅ 修改 4：flush cell_pool
-        # 多个文件读到的 batch 合并后，整体随机，然后写入数据库
+        # ✅ 修改 5：flush cell_pool
+        # 多个 block 读到的 batch 合并后，整体随机，然后写入数据库
         # =====================================================
         def _flush_cell_pool(cell_pool, flush_i: int):
 
@@ -243,7 +297,8 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
 
             # -------------------------------------------------
             # 2. cell_pool 内部整体随机
-            #    这是跨文件混合的关键
+            #    ✅ 这是唯一的 cell 级随机
+            #    ✅ 不再做单个 block 内部 cell 随机
             # -------------------------------------------------
             if pool_adata.n_obs > 1:
                 pool_perm = rng.permutation(pool_adata.n_obs)
@@ -288,7 +343,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
 
             print(
                 f"\n[flush {flush_i}] "
-                f"pool_batches={len(cell_pool):,}, "
+                f"pool_blocks={len(cell_pool):,}, "
                 f"pool_cells={total_pool_cells:,}, "
                 f"pool_nnz={total_pool_nnz:,}, "
                 f"shuffle={t_shuffle:.2f}s, "
@@ -306,17 +361,12 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
             return total_pool_cells, total_pool_nnz
 
         # =====================================================
-        # 3️⃣ 主循环：每轮打乱 active_files，每个文件读一次
+        # 3️⃣ 主循环：全局 block list 随机后，每次读取 pool_block_num 个 block
         # =====================================================
-        total_blocks = sum(len(s["block_starts"]) for s in file_states)
         processed_blocks = 0
-
-        cell_pool = []
-
-        round_counter = 0
         flush_counter = 0
 
-        pbar = tqdm(total=total_blocks, desc="Multi-file round-shuffle import")
+        pbar = tqdm(total=total_blocks, desc="Global block-shuffle import")
 
         # =====================================================
         # ✅ 事务：多个 flush 共用事务
@@ -324,49 +374,28 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
         conn.execute("BEGIN TRANSACTION")
 
         try:
-            while processed_blocks < total_blocks:
+            block_cursor = 0
 
-                # 当前还没有读完的文件
-                active_indices = [
-                    i for i, s in enumerate(file_states)
-                    if not s["done"]
-                ]
-
-                if len(active_indices) == 0:
-                    break
-
-                # =====================================================
-                # ✅ 修改 5：每一轮打乱 active files
-                # 而不是每次随机选一个文件
-                # =====================================================
-                active_order = np.array(active_indices, dtype=np.int32)
-                rng.shuffle(active_order)
-
-                round_counter += 1
+            while block_cursor < total_blocks:
 
                 # -------------------------------------------------
-                # 本轮：每个 active file 读一次
+                # ✅ 每次从全局随机 block list 中取 pool_block_num 个 block
                 # -------------------------------------------------
-                for state_idx in active_order:
+                block_group = all_block_refs[block_cursor:block_cursor + pool_block_num]
+                block_cursor += len(block_group)
 
-                    state = file_states[int(state_idx)]
+                # 当前 flush 的 cell_pool
+                cell_pool = []
 
-                    if state["done"]:
-                        continue
+                # -------------------------------------------------
+                # 读取这一组 block
+                # -------------------------------------------------
+                for block_ref in block_group:
 
-                    cursor = state["cursor"]
-                    block_starts = state["block_starts"]
+                    state = file_states[block_ref["file_idx"]]
 
-                    if cursor >= len(block_starts):
-                        state["done"] = True
-                        continue
-
-                    block_start = int(block_starts[cursor])
-                    block_end = min(block_start + read_batch_size, state["n_cells"])
-
-                    state["cursor"] += 1
-                    if state["cursor"] >= len(block_starts):
-                        state["done"] = True
+                    block_start = block_ref["block_start"]
+                    block_end = block_ref["block_end"]
 
                     # -------------------------------------------------
                     # 从 h5ad 连续读取一个 batch block
@@ -378,17 +407,12 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                     t_read = time.time() - t_read0
 
                     # -------------------------------------------------
-                    # 当前 batch 内部先随机一次
-                    # 后面进入 cell_pool 后还会整体随机一次
+                    # ✅ 修改：
+                    # 不再对单个 block 内部 cell 随机
+                    # 因为后面 _flush_cell_pool() 会对整个 cell_pool 统一随机
                     # -------------------------------------------------
-                    if adata.n_obs > 1:
-                        local_perm = rng.permutation(adata.n_obs)
-                        adata_random = adata[local_perm].copy()
-                        del adata
-                        adata = adata_random
-                        del adata_random
-
                     cell_pool.append(adata)
+
                     processed_blocks += 1
                     pbar.update(1)
 
@@ -402,17 +426,17 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                         print(
                             f"\n[read block {processed_blocks}/{total_blocks}] "
                             f"file={state['file_idx'] + 1}, "
+                            f"range=[{block_start:,}, {block_end:,}), "
                             f"cells={adata.n_obs:,}, "
                             f"nnz={block_nnz:,}, "
                             f"read={t_read:.2f}s, "
-                            f"pool_batches={len(cell_pool):,}"
+                            f"pool_blocks={len(cell_pool):,}"
                         )
 
-                # =====================================================
-                # ✅ 修改 6：每 pool_rounds 轮 flush 一次
-                # 默认 pool_rounds=1，也就是每轮读完所有 active file 后 flush
-                # =====================================================
-                if round_counter % pool_rounds == 0 and len(cell_pool) > 0:
+                # -------------------------------------------------
+                # ✅ 这一组 block 读完后，整体 shuffle + 写入
+                # -------------------------------------------------
+                if len(cell_pool) > 0:
 
                     flush_counter += 1
                     _flush_cell_pool(cell_pool, flush_counter)
@@ -433,18 +457,6 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                         gc.collect()
 
             pbar.close()
-
-            # =====================================================
-            # 4️⃣ 处理最后剩余 cell_pool
-            # =====================================================
-            if len(cell_pool) > 0:
-                flush_counter += 1
-                _flush_cell_pool(cell_pool, flush_counter)
-
-                for ad in cell_pool:
-                    del ad
-                cell_pool = []
-                gc.collect()
 
             # 最后提交
             conn.execute("COMMIT")
@@ -471,11 +483,12 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
         # =====================================================
         _add_varm_from_h5ad(h5ad_paths[0], atlas)
 
-        print("\n✔ 多文件全部成功导入 DuckDB（round file shuffle + cell_pool 随机）")
+        print("\n✔ 多文件全部成功导入 DuckDB（global block shuffle + cell_pool 随机）")
         print(f"  - files: {file_num:,}")
         print(f"  - cells: {global_cell_id:,}")
         print(f"  - genes: {ref_n_genes:,}")
         print(f"  - nnz:   {global_data_id:,}")
+        print(f"  - blocks:{total_blocks:,}")
         print(f"  - flush: {flush_counter:,}")
 
         return {
@@ -483,6 +496,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
             "cells": global_cell_id,
             "genes": ref_n_genes,
             "nnz": global_data_id,
+            "blocks": total_blocks,
             "flush": flush_counter,
         }
 
@@ -496,22 +510,23 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
             except Exception:
                 pass
 
+
 # 代码的整体流程逻辑
 # 多个 h5ad 文件
 # ↓
 # 每个文件内部切成连续 block
 # ↓
-# 每个文件自己的 block 顺序随机
+# 所有文件的 block 放入 all_block_refs
 # ↓
-# 每一轮随机选择 active files 顺序
+# all_block_refs 全局随机打乱
 # ↓
-# 每个 active file 读一个连续 block
+# 每次取 pool_block_num 个 block
 # ↓
-# block 内部先随机
+# 读取这些 block
 # ↓
-# 放入 cell_pool
+# 直接放入 cell_pool
 # ↓
-# 累计 pool_rounds 轮后，cell_pool 整体随机
+# cell_pool 整体随机
 # ↓
 # 写入 obs / var / X_CSRO_indptr / X_CSRO_data
 # ↓

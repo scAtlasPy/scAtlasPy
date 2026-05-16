@@ -1619,17 +1619,22 @@ def highly_variable_genes_seurat(
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_sum AS
         SELECT
-            x.atlas_gene_id,
+            atlas_gene_id,
             COUNT(*) AS nnz,
-            SUM(EXP(x.{_q(select_data)}) - 1.0) AS sum_x,
-            SUM(POWER(EXP(x.{_q(select_data)}) - 1.0, 2)) AS sum_x2
-        FROM X_CSRO_data AS x
-        JOIN _hvg_obs_keep AS o
-          ON x.atlas_cell_id = o.atlas_cell_id
-        JOIN _hvg_var_keep AS v
-          ON x.atlas_gene_id = v.atlas_gene_id
-        WHERE x.{_q(select_data)} IS NOT NULL
-        GROUP BY x.atlas_gene_id
+            SUM(x_raw) AS sum_x,
+            SUM(x_raw * x_raw) AS sum_x2
+        FROM (
+            SELECT
+                x.atlas_gene_id,
+                EXP(x.{_q(select_data)}) - 1.0 AS x_raw
+            FROM X_CSRO_data AS x
+            JOIN _hvg_obs_keep AS o
+              ON x.atlas_cell_id = o.atlas_cell_id
+            JOIN _hvg_var_keep AS v
+              ON x.atlas_gene_id = v.atlas_gene_id
+            WHERE x.{_q(select_data)} IS NOT NULL
+        ) AS t
+        GROUP BY atlas_gene_id
     """)
 
     gene_df = conn.execute("""
@@ -1904,6 +1909,17 @@ def highly_variable_genes_seurat(
             "dispersions",
             "dispersions_norm",
         ]].copy()
+
+        # ✅ 修改 A：先清空全量 var 的旧结果，避免 use_filtered=True 时旧 TRUE 残留
+        conn.execute(f"""
+            UPDATE var
+            SET
+                {_q(add_key)} = FALSE,
+                highly_variable_rank = NULL,
+                means = NULL,
+                dispersions = NULL,
+                dispersions_norm = NULL
+        """)
 
         conn.register("_hvg_seurat_py", write_df)
 
