@@ -6,14 +6,34 @@ matplotlib.use("Agg")
 import scatlaspy as sap
 
 # 1. 建立数据库
-atlas = sap.Atlas("test_819200-1",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
-file_path = r"E:\python\data\FullMouseBrain_raw.h5ad" # 833206 * 17745
+atlas = sap.Atlas("test_1M",path=r"F:\data\database")
+atlas = sap.Atlas("test_1M_order",path=r"F:\data\database")
+file_path = r"F:\data\92b37feb-aa2c-40d7-bd90-0a9b5ddb3b27.h5ad" #
 
 # 2. 大文件读取，subbatch 随机读取 +  每5个batch 合并 成一个大的batch ，再随机打乱，再导入, 只支持 h5ad 格式
 sap.io.load_big_h5ad_to_duckdb_random_batch_window(file_path , atlas ,
-                                                   batch_size=1024 ,shuffle_window_batches = 5 )
+                                                   batch_size=1024 ,shuffle_window_batches = 5,
+                                                   store_type="count",
+                                                   )
+sap.io.load_big_h5ad_to_duckdb(file_path , atlas) # 顺序导入
+# 在参数表里添加一个参数，比如叫store_type，字符串类型，count或log 二选一；
+# 判断数据类型的方法：
+# 预读取1000个细胞，看非零值的scale，log scale的数据大量集中在0到10之间。
+# count scale的值从0到几千甚至几万
+# 文件里的数据：          需要存的数据类型 store_type = count    store_type = log
+# 1. count 原数据；             直接存                           log 转换
+# 2. log 处理过的；              逆log转换                        直接存
 
 # 多文件导入
+atlas = sap.Atlas("test_100M-123",path=r"F:\data\database")
+h5ad_paths = [
+    r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate1_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
+    r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate2_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
+    r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate3_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
+]
+# 18,251,480 x 62,710
+
+
 atlas = sap.Atlas("test_819200-t-f",path=r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\database")
 
 h5ad_paths = [
@@ -21,7 +41,7 @@ h5ad_paths = [
     r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_819200-f.h5ad",
 ]
 
-result = sap.io.load_big_h5ad_list_to_duckdb_random_batch_pool(h5ad_paths,atlas)
+result = sap.io.load_big_h5ad_list_to_duckdb_random_batch_pool(h5ad_paths,atlas,store_type="count")
 
 # # 导入完数据，直接画图:
 # # “最高表达基因占比图（highest expressed genes）”
@@ -44,22 +64,22 @@ sap.pl.highest_expr_genes_sql(
 )
 
 # 3. 过滤 filter_cells & filter_genes
-sap.pp.filter_cells_chunked(atlas, min_genes=200) # 理论上可支持 1亿 细胞
-sap.pp.filter_genes_no_fetchall(atlas, min_cells=3) # 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
+sap.pp.filter_cells(atlas, min_genes=200) # 理论上可支持 1亿 细胞
+sap.pp.filter_genes(atlas, min_cells=3) # 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
 
 # 4. QC
-sap.pp.calculate_qc_metrics_new(atlas) # 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
+sap.pp.calculate_qc_metrics(atlas) # 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
 
 # 可视化QC指标（这里放！） 画 QC 小提琴图（这里最合适）
 sap.pl.violin_qc_metrics(atlas)
-sap.pl.violin_qc_metrics( atlas,sample_n = 100000 ) # 数据特别大，想限制绘图点数
+sap.pl.violin_qc_metrics(atlas,sample_n=100000) # 数据特别大，想限制绘图点数
 
 # QC 散点图（scatter plot
 sap.pl.scatter_qc_metrics(atlas)   # 👈 这个就放这里
 sap.pl.scatter_qc_metrics(atlas,sample_n=100000)
 
 # 5. calculate_cell_total_counts & calculate_gene_total_counts
-sap.pp.calculate_cell_total_counts_chunked(atlas) # 理论上可支持 1亿 细胞，小优化，不产生大量临时表，
+sap.pp.calculate_cell_total_counts(atlas)
 sap.pp.calculate_gene_total_counts(atlas)
 
 # 6. 归一化 normalize_total
@@ -76,15 +96,14 @@ sap.pp.normalize_and_log1p(atlas,target_sum=1e6) # todo 推荐用这个 normaliz
 
 # 8. 特征选择：识别高变基因
 sap.pp.highly_variable_genes(atlas) # 识别高变基因
-sap.pp.highly_variable_genes_like_seurat_v3(atlas)  # 识别高变基因 seurat_v3
 sap.pp.highly_variable_genes_seurat(atlas) #  seurat
 
 sap.pl.highly_variable_genes_plot(atlas) # 高变基因 可视化
-sap.pl.highly_variable_genes_plot_like_seurat_v3(atlas)
+sap.pl.highly_variable_genes_plot_seurat(atlas)
 
 
 # 9. scale：进行 z-score转换
-sap.pp.scale_zero(atlas)       #  正确的含0值的， 时间几乎和  scale 一样
+sap.pp.scale(atlas)       #  正确的含0值的， 时间几乎和  scale 一样
 
 # 10.sqrt
 sap.pp.sqrt(atlas)        # 法1：分块,内存安全，适合大数据，稍慢
@@ -99,7 +118,7 @@ atlas.minibatch_dense(pass_mode = "single-pass") # 宽表 格式读取 , 单次�
 atlas.minibatch_dense(pass_mode = "multi-pass") # 宽表 格式读取 , 多次遍历
 
 # 13. 导出
-file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_out.h5ad" # 导出文件路径名称
+file_path = r"F:\data\out\test_1M_out.h5ad" # 导出文件路径名称
 sap.io.export_duckdb_to_h5ad(atlas,file_path) # 导出文件
 
 # 导出为 df
@@ -119,6 +138,7 @@ sap.tl.pca(
     n_components=30,
     fit_batches=1000, # 训练轮数
 ) # minibatch pca
+
 sap.tl.pca_simple(atlas, n_components=30) # scanpy风格的 全量的pca
 
 # 可视化层：只读 PCA 结果
@@ -134,14 +154,14 @@ sap.pl.pca(atlas, color="cell_type")
 sap.tl.kmeans(
     atlas,
     n_components=30,
-    n_clusters=10,
+    n_clusters=30,
     fit_batches=1000, # 训练轮数
     buffer_batch_num=5,
     obs_col="kmeans"
 )
 
 # 可视化层：看每个 cluster 有多少细胞
-# todo 这个图要改成什么？
+# todo 这个图要改成什么？ barplot 可以显示成
 sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
 
 
@@ -153,17 +173,21 @@ sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
 # 方法 1 ： 传统 umap 抽样转换显示
 sap.tl.umap(
     atlas,
-    fit_sample_n=500000,          # ✅ 抽样训练
-    transform_batch_size=50000,  # ✅ 全量分批 transform
-    n_neighbors=15,
-    min_dist=0.5
+    fit_sample_n=500000,
+    transform_batch_size=100000,
+    n_neighbors=45,
+    min_dist=0.2,
+    random_state=42,
+    n_jobs=1,
+    eval_sample_n=10000,
 )
 
 sap.pl.umap(
     atlas,
-    color="kmeans",
+    color="cell_type", # cell_type
     sample_n=None,    # ✅ 全量画图
     point_size=1.0,
+    figsize=(28, 12),  # ✅ 修改：更像 Scanpy 横向布局，给右侧 legend 留空间
     alpha=0.8,
     plot_batch_size=200000   # ✅ 分批加载画图
 )
@@ -183,12 +207,11 @@ sap.tl.parametric_umap(
 )
 
 # todo
-#  1. HVG 基因 问题 ； ---
-#     PCA 问题
-#     umap 问题
-#  2. t-test 的代码拆解，要画火山图，问一下许晗
-#  3. 排查所有新写的函数；
-#  4. 首次运行会出现很慢， 内存的缓存占满了可能；看看要怎么解决； -- 暂时不管了
+#  1. t-test 的代码拆解，要画火山图，问一下许晗
+#  2. 排查所有新写的函数；
+#  3. 首次运行会出现很慢， 内存的缓存占满了可能；看看要怎么解决； -- 暂时不管了
+#  4. 这个图要改成什么？ barplot 可以显示成
+#     sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
 
 
 # 可视化层：按 cluster 上色

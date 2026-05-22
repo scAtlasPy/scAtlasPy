@@ -1,111 +1,3 @@
-# 1️⃣ KMeans（聚类）
-# 属于：无监督学习
-# 作用：
-# 把数据分成 K 类（cluster）
-# 输入：
-# 高维数据（比如 PCA 后 50维）
-# 输出：
-# 每个点的 cluster label（0,1,2,...）
-# 2️⃣ UMAP（降维 + 可视化）
-# 属于：非线性降维
-# 作用：
-# 把高维数据 → 映射到 2D / 3D
-# 目标：
-# 尽量保持“邻近关系”（谁和谁相似）
-# 输出：
-# 每个点在2D空间的位置
-
-
-# 在单细胞 / embedding 里，经典 pipeline 是：
-# 原始数据 (高维)
-#     ↓
-# PCA（降维，去噪）
-#     ↓
-# KMeans / Leiden（聚类）
-#     ↓
-# UMAP（可视化）
-
-
-# KMeans 的结果本身是“看不见的”
-# labels = [0,1,1,2,0,...]
-#
-# 👉 你根本不知道：
-#
-# cluster 长什么样
-# 有没有分开
-# 有没有混在一起
-
-# 用 KMeans 的结果给 UMAP 上色
-# plt.scatter(umap[:,0], umap[:,1], c=labels)
-#
-# 👉 结果：
-#
-# 每个 cluster 一个颜色
-# 看 cluster 是否分开
-
-# UMAP 只是“图”，没有分类
-# 必须组合：
-# UMAP（形状） + KMeans（颜色） = 可解释结果
-# UMAP = 地图
-# KMeans = 行政区划
-
-# UMAP可视化，拟定两个方案：
-# 1，采样指定数量的细胞，调用传统UMAP
-# 2，在全部数据上，以minibatch的方式训练ParameterizedUMAP，https://umap-learn.readthedocs.io/en/latest/parametric_umap.html
-
-# | 方法             | 是否有模型  | 能否泛化 | 是否可 minibatch |
-# | UMAP            | ❌ 无模型  | ❌ 不可 | ❌             |
-# | Parametric UMAP | ✅ 神经网络 | ✅ 可以 | ✅             |
-# 普通 UMAP = “画一张地图”
-# Parametric UMAP = “学一个画地图的函数”
-
-# 1. 用神经网络学习 embedding
-# X → MLP → Z(2D)
-# ✔ 2. minibatch 训练（关键）
-# 每次只取一小批数据更新网络
-# 类似：
-# for batch in data:
-#     loss = UMAP_loss(batch)
-#     backprop()
-
-# 损失函数（简化）：
-# Loss = 正样本（邻居）拉近 + 负样本（非邻居）推远
-
-# repeat:
-#     1. 取一小批数据 batch
-#     2. 构建邻居关系
-#     3. 计算 UMAP loss
-#     4. 反向传播更新神经网络
-
-# 模型结构（默认）
-# 通常是：
-# Input (n_genes)
-#    ↓
-# Dense 512
-#    ↓
-# ReLU
-#    ↓
-# Dense 256
-#    ↓
-# ReLU
-#    ↓
-# Dense 2
-
-# UMAP 在你 pipeline 中的作用 = 把 PCA embedding + KMeans label 变成 2D 可视化地图
-
-
-# MiniBatchKMeans = KMeans 的“流式 / 小批量版本”
-#
-# 普通 KMeans：每次用全量数据更新中心
-# MiniBatchKMeans：每次只用**一个 batch（小块数据）**更新中心
-# 循环：
-#     取一小批数据（batch）
-#     用这批数据 → 更新中心（增量更新）
-
-from datetime import datetime
-import math
-import pandas as pd
-import matplotlib.pyplot as plt
 from ..data import Atlas
 
 
@@ -122,11 +14,11 @@ def umap(
         where: str | None = None,
         use_expr_field: str = "data_log1p",
         ncols: int = 3,
-        figsize=None,
-        point_size: float = 8,
-        alpha: float = 0.9,
+        figsize=(18, 5.5),   # ✅ 修改：更像 Scanpy 横向布局，给右侧 legend 留空间
+        point_size: float = 1.0,  # ✅ 修改：全量 UMAP 点要小
+        alpha: float = 0.8,  # ✅ 修改：接近 Scanpy 密度感
         legend_loc: str = "right_margin",
-        frameon: bool = False,
+        frameon: bool = True,  # ✅ 修改：Scanpy 图1有完整黑色边框
         save_path: str | None = None,
         # ✅【新增】sample_n=None 全量绘图时，每批读取多少细胞
         plot_batch_size: int = 200000
@@ -228,11 +120,12 @@ def umap(
             sample_n=sample_n,
             where=where,
             legend_loc=legend_loc,
+            figsize=figsize,  # ✅ 修改：传给下一级
             point_size=point_size,
             alpha=alpha,
             frameon=frameon,
             save_path=save_path,
-            plot_batch_size=plot_batch_size,  # ✅【新增】
+            plot_batch_size=plot_batch_size,
         )
 
     # -------------------------------------------------
@@ -263,11 +156,12 @@ def umap(
             sample_n=sample_n,
             where=where,
             legend_loc=legend_loc,
+            figsize=figsize,  # ✅ 修改：传给下一级
             point_size=point_size,
             alpha=alpha,
             frameon=frameon,
             save_path=None,
-            plot_batch_size=plot_batch_size,  # ✅【新增】
+            plot_batch_size=plot_batch_size,
         )
 
     if len(gene_colors) > 0:
@@ -295,13 +189,13 @@ def plot_umap_obs(
         sample_n: int | None = 50000,
         groups: list | None = None,
         where: str | None = None,
-        legend_loc: str = "right_margin",   # "right_margin" | "on_data"
+        legend_loc: str = "right_margin",
         title: str | None = None,
-        point_size: float = 8,
-        alpha: float = 0.9,
-        frameon: bool = False,
+        figsize=(14, 7),              # ✅ 修改：新增 figsize
+        point_size: float = 1.0,      # ✅ 修改
+        alpha: float = 0.8,           # ✅ 修改
+        frameon: bool = True,         # ✅ 修改
         save_path: str | None = None,
-        # ✅【新增】全量绘图分批读取
         plot_batch_size: int = 200000
 ):
     """
@@ -424,6 +318,7 @@ def plot_umap_obs(
             where_sql=where_sql,
             legend_loc=legend_loc,
             title=title,
+            figsize=figsize,  # ✅ 修改：传给 streaming 绘图
             point_size=point_size,
             alpha=alpha,
             frameon=frameon,
@@ -563,9 +458,10 @@ def _draw_umap_obs_streaming(
         where_sql: str,
         legend_loc: str = "right_margin",
         title: str | None = None,
-        point_size: float = 0.3,
-        alpha: float = 0.5,
-        frameon: bool = False,
+        figsize=(14, 7),              # ✅ 修改：新增 figsize
+        point_size: float = 1.0,      # ✅ 修改：点大小接近 Scanpy
+        alpha: float = 0.8,           # ✅ 修改：透明度接近 Scanpy
+        frameon: bool = True,         # ✅ 修改：默认显示黑色边框
         save_path: str | None = None,
         plot_batch_size: int = 200000
 ):
@@ -600,7 +496,18 @@ def _draw_umap_obs_streaming(
     if len(label_df) == 0:
         raise ValueError("筛选后没有可绘制的细胞")
 
-    unique_labels = label_df["color_label"].astype(str).tolist()
+    # ✅ 修改：按数字顺序排序；如果不是纯数字，再按字符串排序
+    def _sort_label(x):
+        try:
+            return (0, int(x))
+        except:
+            return (1, str(x))
+
+    # ✅ 修改：不要直接使用 SQL 的字符串排序结果
+    unique_labels = sorted(
+        label_df["color_label"].astype(str).tolist(),
+        key=_sort_label
+    )
 
     # -------------------------------------------------
     # 2️⃣ 调色板
@@ -629,7 +536,7 @@ def _draw_umap_obs_streaming(
     # -------------------------------------------------
     # 3️⃣ 建图
     # -------------------------------------------------
-    fig, ax = plt.subplots(figsize=(7.0, 6.5), facecolor="white")
+    fig, ax = plt.subplots(figsize=figsize, facecolor="white")  # ✅ 修改：使用外面传入的 figsize
     ax.set_facecolor("white")
 
     # -------------------------------------------------
@@ -685,9 +592,9 @@ def _draw_umap_obs_streaming(
     if title is None:
         title = color
 
-    ax.set_title(title, fontsize=18, weight="normal", pad=10)
-    ax.set_xlabel("UMAP1", fontsize=16)
-    ax.set_ylabel("UMAP2", fontsize=16)
+    ax.set_title(title, fontsize=14, weight="normal", pad=8)  # ✅ 修改
+    ax.set_xlabel("UMAP1", fontsize=12)  # ✅ 修改
+    ax.set_ylabel("UMAP2", fontsize=12)  # ✅ 修改
 
     # -------------------------------------------------
     # 6️⃣ 图例
@@ -700,21 +607,36 @@ def _draw_umap_obs_streaming(
                 color="w",
                 label=str(lab),
                 markerfacecolor=label_to_color[lab],
-                markersize=9
+                markersize=6  # ✅ 修改：legend 点小一点
             )
             for lab in unique_labels
         ]
 
-        ax.legend(
+        # ✅ 修改：根据类别数量自动设置 legend 列数
+        n_cat = len(unique_labels)
+
+        if n_cat >= 12:
+            legend_ncol = 2  # ✅ 修改：长 cell_type 名字最多 2 列
+        else:
+            legend_ncol = 1
+
+        # ✅ 修改：Scanpy 风格右侧多列 legend
+        leg = ax.legend(
             handles=legend_handles,
             loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
+            bbox_to_anchor=(1.03, 0.5),  # ✅ 修改：稍微靠近主图
             frameon=False,
             borderaxespad=0.0,
             handlelength=0.8,
-            handletextpad=0.4,
-            fontsize=11
+            handletextpad=0.5,
+            labelspacing=0.6,
+            columnspacing=1.5,
+            fontsize=10,                 # ✅ 修改：关键，防止 legend 被截断
+            ncol=legend_ncol
         )
+
+        # ✅ 修改：不要让 legend 把主图挤变形
+        leg.set_in_layout(False)
 
     elif legend_loc == "on_data":
         center_df = conn.execute(f"""
@@ -746,21 +668,39 @@ def _draw_umap_obs_streaming(
     # -------------------------------------------------
     # 7️⃣ 样式
     # -------------------------------------------------
+    # ✅ 修改：Scanpy 风格样式
     ax.grid(False)
 
-    if not frameon:
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_visible(False)
-        ax.spines["bottom"].set_visible(False)
-        ax.set_xticks([])
-        ax.set_yticks([])
-    else:
-        ax.spines["left"].set_linewidth(1.0)
-        ax.spines["bottom"].set_linewidth(1.0)
-        ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
+    # ✅ 修改：Scanpy UMAP 通常不显示刻度数字
+    ax.set_xticks([])
+    ax.set_yticks([])
 
-    plt.tight_layout()
+    # ✅ 修改：保持 UMAP 坐标比例，避免图形被拉伸
+    ax.set_aspect("equal", adjustable="box")
+
+    # ✅ 修改：稍微留白
+    ax.margins(0.02)
+
+    if frameon:
+        # ✅ 修改：完整黑色边框，类似 Scanpy 图1
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.0)
+            spine.set_color("black")
+    else:
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+
+    # ✅ 修改：右边留给 legend，不用 tight_layout
+    if legend_loc == "right_margin":
+        fig.subplots_adjust(
+            left=0.06,
+            right=0.42,     # ✅ 修改：主图占左侧，右侧留出更多 legend 空间
+            bottom=0.10,
+            top=0.90,
+        )
+    else:
+        plt.tight_layout(pad=0.8)
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")

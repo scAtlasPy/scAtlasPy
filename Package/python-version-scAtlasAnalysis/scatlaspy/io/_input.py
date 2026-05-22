@@ -14,8 +14,8 @@ import pyarrow as pa   # ✅ 新增：Arrow Table 加速 DuckDB INSERT
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
 
-''' 大文件读取, 多文件 + subbatch级伪随机 + round-robin file shuffle + cell_pool随机 导入，只支持 h5ad格式 '''
-''' 大文件读取, 多文件 + 全局 block 随机 + cell_pool 随机 导入，只支持 h5ad格式 '''
+
+''' 多个 大文件读取, 多文件 + 全局 block 随机 + cell_pool 随机 导入，只支持 h5ad格式 '''
 def load_big_h5ad_list_to_duckdb_random_batch_pool(
     h5ad_paths: list[str],
     atlas,
@@ -26,6 +26,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
     random_seed: int | None = None,
     commit_every: int = 5,         # ✅ 每多少次 pool flush 提交一次
     gc_every: int = 5,             # ✅ 每多少次 pool flush 做一次 gc
+    store_type: str = "count",  # ✅ 新增：目标存储尺度，"count" 或 "log"
 ):
     """
     多个 h5ad 文件读取，global-block 级随机导入 DuckDB。
@@ -64,7 +65,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
        只在 _flush_cell_pool() 里对整个 cell_pool 的所有 cell 整体随机一次。
 
     5. 写入数据库：
-       将随机后的 cell_pool 写入 obs / X_CSRO_indptr / X_CSRO_data。
+       将随机后的 cell_pool 写入 obs / X_HyS_indptr / X_HyS_data。
 
     适合：
     ------------------------------------------------------------
@@ -110,6 +111,14 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
     if gc_every <= 0:
         raise ValueError("gc_every 必须 > 0")
 
+    # =====================================================
+    # ✅ 修改：检查目标存储类型
+    # =====================================================
+    if store_type not in {"count", "log"}:
+        raise ValueError(
+            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
+        )
+
     file_num = len(h5ad_paths)
 
     # 实际读取 block 大小
@@ -141,6 +150,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
     print(f"[INFO] pool_block_num: {pool_block_num:,}")
     print(f"[INFO] commit_every: {commit_every:,}")
     print(f"[INFO] gc_every: {gc_every:,}")
+    print(f"[INFO] store_type: {store_type}")  # ✅ 新增
     print("[INFO] 策略：全局 block 索引池随机打乱，每次读取 pool_block_num 个 block 后 cell_pool 整体随机写入")
     print("[INFO] 注意：不再做单个 block 内部 cell 随机，只做 cell_pool 整体随机")
 
@@ -168,6 +178,21 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
             n_genes = adata_backed.n_vars
 
             print(f"[INFO] 当前文件维度: {n_cells:,} × {n_genes:,}")
+
+            # =====================================================
+            # ✅ 新增：每个文件单独检测 X 是 count 还是 log
+            # =====================================================
+            source_store_type = _detect_X_store_type_from_backed(
+                adata_backed,
+                sample_n=1000,
+            )
+
+            print(f"[INFO] 当前文件 X 判断为: {source_store_type}")
+
+            if source_store_type == store_type:
+                print("[INFO] 当前文件 X 不需要转换，直接写入。")
+            else:
+                print(f"[INFO] 当前文件 X 将在读取 block 后转换: {source_store_type} -> {store_type}")
 
             # ---------------- 检查 gene 数量和顺序 ----------------
             cur_var_names = adata_backed.var.index.astype(str).to_numpy()
@@ -214,6 +239,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                     "adata_backed": adata_backed,
                     "n_cells": n_cells,
                     "n_genes": n_genes,
+                    "source_store_type": source_store_type,  # ✅ 新增
                 }
             )
 
@@ -330,7 +356,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                 global_indptr_id,
                 global_indptr_offset,
                 global_data_id,
-            ) = _append_X_CSRO_chunk_fast(
+            ) = _append_X_HyS_chunk_fast(
                 pool_adata,
                 conn,
                 base_cell_id=global_cell_id - pool_adata.n_obs,
@@ -405,6 +431,17 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
                     adata = state["adata_backed"][block_start:block_end].to_memory()
 
                     t_read = time.time() - t_read0
+
+                    # =====================================================
+                    # ✅ 新增：根据该文件的 source_store_type 转换当前 block
+                    # 注意：必须在放入 cell_pool 前转换
+                    # 因为 cell_pool 可能混合多个文件的 block
+                    # =====================================================
+                    adata = _convert_X_store_type_inplace(
+                        adata,
+                        source_store_type=state["source_store_type"],
+                        target_store_type=store_type,
+                    )
 
                     # -------------------------------------------------
                     # ✅ 修改：
@@ -528,216 +565,21 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
 # ↓
 # cell_pool 整体随机
 # ↓
-# 写入 obs / var / X_CSRO_indptr / X_CSRO_data
+# 写入 obs / var / X_HyS_indptr / X_HyS_data
 # ↓
 # 每 commit_every 次 flush 提交事务
 # ↓
 # 最后只导入 varm，不导入 obsm
 
 
-''' 大文件读取, subbatch级 伪随机 导入， 只支持 h5ad格式'''
-# batch 随机 + batch 内随机	[7,6],[3,2],[9,8]...
-def load_big_h5ad_to_duckdb_random_batch(
-    h5ad_path: str,
-    atlas,
-    batch_size: int = 4096,
-    read_batch_factor=1,
-    commit_every: int = 5,   # ✅ 修改 1：新增，每多少个 batch 提交一次
-    gc_every: int = 10,       # ✅ 修改 2：新增，每多少个 batch 做一次 gc
-):
-    """
-    大文件读取，cell 按 batch 随机导入，只支持 h5ad 格式。
-
-    修改逻辑：
-    - 按 batch_size 切成连续 block
-    - 随机 block 顺序
-    - 每个 block 从 h5ad 连续读取
-    - 读取到内存后，再在 block 内部随机打乱 cell
-
-    ✅ 本版新增优化：
-    1. 使用 _append_X_CSRO_chunk_fast()，Arrow 写入
-    2. 外层增加 BEGIN / COMMIT，避免每个 INSERT 自动提交
-    3. commit_every 控制分批提交
-    4. gc_every 控制 GC 频率，不再每个 batch 都强制 gc.collect()
-    5. 增加 read / write / nnz 简单统计
-    """
-
-    batch_size = batch_size * read_batch_factor
-
-    #  1️⃣ 连接数据库
-    conn = atlas.connect("r+")
-    atlas.connection = conn
-
-    # 全局游标
-    global_cell_id = 0
-    global_indptr_id = 0
-    global_indptr_offset = 0
-    global_data_id = 0
-
-    var_written = False
-
-    # 2️⃣ backed 打开
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-    n_cells = adata_backed.n_obs
-
-    # =====================================================
-    # ✅ 保持原逻辑：batch block 随机
-    # 每个 block_start 对应连续读取区间：
-    # [block_start : block_start + batch_size]
-    # =====================================================
-    block_starts = np.arange(0, n_cells, batch_size, dtype=np.int64)
-    np.random.shuffle(block_starts)
-
-    # 3️⃣ 动态建表
-    _create_obs_table_from_adata(conn, adata_backed[:1])
-    _create_var_table_from_adata(conn, adata_backed[:1])
-    _create_csro_tables(conn)
-
-    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + batch-block 随机读取 + batch 内部随机")
-    print(f"[INFO] batch_size = {batch_size:,}")
-    print(f"[INFO] batch block 数量 = {len(block_starts):,}")
-    print(f"[INFO] commit_every = {commit_every:,}")
-    print(f"[INFO] gc_every = {gc_every:,}")
-
-    batch_counter = 0
-
-    # =====================================================
-    # ✅ 修改 3：事务放在大循环外
-    # 原来：每个 INSERT 可能自动提交
-    # 现在：多个 batch 共用事务
-    # =====================================================
-    conn.execute("BEGIN TRANSACTION")
-
-    try:
-        for block_i, block_start in enumerate(
-            tqdm(
-                block_starts,
-                desc="Batch-block 随机读取",
-            )
-        ):
-            block_end = min(int(block_start) + batch_size, n_cells)
-
-            # -------------------------------------------------
-            # 连续读取一个 batch block
-            # -------------------------------------------------
-            t0 = time.time()
-            adata = adata_backed[int(block_start):block_end].to_memory()
-            t_read = time.time() - t0
-
-            # 当前 block 的 nnz
-            if sparse.issparse(adata.X):
-                block_nnz = adata.X.nnz
-            else:
-                block_nnz = np.count_nonzero(adata.X)
-
-            # -------------------------------------------------
-            # batch 内部再随机
-            # 例如 [6,7] -> [7,6]
-            # -------------------------------------------------
-            if adata.n_obs > 1:
-                local_perm = np.random.permutation(adata.n_obs)
-
-                # ✅ 修改 4：避免旧 adata 和新 adata 同时长时间占用
-                adata_random = adata[local_perm].copy()
-                del adata
-                adata = adata_random
-                del adata_random
-
-            t1 = time.time()
-
-            # ---------------- batch 导入 obs ----------------
-            global_cell_id = _append_obs_rows(
-                adata,
-                conn,
-                start_cell_id=global_cell_id,
-            )
-
-            # ---------------- 导入 var（一次） ----------------
-            if not var_written:
-                _append_var(adata, conn)
-                var_written = True
-
-            # ---------------- batch 导入 X（CSRO） ----------------
-            (
-                global_indptr_id,
-                global_indptr_offset,
-                global_data_id,
-            ) = _append_X_CSRO_chunk_fast(   # ✅ 修改 5：使用 Arrow 加速版
-                adata,
-                conn,
-                base_cell_id=global_cell_id - adata.n_obs,
-                global_indptr_id=global_indptr_id,
-                global_indptr_offset=global_indptr_offset,
-                global_data_id=global_data_id,
-            )
-
-            t_write = time.time() - t1
-
-            batch_counter += 1
-
-            # =====================================================
-            # ✅ 修改 6：每 commit_every 个 batch 提交一次
-            # =====================================================
-            if batch_counter % commit_every == 0:
-                conn.execute("COMMIT")
-                conn.execute("BEGIN TRANSACTION")
-
-            # 简单日志：不要太频繁刷屏
-            if (block_i + 1) % 20 == 0 or block_i == 0:
-                print(
-                    f"\n[block {block_i}] "
-                    f"cells={adata.n_obs:,}, "
-                    f"nnz={block_nnz:,}, "
-                    f"read={t_read:.2f}s, "
-                    f"write={t_write:.2f}s, "
-                    f"total_cells={global_cell_id:,}, "
-                    f"total_nnz={global_data_id:,}"
-                )
-
-            del adata
-
-            # =====================================================
-            # ✅ 修改 7：不要每个 batch 都 gc.collect()
-            # =====================================================
-            if (block_i + 1) % gc_every == 0:
-                gc.collect()
-
-        # 最后提交
-        conn.execute("COMMIT")
-
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
-    # 5️⃣ 主键
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-
-    # =====================================================
-    # ⚠️ 随机导入时不建议导入 obsm
-    # 因为 obs / X 已经随机重排，obsm 直接按原 h5ad 顺序导入会错位
-    # varm 是 gene 维度，一般没问题
-    # =====================================================
-    # _add_obsm_from_h5ad(h5ad_path, atlas)
-    _add_varm_from_h5ad(h5ad_path, atlas)
-
-    try:
-        adata_backed.file.close()
-    except Exception:
-        pass
-
-    print("✔ 全部数据成功导入 DuckDB（batch 随机 + batch 内随机）")
-    print(f"  - cells: {global_cell_id:,}")
-    print(f"  - nnz:   {global_data_id:,}")
-
-
-# todo 使用这个代码
+''' 大文件读取, subbatch级 随机 导入， 只支持 h5ad格式'''
+# batch 随机 + 多个 batch 内随机
 def load_big_h5ad_to_duckdb_random_batch_window(
     h5ad_path: str,
     atlas,
     batch_size: int = 4096,
-    shuffle_window_batches: int = 5,   # ✅ 修改 1：固定窗口级随机，默认 5 个 batch
+    shuffle_window_batches: int = 5,   # 固定窗口级随机，默认 5 个 batch
+    store_type: str = "count",  # ✅ 修改：目标存储类型，"count" 或 "log"
 ):
     """
     大文件读取，cell 按 shuffle-window 随机导入，只支持 h5ad 格式。
@@ -780,6 +622,29 @@ def load_big_h5ad_to_duckdb_random_batch_window(
     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
+    # =====================================================
+    # ✅ 修改：检查目标存储类型
+    # =====================================================
+    if store_type not in {"count", "log"}:
+        raise ValueError(
+            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
+        )
+
+    # =====================================================
+    # ✅ 修改：预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
+    # =====================================================
+    source_store_type = _detect_X_store_type_from_backed(
+        adata_backed,
+        sample_n=1000,
+    )
+
+    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
+    print(f"[INFO] 目标存储类型 store_type = {store_type}")
+
+    if source_store_type == store_type:
+        print("[INFO] X 数据不需要转换，直接写入。")
+    else:
+        print(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
     # =====================================================
     # ✅ 保持你的原逻辑：batch block 顺序随机
     # 每个 block 自身仍然是 h5ad 连续读取区间
@@ -872,6 +737,8 @@ def load_big_h5ad_to_duckdb_random_batch_window(
                     global_indptr_offset=global_indptr_offset,
                     global_data_id=global_data_id,
                     var_written=var_written,
+                    source_store_type=source_store_type,  # ✅ 修改
+                    target_store_type=store_type,  # ✅ 修改
                 )
 
                 t_write = time.time() - t1
@@ -934,6 +801,8 @@ def load_big_h5ad_to_duckdb_random_batch_window(
                 global_indptr_offset=global_indptr_offset,
                 global_data_id=global_data_id,
                 var_written=var_written,
+                source_store_type=source_store_type,  # ✅ 修改
+                target_store_type=store_type,  # ✅ 修改
             )
 
             t_write = time.time() - t1
@@ -993,6 +862,8 @@ def _write_shuffle_window_to_duckdb(
     global_indptr_offset,
     global_data_id,
     var_written,
+    source_store_type: str,  # ✅ 修改
+    target_store_type: str,  # ✅ 修改
 ):
     """
     将多个 batch 的 AnnData 合并成一个 window，
@@ -1043,13 +914,24 @@ def _write_shuffle_window_to_duckdb(
         var_written = True
 
     # =====================================================
-    # 5. 写入 X_CSRO_data / X_CSRO_indptr
+    # ✅ 修改：根据 store_type 转换 X 的存储尺度
+    # count -> log: np.log1p
+    # log   -> count: np.expm1
+    # =====================================================
+    adata_window = _convert_X_store_type_inplace(
+        adata_window,
+        source_store_type=source_store_type,
+        target_store_type=target_store_type,
+    )
+
+    # =====================================================
+    # 5. 写入 X_HyS_data / X_HyS_indptr
     # =====================================================
     (
         global_indptr_id,
         global_indptr_offset,
         global_data_id,
-    ) = _append_X_CSRO_chunk_fast(
+    ) = _append_X_HyS_chunk_fast(
         adata_window,
         conn,
         base_cell_id=global_cell_id - adata_window.n_obs,
@@ -1071,420 +953,172 @@ def _write_shuffle_window_to_duckdb(
     )
 
 
+# 预读取 sample_n 个细胞，自动判断 X 是 count scale 还是 log scale。
+def _detect_X_store_type_from_backed(
+    adata_backed,
+    sample_n: int = 1000,
+) -> str:
+    """
+    预读取 sample_n 个细胞，自动判断 X 是 count scale 还是 log scale。
 
-''' 大文件读取, cell 级 纯随机 导入， 只支持 h5ad格式'''
-# 819200  耗时 8 分钟左右     2,840,130 × 24,552   2:03:48
-# def load_big_h5ad_to_duckdb_random(
-#     h5ad_path: str,
-#     atlas,
-#     batch_size: int = 4096,
-# ):
-#
-#     mega_batch_size = batch_size * 4
-#
-#     #  1️⃣ 连接数据库
-#     conn = atlas.connect("r+")
-#
-#     # 全局游标
-#     global_cell_id = 0
-#     global_indptr_id = 0
-#     global_indptr_offset = 0
-#     global_data_id = 0
-#
-#     obs_written = False
-#     var_written = False
-#
-#     # 2️⃣ backed 打开
-#     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-#     n_cells = adata_backed.n_obs
-#
-#     # 生成全局随机索引
-#     global_perm = np.arange(n_cells, dtype=np.int32)
-#     np.random.shuffle(global_perm)
-#
-#     # 3️⃣ 动态建表
-#     _create_obs_table_from_adata(conn, adata_backed[:1])
-#     _create_var_table_from_adata(conn, adata_backed[:1])
-#     _create_csro_tables(conn)
-#
-#     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-#     print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式 + 全局随机顺序")
-#
-#     # 4️⃣ mega-batch / mini-batch 导入
-#     for mega_start in tqdm(
-#         range(0, n_cells, mega_batch_size),
-#         desc="Mega-batch（随机顺序读取）",
-#     ):
-#         mega_end = min(mega_start + mega_batch_size, n_cells)
-#
-#         # 使用随机索引读取
-#         mega_idx = global_perm[mega_start:mega_end] # 全局随机索引
-#         mega = adata_backed[mega_idx].to_memory()
-#
-#         # 按batch_size分批导入
-#         for start in range(0, mega.n_obs, batch_size):
-#             end = min(start + batch_size, mega.n_obs)
-#             adata = mega[start:end]
-#
-#             # ---------------- batch 导入 obs ----------------
-#             global_cell_id = _append_obs_rows(
-#                 adata,
-#                 conn,
-#                 start_cell_id=global_cell_id,
-#             )
-#
-#             # ---------------- 导入 var（一次） ----------------
-#             if not var_written:
-#                 _append_var(adata, conn)
-#                 var_written = True
-#
-#             # ---------------- batch 导入 X（CSRO） ----------------
-#             (
-#                 global_indptr_id,
-#                 global_indptr_offset,
-#                 global_data_id,
-#             ) = _append_X_CSRO_chunk_fast(
-#                 adata,
-#                 conn,
-#                 base_cell_id=global_cell_id - adata.n_obs,
-#                 global_indptr_id=global_indptr_id,
-#                 global_indptr_offset=global_indptr_offset,
-#                 global_data_id=global_data_id,
-#             )
-#
-#         del mega
-#         gc.collect()
-#
-#     # 5️⃣ 主键
-#     conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-#     conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-#
-#     # 6️⃣ obsm / varm
-#     _add_obsm_from_h5ad(h5ad_path, atlas)
-#     _add_varm_from_h5ad(h5ad_path, atlas)
-#
-#     print("✔ 全部数据成功导入 DuckDB（含 obsm / varm）")
+    判断逻辑：
+    - log scale：非零值通常大量集中在 0~10
+    - count scale：非零值可能出现几十、几百、几千甚至更大
+    """
+
+    n = min(sample_n, adata_backed.n_obs)
+
+    # ✅ 预读取前 n 个细胞
+    adata_sample = adata_backed[:n].to_memory()
+    X = adata_sample.X
+
+    if sparse.issparse(X):
+        values = np.asarray(X.data, dtype=np.float64)
+    else:
+        X_arr = np.asarray(X)
+        values = X_arr[X_arr != 0].astype(np.float64, copy=False)
+
+    if values.size == 0:
+        del adata_sample
+        gc.collect()
+        raise ValueError(
+            "[ERROR] 预读取的细胞中没有非零值，无法判断 X 是 count 还是 log。"
+        )
+
+    vmax = float(np.max(values))
+    q95 = float(np.percentile(values, 95))
+    frac_le_10 = float(np.mean(values <= 10))
+
+    print("[INFO] X scale 预检测结果:")
+    print(f"  - sample_cells = {n:,}")
+    print(f"  - nonzero_n    = {values.size:,}")
+    print(f"  - max          = {vmax:.4f}")
+    print(f"  - q95          = {q95:.4f}")
+    print(f"  - frac <= 10   = {frac_le_10:.4f}")
+
+    del adata_sample
+    gc.collect()
+
+    # ✅ 经验判断：
+    # log 数据通常绝大多数非零值 <= 10
+    # count 数据只要 max 或高分位明显超过 log 范围，就判断为 count
+    if vmax > 50 or q95 > 10:
+        return "count"
+    else:
+        return "log"
 
 
-def load_big_h5ad_to_duckdb_random(
-    h5ad_path: str,
-    atlas,
-    batch_size: int = 4096,
-    mega_batch_factor: int = 2,  # ✅ 修改 1：原来固定 batch_size * 4，现在参数化
-    commit_every: int = 10,      # ✅ 修改 2：新增，每多少个 mini-batch 提交一次
-    gc_every: int = 20,          # ✅ 修改 3：新增，每多少个 mega-batch 做一次 gc
+# 根据 source_store_type 和 target_store_type 原地转换 adata.X。
+def _convert_X_store_type_inplace(
+    adata,
+    source_store_type: str,
+    target_store_type: str,
 ):
     """
-    大文件读取，cell 级纯随机导入，只支持 h5ad 格式。
+    根据 source_store_type 和 target_store_type 原地转换 adata.X。
 
-    原逻辑：
-    - 生成全局随机 cell 索引 global_perm
-    - 每次随机读取 mega-batch
-    - 再按 batch_size 分 mini-batch 写入 DuckDB
+    source_store_type:
+        - "count"
+        - "log"
 
-    ✅ 本版新增优化：
-    1. mega_batch_size 参数化
-    2. 使用 _append_X_CSRO_chunk_fast()，Arrow 写入
-    3. 外层增加 BEGIN / COMMIT，减少自动提交
-    4. commit_every 控制分批提交
-    5. gc_every 控制 GC 频率
-    6. 增加 read / write / nnz 简单统计
+    target_store_type:
+        - "count"
+        - "log"
     """
 
-    # =====================================================
-    # ✅ 修改 4：mega_batch_size 参数化
-    # 原来：
-    # mega_batch_size = batch_size * 4
-    # =====================================================
-    mega_batch_size = batch_size * mega_batch_factor
+    if source_store_type == target_store_type:
+        return adata
 
-    #  1️⃣ 连接数据库
-    conn = atlas.connect("r+")
-    atlas.connection = conn   # ✅ 修改 5：补上 atlas.connection，后面 obsm/varm 会用
-
-    # 全局游标
-    global_cell_id = 0
-    global_indptr_id = 0
-    global_indptr_offset = 0
-    global_data_id = 0
-
-    var_written = False
-
-    # 2️⃣ backed 打开
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-    n_cells = adata_backed.n_obs
-
-    # 生成全局随机索引
-    global_perm = np.arange(n_cells, dtype=np.int64)
-    np.random.shuffle(global_perm)
-
-    # 3️⃣ 动态建表
-    _create_obs_table_from_adata(conn, adata_backed[:1])
-    _create_var_table_from_adata(conn, adata_backed[:1])
-    _create_csro_tables(conn)
-
-    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式 + 全局随机顺序")
-    print(f"[INFO] batch_size = {batch_size:,}")
-    print(f"[INFO] mega_batch_size = {mega_batch_size:,}")
-    print(f"[INFO] mega_batch_factor = {mega_batch_factor:,}")
-    print(f"[INFO] commit_every = {commit_every:,}")
-    print(f"[INFO] gc_every = {gc_every:,}")
-
-    mini_batch_counter = 0
+    X = adata.X
 
     # =====================================================
-    # ✅ 修改 6：事务放在大循环外
+    # 1. sparse matrix：只改非零值 X.data，不破坏稀疏结构
     # =====================================================
-    conn.execute("BEGIN TRANSACTION")
+    if sparse.issparse(X):
+        if not sparse.isspmatrix_csr(X):
+            X = X.tocsr()
 
-    try:
-        # 4️⃣ mega-batch / mini-batch 导入
-        for mega_i, mega_start in enumerate(
-            tqdm(
-                range(0, n_cells, mega_batch_size),
-                desc="Mega-batch（随机顺序读取）",
-            )
-        ):
-            mega_end = min(mega_start + mega_batch_size, n_cells)
+        X.data = X.data.astype(np.float32, copy=False)
 
-            # 使用随机索引读取
-            mega_idx = global_perm[mega_start:mega_end]
+        if source_store_type == "count" and target_store_type == "log":
+            # count -> log
+            np.log1p(X.data, out=X.data)
 
-            t0 = time.time()
+        elif source_store_type == "log" and target_store_type == "count":
+            # log -> count
+            np.expm1(X.data, out=X.data)
 
-            # 真正触发磁盘读取
-            mega = adata_backed[mega_idx].to_memory()
+            # 避免极小数值误差导致负数
+            X.data[X.data < 0] = 0
 
-            t_read = time.time() - t0
-
-            # 当前 mega 的 nnz
-            if sparse.issparse(mega.X):
-                mega_nnz = mega.X.nnz
-            else:
-                mega_nnz = np.count_nonzero(mega.X)
-
-            # 按 batch_size 分批导入
-            for start in range(0, mega.n_obs, batch_size):
-                end = min(start + batch_size, mega.n_obs)
-                adata = mega[start:end]
-
-                t1 = time.time()
-
-                # ---------------- batch 导入 obs ----------------
-                global_cell_id = _append_obs_rows(
-                    adata,
-                    conn,
-                    start_cell_id=global_cell_id,
-                )
-
-                # ---------------- 导入 var（一次） ----------------
-                if not var_written:
-                    _append_var(adata, conn)
-                    var_written = True
-
-                # ---------------- batch 导入 X（CSRO） ----------------
-                (
-                    global_indptr_id,
-                    global_indptr_offset,
-                    global_data_id,
-                ) = _append_X_CSRO_chunk_fast(   # ✅ 修改 7：使用 Arrow 加速版
-                    adata,
-                    conn,
-                    base_cell_id=global_cell_id - adata.n_obs,
-                    global_indptr_id=global_indptr_id,
-                    global_indptr_offset=global_indptr_offset,
-                    global_data_id=global_data_id,
-                )
-
-                t_write = time.time() - t1
-
-                mini_batch_counter += 1
-
-                # =====================================================
-                # ✅ 修改 8：每 commit_every 个 mini-batch 提交一次
-                # =====================================================
-                if mini_batch_counter % commit_every == 0:
-                    conn.execute("COMMIT")
-                    conn.execute("BEGIN TRANSACTION")
-
-                del adata
-
-            print(
-                f"\n[mega {mega_i}] "
-                f"cells={mega.n_obs:,}, "
-                f"nnz={mega_nnz:,}, "
-                f"read={t_read:.2f}s, "
-                f"total_cells={global_cell_id:,}, "
-                f"total_nnz={global_data_id:,}"
+        else:
+            raise ValueError(
+                f"不支持的转换: {source_store_type} -> {target_store_type}"
             )
 
-            del mega
-
-            # =====================================================
-            # ✅ 修改 9：不要每个 mega 都 gc.collect()
-            # =====================================================
-            if (mega_i + 1) % gc_every == 0:
-                gc.collect()
-
-        # 最后提交
-        conn.execute("COMMIT")
-
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
-    # 5️⃣ 主键
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+        adata.X = X
+        return adata
 
     # =====================================================
-    # ⚠️ 注意：
-    # cell 级随机导入后，obs / X 已经不是原 h5ad 顺序。
-    # 所以 obsm 如果直接按原顺序导入，会和 obs 错位。
-    # 因此这里建议不要导入 obsm。
-    # varm 是 gene 维度，一般没问题。
+    # 2. dense matrix：直接对整个矩阵转换
     # =====================================================
-    # _add_obsm_from_h5ad(h5ad_path, atlas)
-    _add_varm_from_h5ad(h5ad_path, atlas)
+    X = np.asarray(X, dtype=np.float32)
 
-    try:
-        adata_backed.file.close()
-    except Exception:
-        pass
+    if source_store_type == "count" and target_store_type == "log":
+        np.log1p(X, out=X)
 
-    print("✔ 全部数据成功导入 DuckDB（cell 级随机，不含 obsm）")
-    print(f"  - cells: {global_cell_id:,}")
-    print(f"  - nnz:   {global_data_id:,}")
+    elif source_store_type == "log" and target_store_type == "count":
+        np.expm1(X, out=X)
+        np.maximum(X, 0, out=X)
+
+    else:
+        raise ValueError(
+            f"不支持的转换: {source_store_type} -> {target_store_type}"
+        )
+
+    adata.X = X
+    return adata
 
 
 '''  大文件读取，cell 顺序 导入, 只支持 h5ad 格式'''
-# 819200   耗时 10:54      2,840,130 × 24,552     30:08
-# def load_big_h5ad_to_duckdb(
-#     h5ad_path: str,
-#     atlas,
-#     batch_size: int = 4096,
-# ):
-#     """
-#     从 h5ad 文件流式导入 DuckDB（全局游标版）
-#     关键工程原则：
-#       - scanpy backed：避免一次性加载 X
-#       - mega-batch   ：顺序磁盘 IO（HDF5 友好） ; mega-batch = “一次从磁盘顺序读多大”
-#       - mini-batch   ： 每批导入的细胞数量 ; mini-batch = “一次在内存里处理多大”
-#       - CSR-only     ：不存稠密矩阵
-#       - 全局游标     ：
-#     """
-#
-#     mega_batch_size = batch_size * 4  # mega-batch：控制磁盘 IO 行为（性能参数，通常 = mini-batch × 常数）
-#
-#     #  1️⃣ 连接数据库
-#     conn = atlas.connect("r+")
-#
-#     # 全局游标（★ 本版本的核心 ★）
-#     global_cell_id = 0          # obs.id 起始游标
-#     global_indptr_id = 0        # X_CSRO_indptr.id 起始游标
-#     global_indptr_offset = 0    # 全局 nnz 偏移（CSR indptr 语义）
-#     global_data_id = 0          # X_CSRO_data.id 起始游标
-#
-#     obs_written = False
-#     var_written = False
-#
-#     # 2️⃣ backed 打开（只用于 schema + X）
-#     adata_backed = sc.read_h5ad(h5ad_path, backed="r") # backed="r" 磁盘后端，只读（lazy loading）
-#
-#     # 不把 X / obs / var 真正读进内存 ； 只有在切片或 .to_memory() 时才触发磁盘 IO
-#     n_cells = adata_backed.n_obs
-#
-#     # 3️⃣ 动态建表(动态 schema）
-#     _create_obs_table_from_adata(conn, adata_backed[:1])
-#     _create_var_table_from_adata(conn, adata_backed[:1])
-#      # 从 h5ad 文件中，只抽取 1 个 cell，
-#      # 用它来读取 obs / var 的字段结构（列名 + dtype），
-#      # 然后在 DuckDB 里创建 obs / var 表结构，但不导入任何数据。
-#
-#     _create_csro_tables(conn)
-#     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-#     print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
-#
-#     # 4️⃣ mega-batch / mini-batch 导入
-#     for mega_start in tqdm(
-#         range(0, n_cells, mega_batch_size),
-#         desc="Mega-batch（磁盘顺序读取）",
-#     ):
-#         mega_end = min(mega_start + mega_batch_size, n_cells)
-#
-#         # ★ 真正触发磁盘读取的地方
-#         mega = adata_backed[mega_start:mega_end].to_memory()
-#
-#         # 按batch_size分批导入
-#         for start in range(0, mega.n_obs, batch_size):
-#             end = min(start + batch_size, mega.n_obs)
-#             adata = mega[start:end]
-#
-#             # ---------------- batch 导入 obs ----------------
-#             global_cell_id = _append_obs_rows(
-#                 adata,
-#                 conn,
-#                 start_cell_id=global_cell_id,
-#             )
-#
-#             # ---------------- 导入 var（一次） ----------------
-#             if not var_written:
-#                 _append_var(adata, conn)
-#                 var_written = True
-#
-#             # ---------------- batch 导入 X（CSRO） ----------------
-#             (
-#                 global_indptr_id,
-#                 global_indptr_offset,
-#                 global_data_id,
-#             ) = _append_X_CSRO_chunk_fast(
-#                 adata,
-#                 conn,
-#                 base_cell_id=global_cell_id - adata.n_obs,
-#                 global_indptr_id=global_indptr_id,
-#                 global_indptr_offset=global_indptr_offset,
-#                 global_data_id=global_data_id,
-#             )
-#
-#         # mega-batch 结束，释放内存
-#         del mega
-#         gc.collect()
-#
-#     # 5️⃣ 主键（非常重要：必须在数据写完之后）
-#     conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-#     conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-#
-#     # 6️⃣ 导入 obsm / varm
-#     _add_obsm_from_h5ad(h5ad_path, atlas)
-#     _add_varm_from_h5ad(h5ad_path, atlas)
-#
-#     print("✔ 全部数据成功导入 DuckDB（含 obsm / varm）")
-
-
-# todo 优化， 多次提交加GC优化
 def load_big_h5ad_to_duckdb(
     h5ad_path: str,
     atlas,
     batch_size: int = 4096,
-    mega_batch_factor: int = 1 ,   # ✅ 修改 1：不要固定 * 4，改成可控参数
-    commit_every: int = 5,       # ✅ 修改 2：每多少个 mini-batch 提交一次
+    mega_batch_factor: int = 1,   # ✅ 修改 1：不要固定 * 4，改成可控参数
+    commit_every: int = 5,        # ✅ 修改 2：每多少个 mini-batch 提交一次
     gc_every: int = 20,           # ✅ 修改 3：每多少个 mega-batch 做一次 gc
+    store_type: str = "count",    # ✅ 新增：目标存储尺度，"count" 或 "log"
 ):
     """
     从 h5ad 文件流式导入 DuckDB（事务优化版）
 
     ✅ 修改点：
-    1. mega_batch_size 可控，默认 batch_size * 2，更稳
+    1. mega_batch_size 可控，默认 batch_size * mega_batch_factor
     2. 多个 mini-batch 共用一个事务，减少自动提交
     3. 不再每个 mega-batch 都 gc.collect()
     4. 增加简单耗时统计，方便判断慢在哪里
+    5. 新增 store_type:
+       - store_type="count": 存储非 log 尺度数据
+       - store_type="log"  : 存储 log1p 尺度数据
+
+    注意：
+    - 如果源数据是 count，store_type="log" 时会执行 log1p
+    - 如果源数据是 log，store_type="count" 时会执行 expm1
+    - 如果源数据是 log1p(normalized count)，expm1 后得到的是 normalized count，
+      不一定是真正 raw count
     """
 
     # =====================================================
-    # ✅ 修改 1：mega_batch_size 改成可控
-    # 原来：
-    # mega_batch_size = batch_size * 4
+    # ✅ 修改 1：检查目标存储类型
+    # =====================================================
+    if store_type not in {"count", "log"}:
+        raise ValueError(
+            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
+        )
+
+    # =====================================================
+    # ✅ 修改 2：mega_batch_size 改成可控
     # =====================================================
     mega_batch_size = batch_size * mega_batch_factor
 
@@ -1501,8 +1135,24 @@ def load_big_h5ad_to_duckdb(
     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
-    # ✅ 新增：简单判断 h5ad.X 格式
+    # ✅ 原有：简单判断 h5ad.X 底层格式
     x_format = _print_h5ad_X_format(h5ad_path)
+
+    # =====================================================
+    # ✅ 新增：预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
+    # =====================================================
+    source_store_type = _detect_X_store_type_from_backed(
+        adata_backed,
+        sample_n=1000,
+    )
+
+    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
+    print(f"[INFO] 目标存储类型 store_type = {store_type}")
+
+    if source_store_type == store_type:
+        print("[INFO] X 数据不需要转换，直接写入。")
+    else:
+        print(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
 
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
@@ -1512,12 +1162,15 @@ def load_big_h5ad_to_duckdb(
     print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
     print(f"[INFO] batch_size = {batch_size:,}")
     print(f"[INFO] mega_batch_size = {mega_batch_size:,}")
+    print(f"[INFO] mega_batch_factor = {mega_batch_factor:,}")
     print(f"[INFO] commit_every = {commit_every:,}")
+    print(f"[INFO] gc_every = {gc_every:,}")
+    print(f"[INFO] store_type = {store_type}")
 
     mini_batch_counter = 0
 
     # =====================================================
-    # ✅ 修改 2：事务放在大循环外
+    # ✅ 修改 3：事务放在大循环外
     # =====================================================
     conn.execute("BEGIN TRANSACTION")
 
@@ -1536,6 +1189,16 @@ def load_big_h5ad_to_duckdb(
             mega = adata_backed[mega_start:mega_end].to_memory()
 
             t_read = time.time() - t0
+
+            # =====================================================
+            # ✅ 新增：mega-batch 读入后，统一转换 X 的存储尺度
+            # 这样后面的 mini-batch 都已经是目标 store_type
+            # =====================================================
+            mega = _convert_X_store_type_inplace(
+                mega,
+                source_store_type=source_store_type,
+                target_store_type=store_type,
+            )
 
             # 统计当前 mega 的 nnz
             if sparse.issparse(mega.X):
@@ -1567,7 +1230,7 @@ def load_big_h5ad_to_duckdb(
                     global_indptr_id,
                     global_indptr_offset,
                     global_data_id,
-                ) = _append_X_CSRO_chunk_fast(
+                ) = _append_X_HyS_chunk_fast(
                     adata,
                     conn,
                     base_cell_id=global_cell_id - adata.n_obs,
@@ -1581,7 +1244,7 @@ def load_big_h5ad_to_duckdb(
                 mini_batch_counter += 1
 
                 # =====================================================
-                # ✅ 修改 3：每 commit_every 个 mini-batch 提交一次
+                # ✅ 修改 4：每 commit_every 个 mini-batch 提交一次
                 # =====================================================
                 if mini_batch_counter % commit_every == 0:
                     conn.execute("COMMIT")
@@ -1601,7 +1264,7 @@ def load_big_h5ad_to_duckdb(
             del mega
 
             # =====================================================
-            # ✅ 修改 4：不要每个 mega 都 gc.collect()
+            # ✅ 修改 5：不要每个 mega 都 gc.collect()
             # =====================================================
             if (mega_i + 1) % gc_every == 0:
                 gc.collect()
@@ -1618,6 +1281,7 @@ def load_big_h5ad_to_duckdb(
     conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
 
     # 6️⃣ 导入 obsm / varm
+    # ✅ 顺序导入没有打乱 cell，所以 obsm 可以正常导入
     _add_obsm_from_h5ad(h5ad_path, atlas)
     _add_varm_from_h5ad(h5ad_path, atlas)
 
@@ -1626,10 +1290,10 @@ def load_big_h5ad_to_duckdb(
     except Exception:
         pass
 
-    print("✔ 全部数据成功导入 DuckDB（含 obsm / varm）")
+    print("✔ 全部数据成功导入 DuckDB（顺序导入，含 obsm / varm）")
     print(f"  - cells: {global_cell_id:,}")
     print(f"  - nnz:   {global_data_id:,}")
-
+    print(f"  - store_type: {store_type}")
 
 def _print_h5ad_X_format(h5ad_path: str):
     """
@@ -1691,27 +1355,12 @@ def _infer_duckdb_type_from_series(s: pd.Series) -> str:
 
 
 ''' 建立obs表'''
-# def _create_obs_table_from_adata(conn, adata):
-#
-#     cols = ["atlas_cell_id INTEGER", "atlas_cell_name VARCHAR"]
-#
-#     for col in adata.obs.columns:
-#         duck_type = _infer_duckdb_type_from_series(adata.obs[col])
-#         cols.append(f'"{col}" {duck_type}')
-#
-#     ddl = f"""
-#     CREATE OR REPLACE TABLE obs (
-#         {", ".join(cols)}
-#     )
-#     """
-#     conn.execute(ddl)
-
 def _create_obs_table_from_adata(conn, adata):
     """
     建立 obs 表。
 
     固定系统字段：
-        atlas_cell_id   INTEGER
+        atlas_cell_id   UINTEGER
         atlas_cell_name VARCHAR
 
     如果 adata.obs 中已经存在 atlas_cell_id / atlas_cell_name，
@@ -1723,7 +1372,7 @@ def _create_obs_table_from_adata(conn, adata):
 
     # ✅ 强制使用你要求的类型
     cols = [
-        "atlas_cell_id INTEGER",
+        "atlas_cell_id   UINTEGER",
         "atlas_cell_name VARCHAR",
     ]
 
@@ -1744,21 +1393,6 @@ def _create_obs_table_from_adata(conn, adata):
     conn.execute(ddl)
 
 ''' 建立var表'''
-# def _create_var_table_from_adata(conn, adata):
-#
-#     cols = ["atlas_gene_id USMALLINT", "atlas_gene_name VARCHAR"]
-#
-#     for col in adata.var.columns:
-#         duck_type = _infer_duckdb_type_from_series(adata.var[col])
-#         cols.append(f'"{col}" {duck_type}')
-#
-#     ddl = f"""
-#     CREATE OR REPLACE TABLE var (
-#         {", ".join(cols)}
-#     )
-#     """
-#     conn.execute(ddl)
-
 def _create_var_table_from_adata(conn, adata):
     """
     建立 var 表。
@@ -1801,50 +1435,31 @@ def _create_csro_tables(conn):
 
     conn.execute(
         """ -- 不存第一个0值
-        CREATE OR REPLACE TABLE X_CSRO_indptr ( 
-            atlas_cell_id   INTEGER,  --  cell id , 改成 INTEGER int32  −21 4748 3648 到 21 4748 3647
-            -- atlas_cell_name VARCHAR, 用不上，暂时注释掉
-            indptr BIGINT
+        CREATE OR REPLACE TABLE X_HyS_indptr ( 
+            atlas_cell_id  UINTEGER,  --   int32  无符号 4,294,967,295
+            indptr BIGINT,           --   int64  无符号 18,446,744,073,709,551,615
         )
         """
     )
     conn.execute(
         """
-        CREATE OR REPLACE TABLE X_CSRO_data (
-            id BIGINT,
-            atlas_cell_id INTEGER,    --  cell id , 改成 INTEGER，int32  −21 4748 3648 到 21 4748 3647
-            atlas_gene_id USMALLINT,  --  gene id , indices 无符号 int16 0 ~ 65535 之间
-            data REAL                 --  float 32 单精度浮点数（4字节）
+        CREATE OR REPLACE TABLE X_HyS_data (
+            id BIGINT,                --   int64  无符号 18,446,744,073,709,551,615
+            atlas_cell_id  UINTEGER,   --   int32  无符号 4,294,967,295
+            atlas_gene_id  USMALLINT,  --  gene id , indices 无符号 int16 0 ~ 65535 之间
+            data REAL                  --  float 32 单精度浮点数（4字节）
         )
         """
     )
 
 
 ''' 导入 obs 表 '''
-# def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
-#
-#     n = adata.n_obs
-#
-#     obs_df = adata.obs.copy()
-#     obs_df["atlas_cell_name"] = adata.obs.index.astype(str)
-#     obs_df["atlas_cell_id"] = np.arange(start_cell_id, start_cell_id + n, dtype=np.int64)
-#
-#     obs_df = obs_df[
-#         ["atlas_cell_id", "atlas_cell_name"] + [c for c in obs_df.columns if c not in ("atlas_cell_id", "atlas_cell_name")]
-#     ]
-#
-#     conn.register("obs_df", obs_df)
-#     conn.execute("INSERT INTO obs SELECT * FROM obs_df")
-#     conn.unregister("obs_df")
-#
-#     return start_cell_id + n
-
 def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
     """
     导入 obs 表。
 
     固定重新生成：
-        atlas_cell_id   INTEGER
+        atlas_cell_id   UINTEGER
         atlas_cell_name VARCHAR
 
     如果来源 adata.obs 中已经有 atlas_cell_id / atlas_cell_name，
@@ -1861,11 +1476,10 @@ def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
             obs_df = obs_df.drop(columns=[c])
 
     # ✅ 重新生成当前数据库自己的 atlas_cell_id / atlas_cell_name
-    # 注意：DuckDB INTEGER 对应 int32
     obs_df["atlas_cell_id"] = np.arange(
         start_cell_id,
         start_cell_id + n,
-        dtype=np.int32,
+        dtype=np.uint32,
     )
 
     obs_df["atlas_cell_name"] = adata.obs.index.astype(str)
@@ -1886,20 +1500,6 @@ def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
     return start_cell_id + n
 
 ''' 导入 var 表 '''
-# def _append_var(adata, conn):
-#
-#     var_df = adata.var.copy()
-#     var_df["atlas_gene_name"] = adata.var.index.astype(str)
-#     var_df["atlas_gene_id"] = np.arange(adata.n_vars, dtype=np.uint16)
-#
-#     var_df = var_df[
-#         ["atlas_gene_id", "atlas_gene_name"] + [c for c in var_df.columns if c not in ("atlas_gene_id", "atlas_gene_name")]
-#     ]
-#
-#     conn.register("var_df", var_df)
-#     conn.execute("INSERT INTO var SELECT * FROM var_df")
-#     conn.unregister("var_df")
-
 def _append_var(adata, conn):
     """
     导入 var 表。
@@ -1976,7 +1576,7 @@ def _append_X_CSRO_chunk(
             "atlas_cell_id": np.arange(
                 global_indptr_id,
                 global_indptr_id + len(adj_indptr),
-                dtype=np.int32,
+                dtype=np.uint32,
             ),
             "atlas_cell_name": adata.obs.index.astype(str),
             "indptr": adj_indptr,
@@ -1984,7 +1584,7 @@ def _append_X_CSRO_chunk(
     )
 
     conn.register("indptr_df", indptr_df)
-    conn.execute("INSERT INTO X_CSRO_indptr SELECT * FROM indptr_df")
+    conn.execute("INSERT INTO X_HyS_indptr SELECT * FROM indptr_df")
     conn.unregister("indptr_df")
 
     global_indptr_id += len(adj_indptr)
@@ -1993,7 +1593,7 @@ def _append_X_CSRO_chunk(
     nnz = len(data)
     if nnz > 0:
         cell_index = np.repeat(
-            np.arange(base_cell_id, base_cell_id + adata.n_obs, dtype=np.int32),
+            np.arange(base_cell_id, base_cell_id + adata.n_obs, dtype=np.uint32),
             row_nnz,
         )
 
@@ -2007,7 +1607,7 @@ def _append_X_CSRO_chunk(
         )
 
         conn.register("data_df", data_df)
-        conn.execute("INSERT INTO X_CSRO_data SELECT * FROM data_df")
+        conn.execute("INSERT INTO X_HyS_data SELECT * FROM data_df")
         conn.unregister("data_df")
 
         global_data_id += nnz
@@ -2016,9 +1616,8 @@ def _append_X_CSRO_chunk(
     return global_indptr_id, global_indptr_offset, global_data_id
 
 
-# todo 修改
 ''' 导入 X_CSRO 表：Arrow 加速版 '''
-def _append_X_CSRO_chunk_fast(
+def _append_X_HyS_chunk_fast(
     adata,
     conn,
     *,
@@ -2031,14 +1630,14 @@ def _append_X_CSRO_chunk_fast(
     Arrow 加速版 X_CSRO 导入函数
 
     对应表结构：
-    X_CSRO_indptr(
-        atlas_cell_id INTEGER,
+    X_HyS_indptr(
+        atlas_cell_id UINTEGER,
         indptr BIGINT
     )
 
-    X_CSRO_data(
+    X_HyS_data(
         id BIGINT,
-        atlas_cell_id INTEGER,
+        atlas_cell_id UINTEGER,
         atlas_gene_id USMALLINT,
         data REAL
     )
@@ -2046,7 +1645,7 @@ def _append_X_CSRO_chunk_fast(
     ✅ 最小化修改点：
     1. indptr_df: pandas.DataFrame -> pyarrow.Table
     2. data_df: pandas.DataFrame -> pyarrow.Table
-    3. 去掉 X_CSRO_indptr.atlas_cell_name
+    3. 去掉 X_HyS_indptr.atlas_cell_name
     4. CSR 已经是 csr_matrix 时，不重复 .tocsr()
     5. astype(copy=False)，减少不必要复制
     """
@@ -2102,9 +1701,9 @@ def _append_X_CSRO_chunk_fast(
             np.arange(
                 global_indptr_id,
                 global_indptr_id + len(adj_indptr),
-                dtype=np.int32,
+                dtype=np.uint32,
             ),
-            type=pa.int32(),
+            type=pa.uint32(),
         ),
         "indptr": pa.array(
             adj_indptr,
@@ -2114,7 +1713,7 @@ def _append_X_CSRO_chunk_fast(
 
     conn.register("_indptr_arrow", indptr_table)
     conn.execute("""
-        INSERT INTO X_CSRO_indptr (
+        INSERT INTO X_HyS_indptr (
             atlas_cell_id,
             indptr
         )
@@ -2140,7 +1739,7 @@ def _append_X_CSRO_chunk_fast(
             np.arange(
                 base_cell_id,
                 base_cell_id + adata.n_obs,
-                dtype=np.int32,
+                dtype=np.uint32,
             ),
             row_nnz,
         )
@@ -2167,7 +1766,7 @@ def _append_X_CSRO_chunk_fast(
             ),
             "atlas_cell_id": pa.array(
                 cell_index,
-                type=pa.int32(),
+                type=pa.uint32(),
             ),
             "atlas_gene_id": pa.array(
                 indices,
@@ -2181,7 +1780,7 @@ def _append_X_CSRO_chunk_fast(
 
         conn.register("_data_arrow", data_table)
         conn.execute("""
-            INSERT INTO X_CSRO_data (
+            INSERT INTO X_HyS_data (
                 id,
                 atlas_cell_id,
                 atlas_gene_id,
@@ -2398,7 +1997,6 @@ def _add_obs(adata:AnnData, atlas:Atlas):
     atlas.connection.unregister('obs_df')
     logger.info("导入obs数据成功")
 
-
 ''' 导入 var  '''
 def _add_var(adata:AnnData, atlas:Atlas):
 
@@ -2413,7 +2011,6 @@ def _add_var(adata:AnnData, atlas:Atlas):
     atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")  # 设置ID字段为主码，保证唯一性
     atlas.connection.unregister('var_df')
     logger.info("导入var数据成功")
-
 
 ''' 导入 obsm '''
 def _add_obsm(adata: AnnData, atlas: Atlas):
@@ -2438,7 +2035,7 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
             columns=[f"dim_{i}" for i in range(mat.shape[1])]
         )
 
-        df.insert(0, "atlas_cell_id", np.arange(n_cells, dtype=np.int32))
+        df.insert(0, "atlas_cell_id", np.arange(n_cells, dtype=np.uint32))
 
         conn.register("obsm_df", df)
         conn.execute(f"""
@@ -2448,7 +2045,6 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
         conn.unregister("obsm_df")
 
     logger.info("obsm 导入完成（统一 schema）")
-
 
 ''' 导入 varm '''
 def _add_varm(adata: AnnData, atlas: Atlas):
@@ -2499,8 +2095,8 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
     # ===================== 建表 =====================
     conn.execute(
         """ -- 不存第一个0值
-        CREATE OR REPLACE TABLE X_CSRO_indptr ( 
-            atlas_cell_id   INTEGER,  --  cell id , 改成 INTEGER int32  −21 4748 3648 到 21 4748 3647
+        CREATE OR REPLACE TABLE X_HyS_indptr ( 
+            atlas_cell_id   UINTEGER, 
             atlas_cell_name VARCHAR,
             indptr BIGINT
         )
@@ -2508,9 +2104,9 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
     )
     conn.execute(
         """
-        CREATE OR REPLACE TABLE X_CSRO_data (
+        CREATE OR REPLACE TABLE X_HyS_data (
             id BIGINT,
-            atlas_cell_id INTEGER,    --  cell id , 改成 INTEGER，int32  −21 4748 3648 到 21 4748 3647
+            atlas_cell_id UINTEGER,   
             atlas_gene_id USMALLINT,  --  gene id , indices 无符号 int16 0 ~ 65535 之间
             data REAL                 --  float 32 单精度浮点数（4字节）
         )
@@ -2546,12 +2142,12 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
             adj_indptr = indptr[1:] + global_indptr_offset
 
             indptr_df = pd.DataFrame({
-                "atlas_cell_id": np.arange(start, end, dtype=np.int32),
+                "atlas_cell_id": np.arange(start, end, dtype=np.uint32),
                 "atlas_cell_name": cell_names[start:end],
                 "indptr": adj_indptr
             })
 
-            conn.execute("INSERT INTO X_CSRO_indptr SELECT * FROM indptr_df")
+            conn.execute("INSERT INTO X_HyS_indptr SELECT * FROM indptr_df")
 
             global_indptr_offset = adj_indptr[-1]
 
@@ -2567,7 +2163,7 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
                 # 直接在 chunk 内构造 cell_index（CSR → COO）
                 row_lengths = np.diff(indptr)
                 cell_index = np.repeat(
-                    np.arange(start, end, dtype=np.int32),
+                    np.arange(start, end, dtype=np.uint32),
                     row_lengths
                 )
 
@@ -2578,7 +2174,7 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
                     "data": data
                 })
 
-                conn.execute("INSERT INTO X_CSRO_data SELECT * FROM data_df")
+                conn.execute("INSERT INTO X_HyS_data SELECT * FROM data_df")
 
                 global_data_counter += nnz
 
@@ -2601,236 +2197,6 @@ def _add_X_CSRO_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
         conn.execute("ROLLBACK")
         logger.error(f"CSR 导入失败: {e}")
         raise
-
-
-
-# todo
-# 10 个 h5ad 文件
-#     ↓
-# 第 1 个文件：建表 + 写 var + 写 obs + 写 X
-# 第 2 个文件：不建表，只追加 obs + X
-# 第 3 个文件：继续追加 obs + X
-# ...
-# 第 10 个文件：继续追加 obs + X
-#     ↓
-# 最后统一加主键
-
-# for h5ad_path in h5ad_paths:
-#     不重置 global_cell_id
-#     不重置 global_indptr_offset
-#     不重置 global_data_id
-#     只在第一个文件建表
-#     只在第一个文件写 var
-#     后续文件只 INSERT 追加
-
-# todo 多个 h5ad 文件顺序追加导入 DuckDB。
-def load_big_h5ad_list_to_duckdb_random(
-    h5ad_paths: list[str],
-    atlas,
-    batch_size: int = 4096,
-    check_var: bool = True,
-    random_seed: int | None = None,
-):
-    """
-    多个 h5ad 文件追加导入 DuckDB，并且每个文件内部 cell 随机导入。
-
-    特点：
-    - 文件之间：按 h5ad_paths 顺序追加
-    - 文件内部：随机 cell 顺序导入
-    - var：只导入第一个文件
-    - obs / X_CSRO_indptr / X_CSRO_data：跨文件连续追加
-    - atlas_cell_id：按照随机后的导入顺序重新编号
-    - X_CSRO_data.id：按照随机后的导入顺序连续编号
-
-    适合：
-    - 1亿细胞拆成多个 h5ad 文件
-    - 希望导入后直接顺序 minibatch 就具有随机性
-
-    注意：
-    - 不导入 obsm / varm
-    - 所有文件必须 gene 数量和 gene 顺序一致
-    """
-
-    import gc
-    import numpy as np
-    import scanpy as sc
-    from tqdm import tqdm
-
-    if isinstance(h5ad_paths, str):
-        h5ad_paths = [h5ad_paths]
-
-    if len(h5ad_paths) == 0:
-        raise ValueError("h5ad_paths 不能为空")
-
-    if random_seed is not None:
-        np.random.seed(random_seed)
-
-    mega_batch_size = batch_size * 8
-
-    conn = atlas.connect("r+")
-    atlas.connection = conn
-
-    # =====================================================
-    # 全局游标：跨文件连续累加
-    # =====================================================
-    global_cell_id = 0
-    global_indptr_id = 0
-    global_indptr_offset = 0
-    global_data_id = 0
-
-    var_written = False
-    ref_var_names = None
-    ref_n_genes = None
-
-    print("\n==== load_big_h5ad_list_to_duckdb_random ====")
-    print(f"[INFO] 文件数量: {len(h5ad_paths)}")
-    print(f"[INFO] batch_size: {batch_size:,}")
-    print(f"[INFO] mega_batch_size: {mega_batch_size:,}")
-    print("[INFO] 文件之间顺序追加，文件内部随机导入")
-
-    for file_idx, h5ad_path in enumerate(h5ad_paths):
-
-        print("\n" + "=" * 80)
-        print(f"[FILE {file_idx + 1}/{len(h5ad_paths)}] {h5ad_path}")
-        print("=" * 80)
-
-        # =====================================================
-        # 1. backed 打开当前 h5ad
-        # =====================================================
-        adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-
-        n_cells = adata_backed.n_obs
-        n_genes = adata_backed.n_vars
-
-        print(f"[INFO] 当前文件维度: {n_cells:,} × {n_genes:,}")
-
-        # =====================================================
-        # 2. 第一个文件：建表 + 记录 gene 顺序
-        # =====================================================
-        if file_idx == 0:
-            print("[INIT] 第一个文件：创建 obs / var / CSRO 表")
-
-            _create_obs_table_from_adata(conn, adata_backed[:1])
-            _create_var_table_from_adata(conn, adata_backed[:1])
-            _create_csro_tables(conn)
-
-            ref_var_names = adata_backed.var.index.astype(str).to_numpy()
-            ref_n_genes = n_genes
-
-        # =====================================================
-        # 3. 后续文件：检查 gene 数量和顺序
-        # =====================================================
-        else:
-            if check_var:
-                if n_genes != ref_n_genes:
-                    raise ValueError(
-                        f"第 {file_idx + 1} 个文件 gene 数量不一致："
-                        f"{n_genes} != {ref_n_genes}"
-                    )
-
-                cur_var_names = adata_backed.var.index.astype(str).to_numpy()
-
-                if not np.array_equal(cur_var_names, ref_var_names):
-                    raise ValueError(
-                        f"第 {file_idx + 1} 个文件 gene 顺序与第一个文件不一致，"
-                        f"不能直接追加导入。"
-                    )
-
-        # =====================================================
-        # 4. 当前文件内部生成随机索引
-        # =====================================================
-        global_perm = np.arange(n_cells, dtype=np.int64)
-        np.random.shuffle(global_perm)
-
-        print("[INFO] 当前文件已生成随机 cell 顺序")
-
-        # =====================================================
-        # 5. 当前文件 mega-batch / mini-batch 随机导入
-        # =====================================================
-        for mega_start in tqdm(
-            range(0, n_cells, mega_batch_size),
-            desc=f"File {file_idx + 1} Random Mega-batch",
-        ):
-            mega_end = min(mega_start + mega_batch_size, n_cells)
-
-            # -------------------------------------------------
-            # 随机索引读取
-            # -------------------------------------------------
-            mega_idx = global_perm[mega_start:mega_end]
-
-            # 真正触发磁盘读取
-            mega = adata_backed[mega_idx].to_memory()
-
-            for start in range(0, mega.n_obs, batch_size):
-                end = min(start + batch_size, mega.n_obs)
-                adata = mega[start:end]
-
-                # ---------------- obs 追加 ----------------
-                base_cell_id = global_cell_id
-
-                global_cell_id = _append_obs_rows(
-                    adata,
-                    conn,
-                    start_cell_id=global_cell_id,
-                )
-
-                # ---------------- var 只写一次 ----------------
-                if not var_written:
-                    _append_var(adata, conn)
-                    var_written = True
-
-                # ---------------- X_CSRO 追加 ----------------
-                (
-                    global_indptr_id,
-                    global_indptr_offset,
-                    global_data_id,
-                ) = _append_X_CSRO_chunk(
-                    adata,
-                    conn,
-                    base_cell_id=base_cell_id,
-                    global_indptr_id=global_indptr_id,
-                    global_indptr_offset=global_indptr_offset,
-                    global_data_id=global_data_id,
-                )
-
-            del mega
-            gc.collect()
-
-        # =====================================================
-        # 6. 关闭 backed 文件
-        # =====================================================
-        try:
-            adata_backed.file.close()
-        except Exception:
-            pass
-
-        print(
-            f"[DONE] 文件 {file_idx + 1}/{len(h5ad_paths)} 导入完成 | "
-            f"累计 cells={global_cell_id:,}, "
-            f"累计 nnz={global_data_id:,}, "
-            f"indptr_offset={global_indptr_offset:,}"
-        )
-
-    # =====================================================
-    # 7. 所有文件导入后统一添加主键
-    # =====================================================
-    print("\n[INFO] 添加主键...")
-
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-
-    print("\n✔ 多文件 h5ad 随机导入 DuckDB 完成")
-    print(f"  - files : {len(h5ad_paths):,}")
-    print(f"  - cells : {global_cell_id:,}")
-    print(f"  - genes : {ref_n_genes:,}")
-    print(f"  - nnz   : {global_data_id:,}")
-
-    return {
-        "files": len(h5ad_paths),
-        "cells": global_cell_id,
-        "genes": ref_n_genes,
-        "nnz": global_data_id,
-    }
 
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''

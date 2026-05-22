@@ -239,7 +239,7 @@ class StreamingPCA:
 
         cell_offset = 0  # 🔥关键：全局递增
 
-        for X_batch in tqdm(atlas.minibatch_dense()):
+        for X_batch in tqdm(atlas.minibatch_dense( pass_mode="single-pass")):
             X_pca = self.ipca.transform(X_batch)
             # transform 内部其实做的就是：
             # X_pca = X_batch @ components_.T

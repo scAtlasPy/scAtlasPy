@@ -6,197 +6,17 @@ from datetime import datetime
 
 ''' 可视化 / 对外入口层 '''
 # 用 PCA 的前两个主成分（PC1, PC2）做二维散点图
-# 然后用某个基因（这里是 CST3）的表达值给点上色。
-# def pca(
-#         atlas: Atlas,
-#         color: str | None = None,  # 例如 "CST3"
-#         x_pc: int = 0,
-#         y_pc: int = 1,
-#         annotate_var_explained: bool = True,
-#         sample_n: int | None = 50000,  # SQL先抽样，适合大数据
-#         use_expr_field: str = "data_log1p",  # 给基因着色时用哪个表达列
-#         figsize=(6, 6),
-#         point_size: float = 8,
-#         alpha: float = 0.9
-# ):
-#     """
-#     数据库版 Scanpy 风格 PCA 图
-#
-#     参数
-#     ----
-#     atlas : Atlas
-#     color : str | None
-#         按什么上色：
-#         - None: 单色散点
-#         - 基因名: 按该基因表达上色，比如 "CST3"
-#     x_pc / y_pc : int
-#         画哪两个主成分，0-based
-#     annotate_var_explained : bool
-#         是否在坐标轴上标注 explained variance ratio
-#     sample_n : int | None
-#         抽样多少细胞。None 表示不抽样
-#     use_expr_field : str
-#         基因表达取哪个字段，比如 "data" / "data_log1p" / "data_scale"
-#     """
-#
-#     print("\n==== pca plot ====")
-#     start = datetime.now()
-#     conn = atlas.connection
-#
-#     pcx = f"pc{x_pc}"
-#     pcy = f"pc{y_pc}"
-#
-#     # -------------------------------------------------
-#     # 0️⃣ 检查表和列是否存在
-#     # -------------------------------------------------
-#     obsm_cols = [r[1] for r in conn.execute("PRAGMA table_info(obsm_X_pca)").fetchall()]
-#     if pcx not in obsm_cols or pcy not in obsm_cols:
-#         raise ValueError(
-#             f"obsm_X_pca 中不存在列: {pcx} 或 {pcy}\n"
-#             f"请先运行 atlas.pca()"
-#         )
-#
-#     # -------------------------------------------------
-#     # 1️⃣ 读 explained variance ratio
-#     # -------------------------------------------------
-#     evr = conn.execute(f"""
-#         SELECT pc_index, variance_ratio
-#         FROM uns_pca_stats
-#         WHERE pc_index IN ({x_pc}, {y_pc})
-#         ORDER BY pc_index
-#     """).fetchdf()
-#
-#     evr_map = dict(zip(evr["pc_index"], evr["variance_ratio"]))
-#
-#     x_label = f"PC{x_pc + 1}"
-#     y_label = f"PC{y_pc + 1}"
-#
-#     if annotate_var_explained:
-#         if x_pc in evr_map:
-#             x_label += f" ({evr_map[x_pc] * 100:.2f}%)"
-#         if y_pc in evr_map:
-#             y_label += f" ({evr_map[y_pc] * 100:.2f}%)"
-#
-#     # -------------------------------------------------
-#     # 2️⃣ SQL 先抽样细胞
-#     # -------------------------------------------------
-#     if sample_n is None:
-#         pca_query = f"""
-#             SELECT atlas_cell_id, {pcx}, {pcy}
-#             FROM obsm_X_pca
-#         """
-#     else:
-#         pca_query = f"""
-#             SELECT atlas_cell_id, {pcx}, {pcy}
-#             FROM obsm_X_pca
-#             USING SAMPLE {int(sample_n)} ROWS
-#         """
-#
-#     pca_df = conn.execute(pca_query).fetchdf()
-#
-#     # -------------------------------------------------
-#     # 3️⃣ 如果按基因上色：取该基因表达
-#     # -------------------------------------------------
-#     if color is not None:
-#         # 先查 gene id
-#         gene_row = conn.execute(f"""
-#             SELECT atlas_gene_id
-#             FROM var
-#             WHERE atlas_gene_name = '{color}'
-#             LIMIT 1
-#         """).fetchone()
-#
-#         if gene_row is None:
-#             raise ValueError(f"var 中找不到基因: {color}")
-#
-#         gene_id = gene_row[0]
-#
-#         # 对抽样到的细胞取该基因表达，没有就补0
-#         conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
-#
-#         expr_df = conn.execute(f"""
-#             SELECT
-#                 c.atlas_cell_id,
-#                 COALESCE(x.{use_expr_field}, 0.0) AS expr
-#             FROM _pca_cells_tmp c
-#             LEFT JOIN X_CSRO_data x
-#               ON c.atlas_cell_id = x.atlas_cell_id
-#              AND x.atlas_gene_id = {int(gene_id)}
-#         """).fetchdf()
-#
-#         conn.unregister("_pca_cells_tmp")
-#
-#         plot_df = pca_df.merge(expr_df, on="atlas_cell_id", how="left")
-#         plot_df["expr"] = plot_df["expr"].fillna(0.0)
-#
-#     else:
-#         plot_df = pca_df.copy()
-#
-#     # -------------------------------------------------
-#     # 4️⃣ 画图
-#     # -------------------------------------------------
-#     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
-#     ax.set_facecolor("white")
-#
-#     if color is None:
-#         ax.scatter(
-#             plot_df[pcx].to_numpy(),
-#             plot_df[pcy].to_numpy(),
-#             s=point_size,
-#             c="#7f7f7f",
-#             alpha=alpha,
-#             linewidths=0
-#         )
-#     else:
-#         sc = ax.scatter(
-#             plot_df[pcx].to_numpy(),
-#             plot_df[pcy].to_numpy(),
-#             s=point_size,
-#             c=plot_df["expr"].to_numpy(),
-#             cmap="viridis",
-#             alpha=alpha,
-#             linewidths=0
-#         )
-#         cbar = plt.colorbar(sc, ax=ax, pad=0.02)
-#         cbar.set_label(color, fontsize=12)
-#
-#     ax.set_xlabel(x_label, fontsize=16)
-#     ax.set_ylabel(y_label, fontsize=16)
-#     ax.set_title(color if color is not None else "PCA", fontsize=14, pad=8)
-#
-#     ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
-#     ax.spines["top"].set_visible(False)
-#     ax.spines["right"].set_visible(False)
-#     ax.spines["left"].set_linewidth(1.0)
-#     ax.spines["bottom"].set_linewidth(1.0)
-#     ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
-#
-#     plt.tight_layout(pad=0.8)
-#     plt.show()
-#
-#     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-
-
-# 1️⃣ 画 pca_variance_ratio（最像 sc.pl.pca_variance_ratio）
-# 单个PC贡献 👉 每个PC单独贡献多少信息
-# 🎯 这个图的核心用途
-# 👉 找：
-# ✔️ “elbow point（拐点）”
-
-
-# todo 支持obs列名
 def pca(
         atlas,
         color: str | None = None,          # ✅ 修改：支持 obs 列名 或 gene name
         x_pc: int = 0,
         y_pc: int = 1,
         annotate_var_explained: bool = True,
-        sample_n: int | None = 50000,
+        sample_n: int | None = 500000,
         use_expr_field: str = "data_log1p",
-        figsize=(6, 6),
-        point_size: float = 8,
-        alpha: float = 0.9,
+        figsize=(14, 4.2),                 # ✅ 修改：从 (6, 6) 改宽，更接近 Scanpy 横向布局
+        point_size: float = 1.0,            # ✅ 修改：从 8 改小，避免点太大
+        alpha: float = 0.7,                 # ✅ 修改：从 0.9 改低一点，更接近 Scanpy 密度感
         cmap: str = "viridis",             # ✅ 新增：连续变量 colormap
         palette: str = "tab20",            # ✅ 新增：分类变量 palette
         legend_loc: str = "right_margin",  # ✅ 新增：分类 legend 位置
@@ -544,16 +364,24 @@ def pca(
                 )
 
             if legend_loc == "right_margin":
-                ax.legend(
+                # ✅ 修改：legend 改成两列，并且放在右侧中部，接近 Scanpy 横向布局
+                leg = ax.legend(
                     title=color,
-                    bbox_to_anchor=(1.04, 1),
-                    loc="upper left",
+                    bbox_to_anchor=(1.04, 0.5),   # ✅ 修改：从右上改为右侧居中
+                    loc="center left",            # ✅ 修改：从 upper left 改为 center left
                     frameon=False,
                     markerscale=2,
                     fontsize=9,
                     title_fontsize=10,
                     borderaxespad=0.0,
+                    ncol=2,                       # ✅ 修改：关键，legend 分两列显示
+                    columnspacing=1.2,            # ✅ 修改：两列间距
+                    handletextpad=0.4,            # ✅ 修改：点和文字间距
                 )
+
+                # ✅ 修改：关键，不让 tight_layout / layout 系统为了 legend 压缩主图
+                leg.set_in_layout(False)
+
             elif legend_loc == "on_data":
                 # 简单 on_data：把类别名放到该类 PCA 坐标中位数附近
                 for cat in cats:
@@ -612,7 +440,23 @@ def pca(
 
     ax.set_aspect("auto")
 
-    plt.tight_layout(pad=0.8)
+    # ✅ 修改：控制 PCA 主图框的高宽比例，避免变成图2那种瘦高图
+    ax.set_box_aspect(0.75)
+
+    # =====================================================
+    # ✅ 修改：不要让 tight_layout 把主图挤窄
+    # =====================================================
+    if legend_loc == "right_margin":
+        # ✅ 修改：手动给右侧 legend 留空间，主图不会被压成竖条
+        fig.subplots_adjust(
+            left=0.06,
+            right=0.38,
+            bottom=0.16,
+            top=0.88,
+        )
+    else:
+        plt.tight_layout(pad=0.8)
+
     plt.show()
 
     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
@@ -620,6 +464,12 @@ def pca(
     if return_df:
         return plot_df
 
+
+# 1️⃣ 画 pca_variance_ratio（最像 sc.pl.pca_variance_ratio）
+# 单个PC贡献 👉 每个PC单独贡献多少信息
+# 🎯 这个图的核心用途
+# 👉 找：
+# ✔️ “elbow point（拐点）”
 def pca_variance_ratio(atlas: Atlas, n_pcs=50, log=True, figsize=(16, 8)):
     """
     直接从数据库 uns_pca_stats 画 explained variance ratio

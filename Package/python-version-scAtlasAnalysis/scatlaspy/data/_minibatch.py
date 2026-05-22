@@ -313,16 +313,18 @@ class MinibatchFetchMultiThreads:
         # print(f"[Producer-{tid}] start")
 
         query = f"""
-            SELECT filter_gene_id, data
+            SELECT
+                rowid,
+                filter_gene_id,
+                data
             FROM X_CSRO_data_filtered
-            WHERE tid={tid};
+            WHERE tid = {tid}
         """
 
         t_query = time.time()
         result = conn.execute(query).fetch_record_batch(
             rows_per_batch=self.fetch_size
         )
-        # print(f"[Producer-{tid}] query ready, cost={time.time() - t_query:.2f}s")
 
         rb_count = 0
         nnz_count = 0
@@ -334,14 +336,68 @@ class MinibatchFetchMultiThreads:
                 if self.stop_event.is_set():
                     break
 
-                gene_id = rb.column(0).to_numpy().astype(np.uint16)
-                data = rb.column(1).to_numpy().astype(np.float32)
+                # =====================================================
+                # ✅ 读取 rowid / gene_id / data
+                # =====================================================
+                rowids = rb.column(0).to_numpy().astype(np.int64)
+                gene_id = rb.column(1).to_numpy().astype(np.uint16)
+                data = rb.column(2).to_numpy().astype(np.float32)
 
-                with self.seq_lock:
-                    seq_id = self.global_seq
-                    self.global_seq += 1
+                if len(rowids) == 0:
+                    continue
 
-                # ✅ 修改：防止 out/queue 满时死锁
+                # =====================================================
+                # ✅ 用真实 rowid 计算 seq_id
+                # =====================================================
+                seq_start = int(rowids[0] // self.fetch_size) # 当前 rb 第一行 rowid 属于哪个 block
+                seq_end = int(rowids[-1] // self.fetch_size)  # 当前 rb 最后一行 rowid 属于哪个 block
+
+                #todo 举例子
+                # 现在的代码： 真实 block 的 seq_id 应该按 rowid 分
+                # fetch_size = 100
+                # rowid 0~99      → seq_id = 0
+                # rowid 100~199   → seq_id = 1
+                # rowid 200~299   → seq_id = 2
+                # 如果当前 rb 是 rowid 200~299：
+                # seq_start = 200 // 100 = 2
+                # seq_end   = 299 // 100 = 2
+
+                #  旧代码怎么错？
+                # with self.seq_lock:
+                #     seq_id = self.global_seq
+                #     self.global_seq += 1
+                # 它的意思不是“这个数据属于第几个 rowid block”，而是：
+                # 谁先到，谁就是 seq_id = 0
+                # 谁第二个到，谁就是 seq_id = 1
+                # 谁第三个到，谁就是 seq_id = 2
+                # 如果 多线程到达顺序是：     旧代码给的 seq_id
+                # block 2 先到                 0
+                # block 0 第二个到              1
+                # block 1 第三个到              2
+                # 然后 consumer 按：
+                # seq_id 0 → seq_id 1 → seq_id 2
+                # 输出，实际就变成：
+                # block 2 → block 0 → block 1
+                # 这就错了。
+
+                # =====================================================
+                # ✅ 修改 5：安全检查
+                # 一个 rb 理论上只能属于同一个 seq block
+                # 如果跨 block，说明 rows_per_batch / tid 分片不匹配
+                # =====================================================
+                if seq_start != seq_end:
+                    raise RuntimeError(
+                        f"[Producer-{tid}] 一个 record batch 跨越多个 seq block: "
+                        f"{seq_start} -> {seq_end}, "
+                        f"rowid_start={rowids[0]}, rowid_end={rowids[-1]}, "
+                        f"fetch_size={self.fetch_size}"
+                    )
+
+                seq_id = seq_start
+
+                # =====================================================
+                # ✅ 修改 6：不再使用 self.global_seq / self.seq_lock
+                # =====================================================
                 while not self.stop_event.is_set():
                     try:
                         self.queue.put((seq_id, gene_id, data), timeout=0.5)
@@ -352,29 +408,99 @@ class MinibatchFetchMultiThreads:
                 rb_count += 1
                 nnz_count += len(gene_id)
 
-                if rb_count % 5 == 0:
-                    elapsed = time.time() - t0
-                    # print(
-                    #     f"[Producer-{tid}] rb={rb_count}, "
-                    #     f"nnz={nnz_count:,}, "
-                    #     f"speed={nnz_count / (elapsed + 1e-8):,.0f} nnz/s"
-                    # )
-
         finally:
             conn.close()
-
-            # print(
-            #     f"[Producer-{tid}] done, "
-            #     f"rb={rb_count}, "
-            #     f"nnz={nnz_count:,}, "
-            #     f"time={time.time() - t0:.2f}s"
-            # )
 
             # ✅ 通知 consumer：这个 producer 完成
             try:
                 self.queue.put(None, timeout=0.5)
             except queue.Full:
                 pass
+
+# 每个 producer 负责一个 tid
+# ↓
+# 从 X_CSRO_data_filtered 里读取这个 tid 的数据
+# ↓
+# 每次读取一个 record batch
+# ↓
+# 根据这个 batch 的 rowid 算出真实 seq_id
+# ↓
+# 把 (seq_id, gene_id, data) 放进 queue
+# ↓
+# consumer 再按 seq_id 恢复全局顺序
+
+
+    # def _producer(self, tid):
+    #
+    #     conn = duckdb.connect(self.file_path)
+    #     conn.execute("PRAGMA enable_progress_bar=false")
+    #
+    #     t0 = time.time()
+    #     # print(f"[Producer-{tid}] start")
+    #
+    #     query = f"""
+    #         SELECT filter_gene_id, data
+    #         FROM X_CSRO_data_filtered
+    #         WHERE tid={tid};
+    #     """
+    #
+    #     t_query = time.time()
+    #     result = conn.execute(query).fetch_record_batch(
+    #         rows_per_batch=self.fetch_size
+    #     )
+    #     # print(f"[Producer-{tid}] query ready, cost={time.time() - t_query:.2f}s")
+    #
+    #     rb_count = 0
+    #     nnz_count = 0
+    #
+    #     try:
+    #         for rb in result:
+    #
+    #             # ✅ 新增：提前停止
+    #             if self.stop_event.is_set():
+    #                 break
+    #
+    #             gene_id = rb.column(0).to_numpy().astype(np.uint16)
+    #             data = rb.column(1).to_numpy().astype(np.float32)
+    #
+    #             with self.seq_lock:
+    #                 seq_id = self.global_seq
+    #                 self.global_seq += 1
+    #
+    #             # ✅ 修改：防止 out/queue 满时死锁
+    #             while not self.stop_event.is_set():
+    #                 try:
+    #                     self.queue.put((seq_id, gene_id, data), timeout=0.5)
+    #                     break
+    #                 except queue.Full:
+    #                     continue
+    #
+    #             rb_count += 1
+    #             nnz_count += len(gene_id)
+    #
+    #             if rb_count % 5 == 0:
+    #                 elapsed = time.time() - t0
+    #                 # print(
+    #                 #     f"[Producer-{tid}] rb={rb_count}, "
+    #                 #     f"nnz={nnz_count:,}, "
+    #                 #     f"speed={nnz_count / (elapsed + 1e-8):,.0f} nnz/s"
+    #                 # )
+    #
+    #     finally:
+    #         conn.close()
+    #
+    #         # print(
+    #         #     f"[Producer-{tid}] done, "
+    #         #     f"rb={rb_count}, "
+    #         #     f"nnz={nnz_count:,}, "
+    #         #     f"time={time.time() - t0:.2f}s"
+    #         # )
+    #
+    #         # ✅ 通知 consumer：这个 producer 完成
+    #         try:
+    #             self.queue.put(None, timeout=0.5)
+    #         except queue.Full:
+    #             pass
 
 
     ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''

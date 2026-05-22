@@ -13,7 +13,7 @@ from ._qc import (
     violin_qc_metrics,
     scatter_qc_metrics,
     highly_variable_genes_plot,
-    highly_variable_genes_plot_like_seurat_v3,
+    highly_variable_genes_plot_seurat,
 )
 
 from ._umap import (

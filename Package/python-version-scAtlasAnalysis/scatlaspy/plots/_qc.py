@@ -1060,72 +1060,126 @@ def highly_variable_genes_plot(
 
 
 
-def highly_variable_genes_plot_like_seurat_v3(
+def highly_variable_genes_plot_seurat(
         atlas,
         hvg_key: str = "highly_variable_genes",
-        mean_key: str = "means",
-        var_key: str = "variances",
-        var_norm_key: str = "variances_norm",
         sample_other: int | None = 20000,
-        figsize=(10, 5),
-        point_size_hvg: float = 8,
-        point_size_other: float = 6,
-        alpha_hvg: float = 0.9,
-        alpha_other: float = 0.6
+        save: str | None = None,
 ):
     """
-    严格读取 seurat_v3 结果的 HVG 可视化函数
+    数据库版 Seurat-like HVG 可视化。
 
-    读取 var 中以下列：
-    - means
-    - variances
-    - variances_norm
-    - highly_variable_genes
+    适配 highly_variable_genes_seurat() 的输出结果。
+    直接读取 var 表中的：
+        - means
+        - dispersions
+        - dispersions_norm
+        - highly_variable_genes
+        - highly_variable_rank
+
+    不扫描 X_CSRO_data。
     """
 
-    print("\n==== highly_variable_genes (strict seurat_v3 plot) ====")
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from datetime import datetime
+
+    print("\n==== highly_variable_genes_plot_like_seurat ====")
     start = datetime.now()
+
     conn = atlas.connection
 
+    if conn is None:
+        raise ValueError("atlas.connection 为空，请先连接数据库")
+
     # -------------------------------------------------
-    # 0️⃣ 检查 var 中列是否存在
+    # 0. DuckDB 字段安全引用
     # -------------------------------------------------
-    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    needed = [hvg_key, mean_key, var_key, var_norm_key, "atlas_gene_name"]
+    def _q(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    # -------------------------------------------------
+    # 1. 检查 var 中列是否存在
+    # -------------------------------------------------
+    var_cols = [
+        r[0]
+        for r in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = 'var'
+        """).fetchall()
+    ]
+
+    needed = [
+        "atlas_gene_id",
+        "atlas_gene_name",
+        hvg_key,
+        "means",
+        "dispersions",
+        "dispersions_norm",
+    ]
 
     missing = [c for c in needed if c not in var_cols]
+
     if missing:
         raise ValueError(
             f"var 中不存在这些列: {missing}\n"
-            f"请先运行 seurat_v3 版 highly_variable_genes"
+            f"请先运行 highly_variable_genes_seurat(atlas)"
         )
 
     # -------------------------------------------------
-    # 1️⃣ 严格读取新列
+    # 2. 读取 var 中已经保存好的 HVG 结果
     # -------------------------------------------------
     df = conn.execute(f"""
         SELECT
             atlas_gene_id,
             atlas_gene_name,
-            COALESCE({hvg_key}, FALSE)      AS is_hvg,
-            COALESCE({mean_key}, 0.0)       AS mean_expr,
-            COALESCE({var_key}, 0.0)        AS var_expr,
-            COALESCE({var_norm_key}, 0.0)   AS var_norm_expr
+            COALESCE({_q(hvg_key)}, FALSE) AS is_hvg,
+            means,
+            dispersions,
+            dispersions_norm
         FROM var
         ORDER BY atlas_gene_id
     """).fetchdf()
 
     # -------------------------------------------------
-    # 2️⃣ 非 HVG 可选抽样
+    # 3. 清理 nan / inf
+    # -------------------------------------------------
+    for col in ["means", "dispersions", "dispersions_norm"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        df[col] = df[col].replace([np.inf, -np.inf], np.nan)
+
+    df["is_hvg"] = df["is_hvg"].fillna(False).astype(bool)
+
+    df = df[df["means"].notna()].copy()
+
+    if len(df) == 0:
+        raise ValueError(
+            "var.means 全为空，无法绘图。请先运行 highly_variable_genes_seurat(atlas)。"
+        )
+
+    print(f"[INFO] genes for plot = {len(df):,}")
+    print(f"[INFO] HVGs = {int(df['is_hvg'].sum()):,}")
+
+    # -------------------------------------------------
+    # 4. 非 HVG 可选抽样
     # -------------------------------------------------
     if sample_other is not None:
         df_hvg = df[df["is_hvg"]].copy()
         df_other = df[~df["is_hvg"]].copy()
 
         if len(df_other) > sample_other:
-            df_other = df_other.sample(sample_other, random_state=0)
+            df_other = df_other.sample(
+                n=int(sample_other),
+                random_state=0,
+            )
 
-        plot_df = pd.concat([df_hvg, df_other], axis=0, ignore_index=True)
+        plot_df = pd.concat(
+            [df_hvg, df_other],
+            axis=0,
+            ignore_index=True,
+        )
     else:
         plot_df = df.copy()
 
@@ -1133,87 +1187,106 @@ def highly_variable_genes_plot_like_seurat_v3(
     plot_other = plot_df[~plot_df["is_hvg"]].copy()
 
     # -------------------------------------------------
-    # 3️⃣ 画图
+    # 5. 画图
     # -------------------------------------------------
-    fig, axes = plt.subplots(1, 2, figsize=figsize, facecolor="white")
+    fig, axes = plt.subplots(
+        1,
+        2,
+        figsize=(11, 4.5),
+        facecolor="white",
+    )
 
-    # 左图：variances_norm
+    # =================================================
+    # 左图：normalized dispersions
+    # =================================================
     ax = axes[0]
-    if len(plot_other) > 0:
+
+    other_norm = plot_other[plot_other["dispersions_norm"].notna()]
+    hvg_norm = plot_hvg[plot_hvg["dispersions_norm"].notna()]
+
+    if len(other_norm) > 0:
         ax.scatter(
-            plot_other["mean_expr"].to_numpy(),
-            plot_other["var_norm_expr"].to_numpy(),
-            s=point_size_other,
-            c="#8c8c8c",
-            alpha=alpha_other,
+            other_norm["means"].to_numpy(),
+            other_norm["dispersions_norm"].to_numpy(),
+            s=6,
+            c="#9a9a9a",
+            alpha=0.55,
             linewidths=0,
-            label="other genes"
-        )
-    if len(plot_hvg) > 0:
-        ax.scatter(
-            plot_hvg["mean_expr"].to_numpy(),
-            plot_hvg["var_norm_expr"].to_numpy(),
-            s=point_size_hvg,
-            c="black",
-            alpha=alpha_hvg,
-            linewidths=0,
-            label="highly variable genes"
+            label="other genes",
         )
 
-    ax.set_xlabel("mean expressions of genes", fontsize=16)
-    ax.set_ylabel("variances of genes (normalized)", fontsize=16)
+    if len(hvg_norm) > 0:
+        ax.scatter(
+            hvg_norm["means"].to_numpy(),
+            hvg_norm["dispersions_norm"].to_numpy(),
+            s=8,
+            c="black",
+            alpha=0.9,
+            linewidths=0,
+            label="highly variable genes",
+        )
+
+    ax.set_xlabel("means of genes", fontsize=14)
+    ax.set_ylabel("dispersions of genes (normalized)", fontsize=14)
+
     ax.legend(
         frameon=True,
-        fontsize=11,
-        markerscale=1.0,
+        fontsize=10,
+        markerscale=1.2,
         loc="upper left",
-        borderpad=0.4,
-        handlelength=1.2,
-        handletextpad=0.4
     )
+
     ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
     ax.set_facecolor("white")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_linewidth(1.0)
-    ax.spines["bottom"].set_linewidth(1.0)
-    ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
+    ax.tick_params(axis="both", labelsize=11)
 
-    # 右图：variances
+    # =================================================
+    # 右图：raw dispersions
+    # =================================================
     ax = axes[1]
-    if len(plot_other) > 0:
+
+    other_disp = plot_other[plot_other["dispersions"].notna()]
+    hvg_disp = plot_hvg[plot_hvg["dispersions"].notna()]
+
+    if len(other_disp) > 0:
         ax.scatter(
-            plot_other["mean_expr"].to_numpy(),
-            plot_other["var_expr"].to_numpy(),
-            s=point_size_other,
-            c="#8c8c8c",
-            alpha=alpha_other,
-            linewidths=0
-        )
-    if len(plot_hvg) > 0:
-        ax.scatter(
-            plot_hvg["mean_expr"].to_numpy(),
-            plot_hvg["var_expr"].to_numpy(),
-            s=point_size_hvg,
-            c="black",
-            alpha=alpha_hvg,
-            linewidths=0
+            other_disp["means"].to_numpy(),
+            other_disp["dispersions"].to_numpy(),
+            s=6,
+            c="#9a9a9a",
+            alpha=0.55,
+            linewidths=0,
         )
 
-    ax.set_xlabel("mean expressions of genes", fontsize=16)
-    ax.set_ylabel("variances of genes (not normalized)", fontsize=16)
+    if len(hvg_disp) > 0:
+        ax.scatter(
+            hvg_disp["means"].to_numpy(),
+            hvg_disp["dispersions"].to_numpy(),
+            s=8,
+            c="black",
+            alpha=0.9,
+            linewidths=0,
+        )
+
+    ax.set_xlabel("means of genes", fontsize=14)
+    ax.set_ylabel("dispersions of genes (not normalized)", fontsize=14)
+
     ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
     ax.set_facecolor("white")
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_linewidth(1.0)
-    ax.spines["bottom"].set_linewidth(1.0)
-    ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
+    ax.tick_params(axis="both", labelsize=11)
 
     plt.tight_layout(pad=1.0)
+
+    if save is not None:
+        plt.savefig(save, dpi=300, bbox_inches="tight")
+        print(f"[INFO] figure saved to: {save}")
+
     plt.show()
 
     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
 
 

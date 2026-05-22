@@ -83,8 +83,8 @@ class FilterBuildIndex:
         fetch_size: int = 1_0000_0000,
         producer_num: int = 10,
         chunk_size: int = 2_0000_0000,
-        cell_condition: str = "filter_cells",
-        gene_condition: str = "filter_genes",
+        cell_condition: str | None = None,  # ✅ 修改：None 表示不按 cell 过滤
+        gene_condition: str | None = None,  # ✅ 修改：None 表示不按 gene 过滤
         use_hvg: bool = True,
         select_data: str = "data_scale",  # 🔥 新增
     ):
@@ -146,16 +146,26 @@ class FilterBuildIndex:
         ALTER TABLE obs ADD COLUMN filter_cell_id INTEGER
         """)
 
-        # 只对满足过滤条件的 cell 重新编号（从0开始）
+        # =====================================================
+        # ✅ 修改：如果 self.cell_condition is None，则不过滤 cell
+        # =====================================================
+        if self.cell_condition is None:
+            where_sql = "TRUE"
+            print("  -> 不使用 cell 过滤，保留全部 cells")
+        else:
+            where_sql = f"{self.cell_condition}=TRUE"
+            print(f"  -> 使用 cell 条件: {where_sql}")
+
+        # 只对满足条件的 cell 重新编号
         self.conn.execute(f"""
         UPDATE obs
         SET filter_cell_id = sub.new_id
         FROM (
             SELECT
                 atlas_cell_id,
-                ROW_NUMBER() OVER (ORDER BY atlas_cell_id) - 1 AS new_id  -- 从0开始,重排cell_id
+                ROW_NUMBER() OVER (ORDER BY atlas_cell_id) - 1 AS new_id
             FROM obs
-            WHERE {self.cell_condition}=TRUE
+            WHERE {where_sql}
         ) AS sub
         WHERE obs.atlas_cell_id = sub.atlas_cell_id
         """)
@@ -167,9 +177,7 @@ class FilterBuildIndex:
     def _rebuild_var_filter_id(self):
         print("Step 2：重排 var（生成 filter_gene_id）")
 
-        # -----------------------------
-        # 1️⃣ 删除旧列 + 新增列
-        # -----------------------------
+        # 删除旧列 + 新增列
         self.conn.execute("""
         ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id
         """)
@@ -178,19 +186,27 @@ class FilterBuildIndex:
         ALTER TABLE var ADD COLUMN filter_gene_id INTEGER
         """)
 
-        # -----------------------------
-        # 2️⃣ 构建过滤条件（🔥核心）
-        # -----------------------------
-        # 基础过滤条件（比如 filter_genes）
-        condition = f"({self.gene_condition})=TRUE"
+        # =====================================================
+        # ✅ 修改：如果 self.gene_condition is None，则不过滤 gene
+        # =====================================================
+        conditions = []
 
-        # 如果启用 HVG，则叠加条件
+        if self.gene_condition is not None:
+            conditions.append(f"({self.gene_condition})=TRUE")
+            print(f"  -> 使用 gene 条件: {self.gene_condition}=TRUE")
+        else:
+            print("  -> 不使用 gene 过滤条件")
+
+        # 如果启用 HVG，则叠加 highly_variable_genes
         if self.use_hvg:
-            condition += " AND highly_variable_genes=TRUE"
+            conditions.append("highly_variable_genes=TRUE")
+            print("  -> 使用 HVG gene 子集")
+        else:
+            print("  -> 不使用 HVG 过滤，保留全部 genes")
 
-        # -----------------------------
-        # 3️⃣ 重排 gene_id（只对符合条件的基因）
-        # -----------------------------
+        condition = " AND ".join(conditions) if conditions else "TRUE"
+
+        # 重排 gene_id
         self.conn.execute(f"""
         UPDATE var
         SET filter_gene_id = sub.new_id
@@ -268,154 +284,7 @@ class FilterBuildIndex:
         pbar.close()
         print("✅ X_CSRO_data_filtered 构建完成（tid 均匀分片，去掉 new_id，带 tqdm 进度条）")
 
-    # # todo 修改， 保证顺序
-    # def _rebuild_X_chunked_order (self):
-    #
-    #     print("Step 3：重建 X_CSRO_data_filtered（物理有序 + tid按过滤后连续位置计算｜无临时表版）")
-    #
-    #     conn = self.conn
-    #
-    #     # ============================================================
-    #     # ✅ 保留 INSERT 输出顺序
-    #     # ============================================================
-    #     conn.execute("PRAGMA preserve_insertion_order=true")
-    #
-    #     # 如果你要绝对物理有序，改成 threads=1
-    #     # conn.execute("PRAGMA threads=1")
-    #     # print("-> DuckDB threads = 1")
-    #
-    #     # 如果优先速度，用多线程
-    #     try:
-    #         # n_threads = os.cpu_count()
-    #         conn.execute(f" PRAGMA threads = 5 ")
-    #         # print(f"-> DuckDB threads = {n_threads}")
-    #     except Exception:
-    #         pass
-    #
-    #     conn.execute("DROP TABLE IF EXISTS X_CSRO_data_filtered")
-    #
-    #     conn.execute("""
-    #     CREATE TABLE X_CSRO_data_filtered (
-    #         filter_cell_id INTEGER,
-    #         filter_gene_id USMALLINT,
-    #         data REAL,
-    #         tid TINYINT
-    #     )
-    #     """)
-    #
-    #     min_id, max_id = conn.execute("""
-    #         SELECT MIN(rowid), MAX(rowid)
-    #         FROM X_CSRO_data
-    #     """).fetchone()
-    #
-    #     if min_id is None:
-    #         print("⚠️ X_CSRO_data 是空表，跳过")
-    #         return
-    #
-    #     total_rows = max_id - min_id + 1
-    #     print(f"rowid 范围: {min_id:,} ~ {max_id:,}, 总行数: {total_rows:,}")
-    #
-    #     current = min_id
-    #     nnz_offset = 0
-    #
-    #     pbar = tqdm(
-    #         total=total_rows,
-    #         unit="rows",
-    #         desc="Processing X_CSRO_data",
-    #         ncols=140
-    #     )
-    #
-    #     while current <= max_id:
-    #         end = min(current + self.chunk_size, max_id + 1)
-    #
-    #         # ============================================================
-    #         # ✅ 修改 1：先统计当前 chunk 过滤后有多少行
-    #         #
-    #         # 作用：
-    #         #   - 用于更新 nnz_offset
-    #         #   - 不存 nnz_id
-    #         #
-    #         # 注意：
-    #         #   - 这里会多做一次 COUNT
-    #         #   - 但避免了 CREATE TEMP TABLE + 二次 INSERT
-    #         #   - 通常比你之前的临时表版本轻
-    #         # ============================================================
-    #         inserted = conn.execute(f"""
-    #         SELECT COUNT(*)
-    #         FROM X_CSRO_data AS X
-    #         JOIN obs
-    #           ON X.atlas_cell_id = obs.atlas_cell_id
-    #         JOIN var
-    #           ON X.atlas_gene_id = var.atlas_gene_id
-    #         WHERE X.rowid >= {current}
-    #           AND X.rowid < {end}
-    #           AND obs.filter_cell_id IS NOT NULL
-    #           AND var.filter_gene_id IS NOT NULL
-    #         """).fetchone()[0]
-    #
-    #         if inserted > 0:
-    #             # ========================================================
-    #             # ✅ 修改 2：在 INSERT SELECT 内部临时计算 local_nnz_id
-    #             #
-    #             # local_nnz_id:
-    #             #   当前 chunk 内过滤后的连续位置，从 0 开始
-    #             #
-    #             # global_nnz_id:
-    #             #   nnz_offset + local_nnz_id
-    #             #
-    #             # tid:
-    #             #   按过滤后的连续位置计算
-    #             #
-    #             # 最终表不保存 local_nnz_id / global_nnz_id
-    #             # ========================================================
-    #             conn.execute(f"""
-    #             INSERT INTO X_CSRO_data_filtered
-    #             SELECT
-    #                 filter_cell_id,
-    #                 filter_gene_id,
-    #                 data,
-    #                 CAST((({nnz_offset} + local_nnz_id) // {self.fetch_size}) % {self.producer_num} AS TINYINT) AS tid
-    #             FROM (
-    #                 SELECT
-    #                     CAST(ROW_NUMBER() OVER (ORDER BY X.rowid) - 1 AS BIGINT) AS local_nnz_id,
-    #
-    #                     CAST(obs.filter_cell_id AS INTEGER) AS filter_cell_id,
-    #                     CAST(var.filter_gene_id AS USMALLINT) AS filter_gene_id,
-    #                     CAST(X.{self.select_data} AS REAL) AS data
-    #
-    #                 FROM X_CSRO_data AS X
-    #                 JOIN obs
-    #                   ON X.atlas_cell_id = obs.atlas_cell_id
-    #                 JOIN var
-    #                   ON X.atlas_gene_id = var.atlas_gene_id
-    #
-    #                 WHERE X.rowid >= {current}
-    #                   AND X.rowid < {end}
-    #                   AND obs.filter_cell_id IS NOT NULL
-    #                   AND var.filter_gene_id IS NOT NULL
-    #             ) AS q
-    #             ORDER BY local_nnz_id
-    #             """)
-    #
-    #             nnz_offset += inserted
-    #
-    #         pbar.update(end - current)
-    #         pbar.set_postfix_str(
-    #             f"inserted={inserted:,} | nnz={nnz_offset:,}"
-    #         )
-    #
-    #         current = end
-    #
-    #     pbar.close()
-    #
-    #     print("✅ X_CSRO_data_filtered 构建完成")
-    #     print(f"✅ 过滤后 nnz = {nnz_offset:,}")
-    #     print("✅ 物理顺序策略：ORDER BY local_nnz_id，也就是过滤后的 X.rowid 顺序")
-    #     print("✅ tid 策略：按过滤后的连续 nnz 位置计算")
-    #     print("✅ 最终表不保存 nnz_id")
-
-
-    # todo 修改，保证顺序 + 小内存 + 超大数据
+    # 保证顺序 + 小内存 + 超大数据
     def _rebuild_X_chunked_order_fast(self):
         print("Step 3：重建 X_CSRO_data_filtered（极速版·临时映射表优化）")
 
@@ -558,14 +427,8 @@ class FilterBuildIndex:
         conn.execute("DROP TABLE IF EXISTS _obs_keep")
         conn.execute("DROP TABLE IF EXISTS _var_keep")
 
-    # todo 修复bug X_CSRO_indptr_filtered 不能只记录 X 中出现过的 cell，
-    #   而要以 obs.filter_cell_id 为准，把所有保留下来的 cell 都记录进去；
-    #   没有非零值的 cell，cnt = 0，所以它的 indptr 和上一个 cell 一样。
-    #   filter_cell_id    indptr
-    #    0                 2
-    #    1                 2
-    #    2                 4
-    #   cell1: start == end , 说明这个 cell 没有任何非零值。 但依旧要保留
+    # todo
+
     def _rebuild_indptr(self):
         """
         重建 CSR indptr
@@ -575,6 +438,17 @@ class FilterBuildIndex:
         2. indptr 从 obs.filter_cell_id 出发补齐所有保留下来的 cell
         3. 没有非零值的 cell，cnt = 0
         4. indptr 仍然表示每个 cell 的结束位置 end_ptr
+
+        修复bug X_CSRO_indptr_filtered 不能只记录 X 中出现过的 cell，
+
+          而要以 obs.filter_cell_id 为准，把所有保留下来的 cell 都记录进去；
+          没有非零值的 cell，cnt = 0，所以它的 indptr 和上一个 cell 一样。
+          filter_cell_id    indptr
+           0                 2
+           1                 2
+           2                 4
+          cell1: start == end , 说明这个 cell 没有任何非零值。 但依旧要保留
+
         """
 
         print("Step 4：重建 CSR indptr（从 obs 补齐 cell）")

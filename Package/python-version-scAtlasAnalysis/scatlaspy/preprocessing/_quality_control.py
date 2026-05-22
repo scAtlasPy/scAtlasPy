@@ -11,7 +11,7 @@ logger = logging.getLogger('Atlas')
 
 '''==== 过滤细胞 ：  使用 mmap 扫描 CSR 过滤细胞（安全支持 1 亿细胞） ======'''
 # 833206 * 17745  sap.pp.filter_cells(atlas, min_genes=200) 过滤细胞 = 0 (0.00%) 总耗时 0.54 秒
-def filter_cells(atlas: 'Atlas',
+def filter_cells_fast(atlas: 'Atlas',
                        min_counts: Optional[int] = None,
                        min_genes: Optional[int] = None,
                        max_counts: Optional[int] = None,
@@ -107,7 +107,7 @@ def filter_cells(atlas: 'Atlas',
 #     字段	                    含义
 #  filter_cells	       该 cell 是否符合过滤条件 true
 
-def filter_cells_chunked(
+def filter_cells(
         atlas,
         min_counts: Optional[int] = None,
         min_genes: Optional[int] = None,
@@ -259,121 +259,7 @@ def filter_cells_chunked(
 
 '''==== 过滤基因 ：行-批 + NumPy 聚合 + 批写回 var ，当前最快 =========='''
 # 833206 * 17745  sap.pp.filter_genes(atlas, min_cells=3)  保留基因 17745  耗时: 3.35 秒
-def filter_genes(atlas: 'Atlas',
-                     min_counts: Optional[int] = None,
-                     min_cells: Optional[int] = None,
-                     max_counts: Optional[int] = None,
-                     max_cells: Optional[int] = None,
-                     add_key: str = "filter_genes") -> None:
-    """
-    使用 CSR 数据（X_CSRO_indptr + X_CSRO_data）计算每个基因的：
-        - sum_expr
-        - nonzero_expr
-    并写入 var 表。
-    """
-
-    print("==== 开始基因过滤 ====")
-    start_time = datetime.now()
-
-    conn = atlas.connection
-
-    # 允许 DuckDB 多线程
-    try:
-        th = os.cpu_count() or 1
-        conn.execute(f"PRAGMA threads={th}")
-        print(f"DuckDB 多线程: {th}")
-    except:
-        pass
-
-    gene_map = dict(conn.execute("SELECT atlas_gene_id, atlas_gene_name FROM var").fetchall())
-    n_genes = len(gene_map)
-    print(f"检测到基因数量: {n_genes}")
-
-    # 添加过滤字段
-    conn.execute(f"""
-        ALTER TABLE var 
-        ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN DEFAULT FALSE;
-    """)
-
-    print("开始聚合 X_CSRO_data ...")
-
-    # -------- 核心：CSR 聚合统计 --------
-    rows = conn.execute("""
-        SELECT 
-            atlas_gene_id,
-            SUM(data) AS sum_expr,
-            COUNT(*) AS nonzero_expr
-        FROM X_CSRO_data
-        GROUP BY atlas_gene_id
-        ORDER BY atlas_gene_id
-    """).fetchall()
-
-    print(f"聚合完成，共统计到 {len(rows)} 个非零基因")
-
-    # -------- 写入临时表 --------
-    conn.execute("CREATE TEMP TABLE tmp_stats (atlas_gene_name TEXT, flag BOOLEAN)")
-
-    keep_count = 0
-    insert_rows = []
-
-    # 收集已经出现的基因
-    appeared_gene_names = set()
-
-    for atlas_gene_id, sum_expr, nonzero_expr in rows:
-
-        # atlas_gene_id → atlas_gene_name
-        atlas_gene_name = gene_map.get(atlas_gene_id)
-        if atlas_gene_name is None:
-            continue
-
-        appeared_gene_names.add(atlas_gene_name)
-
-        ok = True
-        if min_counts is not None and sum_expr < min_counts:
-            ok = False
-        if max_counts is not None and sum_expr > max_counts:
-            ok = False
-        if min_cells is not None and nonzero_expr < min_cells:
-            ok = False
-        if max_cells is not None and nonzero_expr > max_cells:
-            ok = False
-
-        insert_rows.append((atlas_gene_name, ok))
-        if ok:
-            keep_count += 1
-
-    # 完全零表达的基因（不在 CSR 中出现）
-    all_gene_names = set(gene_map.values())
-    zero_genes = all_gene_names - appeared_gene_names
-    for g in zero_genes:
-        insert_rows.append((g, False))
-
-    # 写入临时表
-    conn.executemany("INSERT INTO tmp_stats VALUES (?,?)", insert_rows)
-
-    # 先全部设为 FALSE（保证覆盖）
-    conn.execute(f"UPDATE var SET {add_key}=FALSE")
-
-    # 更新 var 表
-    conn.execute(f"""
-        UPDATE var
-        SET {add_key} = tmp.flag
-        FROM tmp_stats AS tmp
-        WHERE var.atlas_gene_name = tmp.atlas_gene_name
-    """)
-
-    # 删除临时表
-    conn.execute("DROP TABLE IF EXISTS tmp_stats")
-
-    print(f"过滤完成: 保留基因 {keep_count} / 总 {n_genes}")
-    print("总耗时: {:.2f} 秒".format((datetime.now() - start_time).total_seconds()))
-
-# 运行结果
-# var 表  新增字段
-#     字段	                    含义
-#  filter_genes	       该 gene是否符合过滤条件 true
-
-def filter_genes_no_fetchall(
+def filter_genes(
         atlas,
         min_counts: Optional[int] = None,
         min_cells: Optional[int] = None,
@@ -506,86 +392,14 @@ def filter_genes_no_fetchall(
     print(f"过滤完成: 保留基因 {keep_count:,} / 总 {n_genes:,}")
     print("总耗时: {:.2f} 秒".format((datetime.now() - start_time).total_seconds()))
 
+# 运行结果
+# var 表  新增字段
+#     字段	                    含义
+#  filter_genes	       该 gene是否符合过滤条件 true
 
 '''====== 计算每个细胞的总 UMI（Unique Molecular Identifier）计数 ========== '''
 # 833206 * 17745  sap.pp.calculate_cell_total_counts(atlas)   耗时 1.00 秒
-def calculate_cell_total_counts(atlas: 'Atlas', add_key: str = "cell_total_counts") -> None:
-    """
-    使用 DuckDB 原生 CSR 表（X_CSRO_data）计算每个细胞的总 UMI 计数
-    - 无 Python 循环
-    - 无 AnnData
-    - 低内存
-    - 支持超大规模数据
-    """
-
-    print("==== DuckDB CSR 原生计算每个细胞的总 UMI ====")
-    start = datetime.now()
-
-    conn = atlas.connection
-
-    # --------------------------------
-    # DuckDB 性能参数
-    # --------------------------------
-    th = os.cpu_count()
-    conn.execute(f"PRAGMA threads={th}")
-    # conn.execute("PRAGMA temp_directory='.tmp_duckdb'")
-    print(f"DuckDB threads = {th}")
-
-    # --------------------------------
-    # Step 0：确保 obs 有目标列
-    # --------------------------------
-    conn.execute(f"""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS {add_key} BIGINT
-    """)
-
-    # --------------------------------
-    # Step 1：在 CSR 表上做流式聚合
-    # --------------------------------
-    print("统计每个细胞的 total UMI（SUM(data)）...")
-
-    conn.execute("DROP TABLE IF EXISTS cell_total_counts_tmp")
-    conn.execute(f"""
-        CREATE TEMP TABLE cell_total_counts_tmp AS
-        SELECT
-            atlas_cell_id,
-            SUM(data) AS total_counts
-        FROM X_CSRO_data
-        GROUP BY atlas_cell_id
-    """)
-
-    # --------------------------------
-    # Step 2：一次性更新 obs
-    # --------------------------------
-    print("更新 obs 表 ...")
-
-    conn.execute(f"""
-        UPDATE obs
-        SET {add_key} = t.total_counts
-        FROM cell_total_counts_tmp t
-        WHERE obs.atlas_cell_id = t.atlas_cell_id
-    """)
-
-    # --------------------------------
-    # Step 3：统计信息
-    # --------------------------------
-    n_cells = conn.execute(
-        "SELECT COUNT(*) FROM cell_total_counts_tmp"
-    ).fetchone()[0]
-
-    conn.execute("DROP TABLE IF EXISTS cell_total_counts_tmp")
-
-    print(f"已计算细胞数 = {n_cells:,}")
-    print("完成，总耗时 {:.2f} 秒".format(
-        (datetime.now() - start).total_seconds()
-    ))
-
-# 运行结果
-# obs 表  新增字段
-#     字段	                    含义
-#  cell_total_counts	     每个细胞的总 UMI 计数
-
-def calculate_cell_total_counts_chunked(
+def calculate_cell_total_counts(
         atlas,
         add_key: str = "cell_total_counts",
         cell_chunk_size: int = 1_000_000,   # ✅ 修改1：新增分块大小
@@ -699,6 +513,10 @@ def calculate_cell_total_counts_chunked(
         (datetime.now() - start).total_seconds()
     ))
 
+# 运行结果
+# obs 表  新增字段
+#     字段	                    含义
+#  cell_total_counts	     每个细胞的总 UMI 计数
 
 ''' ====== 计算每个基因的表达值 ========== '''
 # 833206 * 17745   sap.pp.calculate_gene_total_counts(atlas)    耗时  0.86  秒
@@ -808,8 +626,6 @@ def calculate_gene_total_counts(
 
 ''' ====== 质量控制指标  +  线粒体基因 + 核糖体基因比例计算  ========== '''
 # 833206 * 17745  sap.pp.calculate_qc_metrics(atlas)  24.10 秒
-# todo 修改
-#  12.74 s 大数据不安全
 def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
 
     print("==== calculate_qc_metrics (SINGLE PASS) ====")
@@ -959,220 +775,8 @@ def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
     print("✅ SINGLE PASS QC 完成")
     print("耗时:", (datetime.now() - start).total_seconds())
 
-
-# todo 修改 分块，大数据安全
-#  20.80 s 考虑只保留这个
-def calculate_qc_metrics(
-    atlas,
-    qc_vars=None,
-    cell_chunk_size=100_000
-):
-    """
-    真·大数据安全 QC
-    - cell-wise: streaming chunk
-    - gene-wise: global accumulate
-    """
-
-    print("==== calculate_qc_metrics (CHUNK + STREAMING) ====")
-    start = datetime.now()
-    conn = atlas.connection
-
-    if qc_vars is None:
-        qc_vars = {
-            "mt": "MT-",
-            "ribo": "^(RPS|RPL)"
-        }
-
-    # =================================================
-    # 0️⃣ DuckDB 参数（非常重要）
-    # =================================================
-    conn.execute("PRAGMA threads=8")
-    conn.execute("PRAGMA memory_limit='8GB'")
-
-    # =================================================
-    # 1️⃣ var 打 qc 标记（一次性）
-    # =================================================
-    for qc_key, pattern in qc_vars.items():
-        conn.execute(f"""
-            ALTER TABLE var
-            ADD COLUMN IF NOT EXISTS {qc_key} BOOLEAN
-        """)
-        if pattern.startswith("^"):
-            conn.execute(f"""
-                UPDATE var
-                SET {qc_key} = regexp_matches(atlas_gene_name, '{pattern}', 'i')
-            """)
-        else:
-            conn.execute(f"""
-                UPDATE var
-                SET {qc_key} =
-                    UPPER(atlas_gene_name) LIKE '{pattern.upper()}%'
-            """)
-
-    # =================================================
-    # 2️⃣ 初始化 obs 列
-    # =================================================
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS cell_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS n_genes_by_counts INTEGER
-    """)
-
-    for qc_key in qc_vars.keys():
-        conn.execute(f"""
-            ALTER TABLE obs
-            ADD COLUMN IF NOT EXISTS total_counts_{qc_key} REAL
-        """)
-        conn.execute(f"""
-            ALTER TABLE obs
-            ADD COLUMN IF NOT EXISTS pct_counts_{qc_key} REAL
-        """)
-
-    # =================================================
-    # 3️⃣ 初始化 gene 累积表（小表，安全）
-    # =================================================
-    conn.execute("""
-        CREATE OR REPLACE TEMP TABLE _gene_accum AS
-        SELECT
-            atlas_gene_id,
-            CAST(0 AS DOUBLE) AS gene_total_counts,
-            CAST(0 AS BIGINT) AS n_cells_by_counts
-        FROM var
-    """)
-
-    # =================================================
-    # 4️⃣ 计算 cell_id 范围
-    # =================================================
-    min_cell, max_cell = conn.execute("""
-        SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
-        FROM obs
-    """).fetchone()
-
-    n_chunks = math.ceil(
-        (max_cell - min_cell + 1) / cell_chunk_size
-    )
-
-    print(f"Cells: {max_cell - min_cell + 1}")
-    print(f"Chunk size: {cell_chunk_size}")
-    print(f"Chunks: {n_chunks}")
-
-    # =================================================
-    # 5️⃣ 主循环（真正 streaming）
-    # =================================================
-    for i in range(n_chunks):
-
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
-
-        print(f"[Chunk {i+1}/{n_chunks}] cells {c_start} ~ {c_end}")
-
-        # -----------------------------
-        # 5.1 cell + qc（小 GROUP BY）
-        # -----------------------------
-        qc_sum_expr = []
-        for qc_key in qc_vars.keys():
-            qc_sum_expr.append(
-                f"SUM(CASE WHEN v.{qc_key} THEN x.data ELSE 0 END)"
-                f" AS total_counts_{qc_key}"
-            )
-        qc_sum_sql = ",\n".join(qc_sum_expr)
-
-        conn.execute(f"""
-            CREATE OR REPLACE TEMP TABLE _cell_chunk AS
-            SELECT
-                x.atlas_cell_id,
-                SUM(x.data) AS cell_total_counts,
-                COUNT(*)    AS n_genes_by_counts,
-                {qc_sum_sql}
-            FROM X_CSRO_data x
-            JOIN var v
-              ON x.atlas_gene_id = v.atlas_gene_id
-            WHERE x.atlas_cell_id BETWEEN {c_start} AND {c_end}
-            GROUP BY x.atlas_cell_id
-        """)
-
-        # 写回 obs
-        set_expr = [
-            "cell_total_counts = c.cell_total_counts",
-            "n_genes_by_counts = c.n_genes_by_counts"
-        ]
-        for qc_key in qc_vars.keys():
-            set_expr.append(
-                f"total_counts_{qc_key} = c.total_counts_{qc_key}"
-            )
-            set_expr.append(
-                f"""
-                pct_counts_{qc_key} =
-                CASE WHEN c.cell_total_counts > 0
-                THEN 100.0 * c.total_counts_{qc_key}
-                     / c.cell_total_counts
-                ELSE 0 END
-                """
-            )
-
-        conn.execute(f"""
-            UPDATE obs
-            SET {",".join(set_expr)}
-            FROM _cell_chunk c
-            WHERE obs.atlas_cell_id = c.atlas_cell_id
-        """)
-
-        # -----------------------------
-        # 5.2 gene 累积（增量）
-        # -----------------------------
-        conn.execute(f"""
-            UPDATE _gene_accum g
-            SET
-                gene_total_counts =
-                    gene_total_counts + t.sum_data,
-                n_cells_by_counts =
-                    n_cells_by_counts + t.n_cells
-            FROM (
-                SELECT
-                    atlas_gene_id,
-                    SUM(data) AS sum_data,
-                    COUNT(*)  AS n_cells
-                FROM X_CSRO_data
-                WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
-                GROUP BY atlas_gene_id
-            ) t
-            WHERE g.atlas_gene_id = t.atlas_gene_id
-        """)
-
-        conn.execute("DROP TABLE _cell_chunk")
-
-    # =================================================
-    # 6️⃣ 写回 var（gene QC）
-    # =================================================
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS gene_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS n_cells_by_counts INTEGER
-    """)
-
-    conn.execute("""
-        UPDATE var
-        SET
-            gene_total_counts = g.gene_total_counts,
-            n_cells_by_counts = g.n_cells_by_counts
-        FROM _gene_accum g
-        WHERE var.atlas_gene_id = g.atlas_gene_id
-    """)
-
-    conn.execute("DROP TABLE _gene_accum")
-
-    print("✅ STREAMING QC 完成")
-    print("耗时:", (datetime.now() - start).total_seconds())
-
-
 # 把 gene-wise 统计从 chunk 循环里拿出来，避免每个 chunk 都重复扫一遍 X_CSRO_data
-def calculate_qc_metrics_new(
+def calculate_qc_metrics(
     atlas,
     qc_vars=None,
     cell_chunk_size=100_000

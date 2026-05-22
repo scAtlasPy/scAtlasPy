@@ -267,9 +267,26 @@ class Atlas:
     ''' 过滤 + 建新表 + 建tid分块索引 '''
     #  833206 * 17745   耗时 1:12
     #  2840130 x 24552  耗时 03:48
-    def filter_build_index(self):
-
-        builder = FilterBuildIndex( file_path = self.file_path )
+    def filter_build_index(
+            self,
+            fetch_size: int = 1_0000_0000,
+            producer_num: int = 10,
+            chunk_size: int = 2_0000_0000,
+            cell_condition: str | None = None,
+            gene_condition: str | None = None,
+            use_hvg: bool = True,
+            select_data: str = "data_scale",
+    ):
+        builder = FilterBuildIndex(
+            self.file_path,
+            fetch_size=fetch_size,
+            producer_num=producer_num,
+            chunk_size=chunk_size,
+            cell_condition=cell_condition,
+            gene_condition=gene_condition,
+            use_hvg=use_hvg,
+            select_data=select_data,
+        )
         builder.run()
 
 
