@@ -4,12 +4,11 @@ import h5py
 from tqdm import tqdm
 
 ''' 数据导出: 把数据直接变成文件'''
-# 819200 耗时 11:09
 def export_duckdb_to_h5ad(
     atlas,
     out_h5ad_path: str,
     *,
-    batch_size: int = 1_000_000,  # nnz batch
+    batch_size: int = 1_000_000, 
 ):
     """
     从 DuckDB 流式导出 h5ad（不经过 AnnData）
@@ -22,7 +21,7 @@ def export_duckdb_to_h5ad(
 
     conn = atlas.connection
 
-    # 1️⃣ 读取 obs / var
+    # 读取 obs / var
     print("[EXPORT] 读取 obs / var")
 
     obs = conn.execute("SELECT * FROM obs ORDER BY atlas_cell_id").df()
@@ -36,12 +35,12 @@ def export_duckdb_to_h5ad(
 
     print(f"[EXPORT] cells={n_cells:,}, genes={n_genes:,}")
 
-    # 2️⃣ 读取 CSR indptr
+    # 读取 CSR indptr
     print("[EXPORT] 读取 CSR indptr")
 
     indptr_df = conn.execute("""
         SELECT indptr
-        FROM X_CSRO_indptr
+        FROM X_HyS_indptr
         ORDER BY atlas_cell_id
     """).df()
 
@@ -52,7 +51,7 @@ def export_duckdb_to_h5ad(
     nnz = int(indptr[-1])
     print(f"[EXPORT] nnz={nnz:,}")
 
-    # 3️⃣ 创建 h5ad 文件
+    # 创建 h5ad 文件
     print(f"[EXPORT] 创建 h5ad → {out_h5ad_path}")
 
     with h5py.File(out_h5ad_path, "w") as f:
@@ -61,12 +60,12 @@ def export_duckdb_to_h5ad(
         f.attrs["encoding-type"] = "anndata"
         f.attrs["encoding-version"] = "0.1.0"
 
-        # 4️⃣ 写 X (CSR, streaming)
+        # 写 X (CSR, streaming)
         print("[EXPORT] 写 X (CSR streaming)")
 
         gX = f.create_group("X")
 
-        # 🔴 FIX 1：AnnData CSR 必须写在 attrs，而不是 dataset
+        # AnnData CSR 必须写在 attrs，而不是 dataset
         gX.attrs["encoding-type"] = "csr_matrix"
         gX.attrs["encoding-version"] = "0.1.0"
         gX.attrs["shape"] = (n_cells, n_genes)
@@ -99,7 +98,7 @@ def export_duckdb_to_h5ad(
             rows = conn.execute(
                 """
                 SELECT atlas_gene_id, data
-                FROM X_CSRO_data
+                FROM X_HyS_data
                 WHERE id >= ? AND id < ?
                 ORDER BY id
                 """,
@@ -118,13 +117,13 @@ def export_duckdb_to_h5ad(
 
         assert offset == nnz, f"nnz mismatch: {offset} != {nnz}"
 
-        # 5️⃣ 写 obs / var
+        # 写 obs / var
         print("[EXPORT] 写 obs / var")
 
         _write_dataframe(f, "obs", obs)
         _write_dataframe(f, "var", var)
 
-        # 6️⃣ 写 obsm
+        # 写 obsm
         print("[EXPORT] 写 obsm")
 
         g_obsm = f.create_group("obsm")
@@ -147,7 +146,7 @@ def export_duckdb_to_h5ad(
 
             print(f"  - obsm[{key}] {df.shape}")
 
-        # 7️⃣ 写 varm
+        # 写 varm
         print("[EXPORT] 写 varm")
 
         g_varm = f.create_group("varm")
@@ -173,18 +172,16 @@ def export_duckdb_to_h5ad(
     print("✅ 导出完成")
 
 
-''' 写 AnnData-compatible DataFrame 到 h5ad '''
+# 写 AnnData 到 h5ad
 def _write_dataframe(f, key, df):
-    """
-    写 AnnData-compatible DataFrame 到 h5ad
-    """
+
     g = f.create_group(key)
 
     # ---- AnnData dataframe metadata ----
     g.attrs["encoding-type"] = "dataframe"
     g.attrs["encoding-version"] = "0.2.0"
 
-    # 1️⃣ index
+    # index
     index_name = df.index.name or "_index"
     index_data = np.array(df.index.astype(str).tolist(), dtype=object)
 
@@ -194,7 +191,7 @@ def _write_dataframe(f, key, df):
         dtype=h5py.string_dtype(encoding="utf-8"),
     )
 
-    # 2️⃣ columns
+    # columns
     colnames = []
 
     for col in df.columns:
@@ -221,7 +218,7 @@ def _write_dataframe(f, key, df):
         else:
             g.create_dataset(col, data=arr)
 
-    # 3️⃣ AnnData spec attrs（关键）
+    # AnnData spec attrs（关键）
     g.attrs["column-order"] = np.array(colnames, dtype="S")
     g.attrs["_index"] = index_name
 
@@ -261,9 +258,7 @@ def export_obs_to_pandas(
     if conn is None:
         raise ValueError("atlas.connection 为空，请先连接数据库")
 
-    # -------------------------------------------------
     # 1. 检查 obs 表是否存在
-    # -------------------------------------------------
     obs_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -273,9 +268,7 @@ def export_obs_to_pandas(
     if obs_exists == 0:
         raise ValueError("数据库中不存在 obs 表")
 
-    # -------------------------------------------------
     # 2. 获取 obs 所有字段
-    # -------------------------------------------------
     obs_columns = [
         row[0]
         for row in conn.execute("""
@@ -289,9 +282,7 @@ def export_obs_to_pandas(
     if "atlas_cell_id" not in obs_columns:
         raise ValueError("obs 表中不存在 atlas_cell_id 字段，无法设置 pandas index")
 
-    # -------------------------------------------------
     # 3. 处理 columns
-    # -------------------------------------------------
     if columns is None:
         select_columns = obs_columns
     else:
@@ -309,9 +300,7 @@ def export_obs_to_pandas(
             if c != "atlas_cell_id"
         ]
 
-    # -------------------------------------------------
     # 4. 查询 obs
-    # -------------------------------------------------
     select_sql = ", ".join([f'"{c}"' for c in select_columns])
 
     sql = f"""
@@ -321,9 +310,7 @@ def export_obs_to_pandas(
 
     df = conn.execute(sql).df()
 
-    # -------------------------------------------------
     # 5. 默认 atlas_cell_id 作为 pandas index
-    # -------------------------------------------------
     df = df.set_index("atlas_cell_id")
 
     return df
@@ -393,7 +380,7 @@ def export_cells_to_anndata(
         顺序会被保留。
 
     x_field : str
-        X_CSRO_data 中作为表达矩阵值的字段。
+        X_HyS_data 中作为表达矩阵值的字段。
         默认 "data"。
         也可以是：
             "data_log1p"
@@ -429,9 +416,8 @@ def export_cells_to_anndata(
     if conn is None:
         raise ValueError("atlas.connection 为空，请先连接数据库")
 
-    # -------------------------------------------------
+
     # 0. 基本检查
-    # -------------------------------------------------
     if atlas_cell_ids is None or len(atlas_cell_ids) == 0:
         raise ValueError("atlas_cell_ids 不能为空")
 
@@ -449,22 +435,20 @@ def export_cells_to_anndata(
         """
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = ?
         """,
         [x_field],
     ).fetchone()[0]
 
     if x_field_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {x_field}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {x_field}")
 
     print("==== export_cells_to_anndata ====")
     print(f"[INFO] selected cells = {len(atlas_cell_ids):,}")
     print(f"[INFO] x_field = {x_field}")
 
-    # -------------------------------------------------
     # 1. 创建临时 selected cell 表，保留用户输入顺序
-    # -------------------------------------------------
     selected_df = pd.DataFrame({
         "atlas_cell_id": atlas_cell_ids,
         "_cell_order": np.arange(len(atlas_cell_ids), dtype=np.int64),
@@ -482,9 +466,7 @@ def export_cells_to_anndata(
     """)
     conn.unregister("_selected_cells_df")
 
-    # -------------------------------------------------
     # 2. 读取 obs 子集
-    # -------------------------------------------------
     print("[EXPORT] 读取 obs 子集")
 
     obs = conn.execute("""
@@ -503,19 +485,13 @@ def export_cells_to_anndata(
             f"例如: {missing[:10]}"
         )
 
-    # -------------------------------------------------
-    # ✅ 修改 1：AnnData obs index 改为 atlas_cell_name
-    # ✅ 修改 2：显式转成 str，消除 ImplicitModificationWarning
-    # -------------------------------------------------
     if "atlas_cell_name" not in obs.columns:
         raise ValueError("obs 表中不存在 atlas_cell_name 字段，无法作为 AnnData obs index")
 
     obs = obs.set_index("atlas_cell_name", drop=False)
     obs.index = obs.index.astype(str)
 
-    # -------------------------------------------------
     # 3. 读取 var 全集
-    # -------------------------------------------------
     print("[EXPORT] 读取 var 全集")
 
     var = conn.execute("""
@@ -527,10 +503,6 @@ def export_cells_to_anndata(
     if "atlas_gene_id" not in var.columns:
         raise ValueError("var 表中不存在 atlas_gene_id 字段")
 
-    # -------------------------------------------------
-    # ✅ 修改 3：AnnData var index 改为 atlas_gene_name
-    # ✅ 修改 4：显式转成 str，消除 ImplicitModificationWarning
-    # -------------------------------------------------
     if "atlas_gene_name" not in var.columns:
         raise ValueError("var 表中不存在 atlas_gene_name 字段，无法作为 AnnData var index")
 
@@ -542,9 +514,7 @@ def export_cells_to_anndata(
 
     print(f"[EXPORT] AnnData shape = {n_cells:,} × {n_genes:,}")
 
-    # -------------------------------------------------
     # 4. 读取 X 子集，并组装 CSR
-    # -------------------------------------------------
     print("[EXPORT] 读取 X 子集并构建 CSR")
 
     x_sql = f"""
@@ -552,7 +522,7 @@ def export_cells_to_anndata(
             s._cell_order AS row_id,
             x.atlas_gene_id AS col_id,
             x.{_q(x_field)} AS value
-        FROM X_CSRO_data AS x
+        FROM X_HyS_data AS x
         JOIN _selected_cells AS s
           ON x.atlas_cell_id = s.atlas_cell_id
         WHERE x.{_q(x_field)} IS NOT NULL
@@ -580,18 +550,14 @@ def export_cells_to_anndata(
 
     print(f"[EXPORT] X nnz = {nnz:,}")
 
-    # -------------------------------------------------
     # 5. 创建 AnnData
-    # -------------------------------------------------
     adata = AnnData(
         X=X,
         obs=obs,
         var=var,
     )
 
-    # -------------------------------------------------
     # 6. 读取 obsm 子集
-    # -------------------------------------------------
     if include_obsm:
         print("[EXPORT] 读取 obsm 子集")
 
@@ -627,9 +593,7 @@ def export_cells_to_anndata(
 
             print(f"  - obsm[{key}] {adata.obsm[key].shape}")
 
-    # -------------------------------------------------
     # 7. 读取 varm 全集
-    # -------------------------------------------------
     if include_varm:
         print("[EXPORT] 读取 varm 全集")
 
@@ -663,9 +627,7 @@ def export_cells_to_anndata(
 
             print(f"  - varm[{key}] {adata.varm[key].shape}")
 
-    # -------------------------------------------------
     # 8. 清理临时表
-    # -------------------------------------------------
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
     print("✅ AnnData 导出完成")

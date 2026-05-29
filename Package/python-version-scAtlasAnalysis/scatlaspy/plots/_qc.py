@@ -4,76 +4,19 @@ import os
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from datetime import datetime
-import math
 
-# 🧠 这个函数的两个模式，你怎么选？
-# ✅ use_all_cells=True
-# 适合：
-# 你想和 Scanpy 图尽量一致
-# 数据规模还可以接受
-# 特点：
-# 会构造 obs × top_genes
-# 如果 top_genes=20，其实不大，通常能接受
-# ✅ use_all_cells=False
-# 适合：
-# 超大数据
-# 更关注趋势，不追求和 Scanpy 完全一致
-# 特点：
-# 更快
-# 更省内存
 
-# 🚀 你这个数据库版的优势
-# 💥 1. 不需要把整个矩阵转 dense
-# Scanpy 小数据可以 dense，大数据很危险。
-# 你这里始终在：
-# CSR长表 + SQL聚合
-# 上做。
-#
-# 💥 2. 很适合做大数据 benchmark
-# 这张图其实很适合写进你论文的 supplementary：
-# Scanpy：小数据能画
-# 你：大数据也能画
-
-# 在 DuckDB 里先聚合，再只取 top 基因，再画图
-
-# 导入完数据，直接画图:
-# “最高表达基因占比图（highest expressed genes）”
-# 👉 用来检查 有没有少数基因“垄断”表达（技术偏差）
+# 最高表达基因占比图（highest expressed genes）: 用来检查 有没有少数基因“垄断”表达（技术偏差）
 def highest_expr_genes_sql(
         atlas,
         n_top: int = 20,
-        use_all_cells: bool = True,     # ✅ 更接近 Scanpy 语义
-        show_outliers: bool = False,    # ✅ 是否绘制离群点
-        max_outliers: int = 5000,       # ✅ 每个基因最多绘制多少个离群点
-        figsize=(12, 10)
+        use_all_cells: bool = True,
+        show_outliers: bool = False,    # 是否绘制离群点
+        max_outliers: int = 5000,       # 每个基因最多绘制多少个离群点
+        figsize=(12, 10),
+        approx_quantile: bool = True,   # 大数据默认用近似分位数，避免 OOM
+        sample_cells: int | None = None # 大数据绘图时可抽样细胞，适合 1e8 cells 小内存场景
 ):
-    """
-    数据库版 sc.pl.highest_expr_genes（SQL分位数版，Scanpy-like style）
-
-    参数
-    ----
-    atlas : Atlas
-        Atlas 对象
-    n_top : int
-        取平均占比最高的前 n 个基因
-    use_all_cells : bool
-        True  -> 更接近 Scanpy：所有细胞参与，未表达补 0
-        False -> 仅统计非零表达细胞（更快，更适合超大数据）
-    show_outliers : bool
-        是否绘制离群点
-    max_outliers : int
-        每个基因最多绘制多少个离群点（防止内存爆炸）
-    figsize : tuple
-        图大小
-    """
-    # 日常 / 大数据 / 正式流程
-    #  use_all_cells=False,
-    #  show_outliers=False,
-
-    # 小数据 / 和 Scanpy 对齐 / 做展示图
-    #     use_all_cells=True,
-    #     show_outliers=True,
-    #     max_outliers=5000,
 
     print("\n==== plot_highest_expr_genes_sql (final aligned to scanpy) ====")
     start = datetime.now()
@@ -84,29 +27,78 @@ def highest_expr_genes_sql(
     except Exception:
         pass
 
-    # -------------------------------------------------
-    # 1️⃣ 每个细胞总 counts
-    # -------------------------------------------------
-    conn.execute("""
-        CREATE OR REPLACE TEMP TABLE _cell_total_counts AS
-        SELECT
-            atlas_cell_id,
-            SUM(data) AS total_counts
-        FROM X_CSRO_data
-        GROUP BY atlas_cell_id
-    """)
+    # 大数据场景下用 hash 近似抽样，避免 ORDER BY RANDOM() 全表排序
+    if sample_cells is not None:
+        sample_cells = int(sample_cells)
+        if sample_cells <= 0:
+            sample_cells = None
 
-    # -------------------------------------------------
-    # 2️⃣ 选 top genes
-    #     ✅【关键修改】当 use_all_cells=True 时，
-    #     top gene 也按“所有细胞平均 fraction”来算
-    # -------------------------------------------------
-    if use_all_cells:
+    # 如果指定 sample_cells，创建一个轻量 TEMP VIEW，不物化随机排序结果
+    if sample_cells is not None:
+        n_cells_total = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
+
+        if sample_cells < n_cells_total:
+            sample_mod = max(1, int(n_cells_total // sample_cells))
+
+            conn.execute(f"""
+                CREATE OR REPLACE TEMP VIEW _sample_cells AS
+                SELECT atlas_cell_id
+                FROM obs
+                WHERE (hash(atlas_cell_id) % {sample_mod}) = 0
+            """)
+        else:
+            conn.execute("""
+                CREATE OR REPLACE TEMP VIEW _sample_cells AS
+                SELECT atlas_cell_id
+                FROM obs
+            """)
+
+    # 优先复用 obs.cell_total_counts，避免每次扫描整个 X_HyS_data
+    obs_cols = {r[1] for r in conn.execute("PRAGMA table_info('obs')").fetchall()}
+
+    if "cell_total_counts" in obs_cols:
         conn.execute("""
-            CREATE OR REPLACE TEMP TABLE _all_cells AS
-            SELECT atlas_cell_id
+            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW，避免复制 1e8 cells
+            SELECT
+                atlas_cell_id,
+                cell_total_counts AS total_counts
             FROM obs
+            WHERE cell_total_counts IS NOT NULL
         """)
+    elif "total_counts" in obs_cols:
+        conn.execute("""
+            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW，避免复制 1e8 cells
+            SELECT
+                atlas_cell_id,
+                total_counts AS total_counts
+            FROM obs
+            WHERE total_counts IS NOT NULL
+        """)
+    else:
+        # fallback：没有预计算结果时才扫描 X
+        conn.execute("""
+            CREATE OR REPLACE TEMP TABLE _cell_total_counts AS
+            SELECT
+                atlas_cell_id,
+                SUM(data) AS total_counts
+            FROM X_HyS_data
+            GROUP BY atlas_cell_id
+        """)
+
+    # 选 top genes
+    if use_all_cells:
+        if sample_cells is not None:  # ✅ 新增：use_all_cells=True 时也允许基于抽样细胞构造 dense grid
+            conn.execute("""
+                CREATE OR REPLACE TEMP VIEW _all_cells AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW
+                SELECT atlas_cell_id
+                FROM _sample_cells
+            """)
+        else:
+            conn.execute("""
+                CREATE OR REPLACE TEMP VIEW _all_cells AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW
+                SELECT atlas_cell_id
+                FROM obs
+            """)
 
         conn.execute("""
             CREATE OR REPLACE TEMP TABLE _all_gene_mean_pct AS
@@ -115,9 +107,11 @@ def highest_expr_genes_sql(
                     x.atlas_cell_id,
                     x.atlas_gene_id,
                     x.data * 100.0 / t.total_counts AS pct
-                FROM X_CSRO_data x
+                FROM X_HyS_data x
                 JOIN _cell_total_counts t
                     ON x.atlas_cell_id = t.atlas_cell_id
+                JOIN _all_cells c                       -- ✅ 新增：如果 sample_cells 不为空，则只统计抽样细胞
+                    ON x.atlas_cell_id = c.atlas_cell_id
                 WHERE t.total_counts > 0
             ),
             gene_sum_pct AS (
@@ -152,14 +146,13 @@ def highest_expr_genes_sql(
             LIMIT {int(n_top)}
         """)
     else:
-        # ✅ 保留你原来的稀疏快版逻辑
         conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _top_expr_genes AS
             SELECT
                 x.atlas_gene_id,
                 v.atlas_gene_name,
                 AVG(x.data * 100.0 / t.total_counts) AS mean_pct
-            FROM X_CSRO_data x
+            FROM X_HyS_data x
             JOIN _cell_total_counts t
                 ON x.atlas_cell_id = t.atlas_cell_id
             JOIN var v
@@ -170,14 +163,22 @@ def highest_expr_genes_sql(
             LIMIT {int(n_top)}
         """)
 
-    # -------------------------------------------------
-    # 3️⃣ SQL 直接计算标准 boxplot 统计量
-    # -------------------------------------------------
+    # SQL 直接计算标准 boxplot 统计量
+    qfunc = "approx_quantile" if approx_quantile else "quantile_cont"  # ✅ 新增：use_all_cells=True/False 都统一支持近似分位数
+
+    # use_all_cells=False 时，boxplot 统计可基于抽样细胞，避免 1e8 cells 下扫描/聚合过重
+    sample_join_sql = ""
+    if sample_cells is not None:
+        sample_join_sql = """
+            JOIN _sample_cells s
+                ON x.atlas_cell_id = s.atlas_cell_id
+        """
+
     if use_all_cells:
-        stats_df = conn.execute("""
+        stats_df = conn.execute(f"""  -- ✅ 修改：改成 f-string，支持 qfunc
             WITH all_cells AS (
                 SELECT atlas_cell_id
-                FROM obs
+                FROM _all_cells              -- ✅ 修改：从 _all_cells 读取；如果 sample_cells 不为空则自动使用抽样细胞
             ),
             cell_gene_grid AS (
                 SELECT
@@ -193,11 +194,13 @@ def highest_expr_genes_sql(
                     x.atlas_cell_id,
                     x.atlas_gene_id,
                     x.data * 100.0 / t.total_counts AS pct
-                FROM X_CSRO_data x
+                FROM X_HyS_data x
                 JOIN _cell_total_counts t
                     ON x.atlas_cell_id = t.atlas_cell_id
                 JOIN _top_expr_genes g
                     ON x.atlas_gene_id = g.atlas_gene_id
+                JOIN all_cells c              -- ✅ 新增：限制到 _all_cells，支持 sample_cells
+                    ON x.atlas_cell_id = c.atlas_cell_id
                 WHERE t.total_counts > 0
             ),
             full_values AS (
@@ -215,9 +218,9 @@ def highest_expr_genes_sql(
                     atlas_gene_name,
                     mean_pct,
                     COUNT(*) AS n,
-                    quantile_cont(pct, 0.25) AS q1,
-                    quantile_cont(pct, 0.50) AS median,
-                    quantile_cont(pct, 0.75) AS q3
+                    {qfunc}(pct, 0.25) AS q1,     
+                    {qfunc}(pct, 0.50) AS median, 
+                    {qfunc}(pct, 0.75) AS q3     
                 FROM full_values
                 GROUP BY atlas_gene_name, mean_pct
             ),
@@ -252,74 +255,76 @@ def highest_expr_genes_sql(
             ORDER BY q.mean_pct DESC, q.atlas_gene_name
         """).fetchdf()
     else:
-        stats_df = conn.execute("""
-            WITH top_gene_values AS (
+        # 把 top genes 的非零表达值物化成临时表,这样后面 quartiles / whiskers 不会反复重跑同一个大 CTE
+        stats_df = conn.execute(f"""
+                WITH quartiles AS (
+                    SELECT
+                        g.atlas_gene_id,
+                        g.atlas_gene_name,
+                        MAX(g.mean_pct) AS mean_pct,
+                        COUNT(*) AS n,
+                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.25) AS q1,
+                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.50) AS median,
+                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.75) AS q3
+                    FROM X_HyS_data x
+                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 boxplot
+                    JOIN _top_expr_genes g
+                        ON x.atlas_gene_id = g.atlas_gene_id
+                    JOIN _cell_total_counts t
+                        ON x.atlas_cell_id = t.atlas_cell_id
+                    WHERE t.total_counts > 0
+                    GROUP BY g.atlas_gene_id, g.atlas_gene_name
+                ),
+                whiskers AS (
+                    SELECT
+                        q.atlas_gene_name,
+                        MIN(CASE
+                                WHEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                     >= (q.q1 - 1.5 * (q.q3 - q.q1))
+                                THEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                            END) AS whisker_low,
+                        MAX(CASE
+                                WHEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                     <= (q.q3 + 1.5 * (q.q3 - q.q1))
+                                THEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                            END) AS whisker_high
+                    FROM X_HyS_data x
+                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 whisker
+                    JOIN _top_expr_genes g
+                        ON x.atlas_gene_id = g.atlas_gene_id
+                    JOIN _cell_total_counts t
+                        ON x.atlas_cell_id = t.atlas_cell_id
+                    JOIN quartiles q
+                        ON g.atlas_gene_id = q.atlas_gene_id
+                    WHERE t.total_counts > 0
+                    GROUP BY q.atlas_gene_name
+                )
                 SELECT
-                    g.atlas_gene_name,
-                    g.mean_pct,
-                    x.data * 100.0 / t.total_counts AS pct
-                FROM X_CSRO_data x
-                JOIN _cell_total_counts t
-                    ON x.atlas_cell_id = t.atlas_cell_id
-                JOIN _top_expr_genes g
-                    ON x.atlas_gene_id = g.atlas_gene_id
-                WHERE t.total_counts > 0
-            ),
-            quartiles AS (
-                SELECT
-                    atlas_gene_name,
-                    mean_pct,
-                    COUNT(*) AS n,
-                    quantile_cont(pct, 0.25) AS q1,
-                    quantile_cont(pct, 0.50) AS median,
-                    quantile_cont(pct, 0.75) AS q3
-                FROM top_gene_values
-                GROUP BY atlas_gene_name, mean_pct
-            ),
-            whiskers AS (
-                SELECT
-                    f.atlas_gene_name,
-                    MIN(CASE
-                            WHEN f.pct >= (q.q1 - 1.5 * (q.q3 - q.q1))
-                            THEN f.pct
-                        END) AS whisker_low,
-                    MAX(CASE
-                            WHEN f.pct <= (q.q3 + 1.5 * (q.q3 - q.q1))
-                            THEN f.pct
-                        END) AS whisker_high
-                FROM top_gene_values f
-                JOIN quartiles q
-                  ON f.atlas_gene_name = q.atlas_gene_name
-                GROUP BY f.atlas_gene_name
-            )
-            SELECT
-                q.atlas_gene_name,
-                q.mean_pct,
-                q.n,
-                COALESCE(w.whisker_low, q.q1) AS whisker_low,
-                q.q1,
-                q.median,
-                q.q3,
-                COALESCE(w.whisker_high, q.q3) AS whisker_high
-            FROM quartiles q
-            LEFT JOIN whiskers w
-              ON q.atlas_gene_name = w.atlas_gene_name
-            ORDER BY q.mean_pct DESC, q.atlas_gene_name
-        """).fetchdf()
+                    q.atlas_gene_name,
+                    q.mean_pct,
+                    q.n,
+                    COALESCE(w.whisker_low, q.q1) AS whisker_low,
+                    q.q1,
+                    q.median,
+                    q.q3,
+                    COALESCE(w.whisker_high, q.q3) AS whisker_high
+                FROM quartiles q
+                LEFT JOIN whiskers w
+                  ON q.atlas_gene_name = w.atlas_gene_name
+                ORDER BY q.mean_pct DESC, q.atlas_gene_name
+            """).fetchdf()
 
-    # -------------------------------------------------
-    # 3.5️⃣ 可选：提取离群点
-    # -------------------------------------------------
+    # 提取离群点
     outlier_df = None
 
     if show_outliers:
         print("-> extracting outliers ...")
 
         if use_all_cells:
-            outlier_df = conn.execute(f"""
+            outlier_df = conn.execute(f"""  -- 改成 f-string，支持 qfunc
                 WITH all_cells AS (
                     SELECT atlas_cell_id
-                    FROM obs
+                    FROM _all_cells              -- 从 _all_cells 读取；如果 sample_cells 不为空则自动使用抽样细胞
                 ),
                 cell_gene_grid AS (
                     SELECT
@@ -334,11 +339,13 @@ def highest_expr_genes_sql(
                         x.atlas_cell_id,
                         x.atlas_gene_id,
                         x.data * 100.0 / t.total_counts AS pct
-                    FROM X_CSRO_data x
+                    FROM X_HyS_data x
                     JOIN _cell_total_counts t
                         ON x.atlas_cell_id = t.atlas_cell_id
                     JOIN _top_expr_genes g
                         ON x.atlas_gene_id = g.atlas_gene_id
+                    JOIN all_cells c              -- 限制到 _all_cells，支持 sample_cells
+                        ON x.atlas_cell_id = c.atlas_cell_id
                     WHERE t.total_counts > 0
                 ),
                 full_values AS (
@@ -353,8 +360,8 @@ def highest_expr_genes_sql(
                 bounds AS (
                     SELECT
                         atlas_gene_name,
-                        quantile_cont(pct, 0.25) AS q1,
-                        quantile_cont(pct, 0.75) AS q3
+                        {qfunc}(pct, 0.25) AS q1,  -- quantile_cont 改为可切换 qfunc
+                        {qfunc}(pct, 0.75) AS q3   -- quantile_cont 改为可切换 qfunc
                     FROM full_values
                     GROUP BY atlas_gene_name
                 ),
@@ -382,7 +389,8 @@ def highest_expr_genes_sql(
                     SELECT
                         g.atlas_gene_name,
                         x.data * 100.0 / t.total_counts AS pct
-                    FROM X_CSRO_data x
+                    FROM X_HyS_data x
+                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只提取抽样细胞离群点
                     JOIN _cell_total_counts t
                         ON x.atlas_cell_id = t.atlas_cell_id
                     JOIN _top_expr_genes g
@@ -392,8 +400,8 @@ def highest_expr_genes_sql(
                 bounds AS (
                     SELECT
                         atlas_gene_name,
-                        quantile_cont(pct, 0.25) AS q1,
-                        quantile_cont(pct, 0.75) AS q3
+                        {qfunc}(pct, 0.25) AS q1, 
+                        {qfunc}(pct, 0.75) AS q3   
                     FROM top_gene_values
                     GROUP BY atlas_gene_name
                 ),
@@ -416,9 +424,6 @@ def highest_expr_genes_sql(
                 WHERE rn <= {int(max_outliers)}
             """).fetchdf()
 
-    # -------------------------------------------------
-    # 4️⃣ 画图（Scanpy-like style）
-    # -------------------------------------------------
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
@@ -505,17 +510,27 @@ def highest_expr_genes_sql(
     plt.tight_layout(pad=0.8)
     plt.show()
 
-    # -------------------------------------------------
-    # 5️⃣ 清理
-    # -------------------------------------------------
-    conn.execute("DROP TABLE IF EXISTS _cell_total_counts")
-    conn.execute("DROP TABLE IF EXISTS _top_expr_genes")
-    conn.execute("DROP TABLE IF EXISTS _all_cells")
-    conn.execute("DROP TABLE IF EXISTS _all_gene_mean_pct")
+    # 清理
+    # DuckDB 中同名对象可能是 VIEW，也可能是 TABLE，直接 DROP VIEW 可能因类型不匹配报错
+    def _safe_drop_temp(name):
+        try:
+            conn.execute(f"DROP VIEW IF EXISTS {name}")
+        except Exception:
+            pass
+
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {name}")
+        except Exception:
+            pass
+
+    _safe_drop_temp("_sample_cells")
+    _safe_drop_temp("_cell_total_counts")
+    _safe_drop_temp("_all_cells")
+    _safe_drop_temp("_top_expr_genes")
+    _safe_drop_temp("_top_gene_values")
+    _safe_drop_temp("_all_gene_mean_pct")
 
     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-
 
 
 
@@ -531,34 +546,6 @@ def violin_qc_metrics(
         sample_n: int | None = 50000,
         random_state: int = 0
 ):
-    """
-    Scanpy 风格 QC violin plot（SQL 先抽样版，大数据更友好）
-
-    参数
-    ----
-    atlas : Atlas
-        Atlas 对象
-    keys : list[str] | None
-        要画的 obs 列名
-        默认:
-        ["n_genes_by_counts", "cell_total_counts", "pct_counts_mt"]
-    jitter : float
-        散点抖动幅度，类似 scanpy 的 jitter=0.4
-    multi_panel : bool
-        True -> 多个 panel 横向排列
-        False -> 单图纵向排列
-    figsize : tuple | None
-        图大小；None 时自动估计
-    use_filtered : bool
-        是否只画通过过滤的细胞（obs.filter_cells = TRUE）
-    filter_key : str
-        过滤列名，默认 "filter_cells"
-    sample_n : int | None
-        SQL 中先抽样的细胞数
-        None 表示不抽样，全量作图（大数据不推荐）
-    random_state : int
-        随机种子（目前主要用于保持接口一致）
-    """
 
     print("\n==== violin_qc_metrics (SQL first sampling) ====")
     start = datetime.now()
@@ -567,9 +554,7 @@ def violin_qc_metrics(
     if keys is None:
         keys = ["n_genes_by_counts", "cell_total_counts", "pct_counts_mt"]
 
-    # -------------------------------------------------
-    # 0️⃣ 检查 obs 列是否存在
-    # -------------------------------------------------
+    # 检查 obs 列是否存在
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     missing = [k for k in keys if k not in obs_cols]
@@ -582,9 +567,7 @@ def violin_qc_metrics(
     if use_filtered and filter_key not in obs_cols:
         raise ValueError(f"obs 中不存在过滤列: {filter_key}")
 
-    # -------------------------------------------------
-    # 1️⃣ SQL 先抽样，再 fetchdf
-    # -------------------------------------------------
+    # SQL 先抽样，再 fetchdf
     select_cols = ", ".join(keys)
 
     where_clauses = []
@@ -598,15 +581,14 @@ def violin_qc_metrics(
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     if sample_n is None:
-        # ✅ 全量（大数据不推荐）
+        # 全量（大数据不推荐）
         query = f"""
             SELECT {select_cols}
             FROM obs
             {where_sql}
         """
     else:
-        # ✅【关键优化】先在 SQL 中抽样，再 fetchdf
-        # DuckDB USING SAMPLE 是 reservoir/system sample 风格，适合这里
+        # 先在 SQL 中抽样，再 fetchdf
         query = f"""
             SELECT {select_cols}
             FROM obs
@@ -616,9 +598,7 @@ def violin_qc_metrics(
 
     df = conn.execute(query).fetchdf()
 
-    # -------------------------------------------------
-    # 2️⃣ 清理列：去掉全空列
-    # -------------------------------------------------
+    # 清理列
     keep_keys = []
     for k in keys:
         if k in df.columns and df[k].notna().sum() > 0:
@@ -630,9 +610,7 @@ def violin_qc_metrics(
     df = df[keep_keys]
     keys = keep_keys
 
-    # -------------------------------------------------
-    # 3️⃣ 自动布局
-    # -------------------------------------------------
+    # 自动布局
     n = len(keys)
 
     if figsize is None:
@@ -654,9 +632,7 @@ def violin_qc_metrics(
     edge_color = "#4a4a4a"
     point_color = "#2f2f2f"
 
-    # -------------------------------------------------
-    # 4️⃣ 逐列画 violin + jitter
-    # -------------------------------------------------
+    # 逐列画 violin + jitter
     for ax, key in zip(axes, keys):
         vals = pd.to_numeric(df[key], errors="coerce").dropna().to_numpy()
 
@@ -685,7 +661,6 @@ def violin_qc_metrics(
             parts["cmedians"].set_linewidth(1.2)
 
         # jitter points
-        # 不再依赖 numpy 随机数，直接用 matplotlib + pandas index 生成均匀抖动
         y_jitter = 1 + (pd.Series(range(len(vals))).sample(frac=1, random_state=random_state).rank().to_numpy() / len(vals) - 0.5) * jitter
 
         ax.scatter(
@@ -719,8 +694,8 @@ def violin_qc_metrics(
     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
 
 
-# QC 散点图（scatter plot）
-# 用来发现“异常细胞”的关系图（不是看分布，是看相关性）
+
+# QC 散点图（scatter plot），用来发现“异常细胞”的关系图
 def scatter_qc_metrics(
         atlas,
         pairs=None,
@@ -732,36 +707,6 @@ def scatter_qc_metrics(
         point_size: float = 8,
         alpha: float = 0.7
 ):
-    """
-    Scanpy 风格 QC scatter plot（SQL 先抽样版，大数据更友好）
-
-    参数
-    ----
-    atlas : Atlas
-        Atlas 对象
-    pairs : list[tuple[str, str]] | None
-        要画的 (x, y) 列对
-        默认:
-        [
-            ("cell_total_counts", "pct_counts_mt"),
-            ("cell_total_counts", "n_genes_by_counts")
-        ]
-    figsize : tuple
-        图大小
-    use_filtered : bool
-        是否只画通过过滤的细胞（obs.filter_cells = TRUE）
-    filter_key : str
-        过滤列名，默认 "filter_cells"
-    sample_n : int | None
-        SQL 中先抽样的细胞数
-        None 表示不抽样，全量作图（大数据不推荐）
-    random_state : int
-        随机种子（主要用于接口一致性）
-    point_size : float
-        散点大小
-    alpha : float
-        散点透明度
-    """
 
     print("\n==== scatter_qc_metrics (SQL first sampling) ====")
     start = datetime.now()
@@ -773,9 +718,7 @@ def scatter_qc_metrics(
             ("cell_total_counts", "n_genes_by_counts"),
         ]
 
-    # -------------------------------------------------
-    # 0️⃣ 检查 obs 列是否存在
-    # -------------------------------------------------
+    # 检查 obs 列是否存在
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     needed_cols = set()
@@ -793,9 +736,7 @@ def scatter_qc_metrics(
     if use_filtered and filter_key not in obs_cols:
         raise ValueError(f"obs 中不存在过滤列: {filter_key}")
 
-    # -------------------------------------------------
-    # 1️⃣ SQL 先抽样，再 fetchdf
-    # -------------------------------------------------
+    # SQL 先抽样，再 fetchdf
     select_cols = ", ".join(sorted(needed_cols))
 
     where_clauses = []
@@ -820,7 +761,7 @@ def scatter_qc_metrics(
             {where_sql}
         """
     else:
-        # ✅ SQL 先抽样
+        # SQL 先抽样
         query = f"""
             SELECT {select_cols}
             FROM obs
@@ -830,18 +771,14 @@ def scatter_qc_metrics(
 
     df = conn.execute(query).fetchdf()
 
-    # -------------------------------------------------
-    # 2️⃣ 自动布局
-    # -------------------------------------------------
+    # 自动布局
     n = len(pairs)
 
     fig, axes = plt.subplots(1, n, figsize=figsize, facecolor="white")
     if n == 1:
         axes = [axes]
 
-    # -------------------------------------------------
-    # 3️⃣ 逐图绘制
-    # -------------------------------------------------
+    # 逐图绘制
     for ax, (x_col, y_col) in zip(axes, pairs):
         sub = df[[x_col, y_col]].copy()
         sub[x_col] = pd.to_numeric(sub[x_col], errors="coerce")
@@ -895,30 +832,12 @@ def highly_variable_genes_plot(
         alpha_hvg: float = 0.9,
         alpha_other: float = 0.6
 ):
-    """
-    数据库版 HVG 可视化（直接复用 var 中已存统计量，不再扫描 X_CSRO_data）
-
-    参数
-    ----
-    atlas : Atlas
-        Atlas 对象
-    hvg_key : str
-        var 中 HVG 布尔列名
-    mean_key / var_key / std_key / score_key : str
-        var 中已保存的 HVG 统计列名
-    sample_other : int | None
-        非 HVG 基因可选抽样数量，减少绘图点数
-    figsize : tuple
-        图大小
-    """
 
     print("\n==== highly_variable_genes_plot ====")
     start = datetime.now()
     conn = atlas.connection
 
-    # -------------------------------------------------
-    # 0️⃣ 检查 var 中列是否存在
-    # -------------------------------------------------
+    # 检查 var 中列是否存在
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
 
     needed = [hvg_key, mean_key, var_key, std_key, score_key, "atlas_gene_name"]
@@ -929,9 +848,7 @@ def highly_variable_genes_plot(
             f"请先运行修改后的 sap.pp.highly_variable_genes(atlas)"
         )
 
-    # -------------------------------------------------
-    # 1️⃣ 直接从 var 读取 gene-level 结果
-    # -------------------------------------------------
+    # 直接从 var 读取 gene-level 结果
     df = conn.execute(f"""
         SELECT
             atlas_gene_id,
@@ -945,12 +862,6 @@ def highly_variable_genes_plot(
         ORDER BY atlas_gene_id
     """).fetchdf()
 
-    # -------------------------------------------------
-    # 2️⃣ 构造左图显示量
-    # -------------------------------------------------
-    # 对 flavor="var"：左图直接显示 hvg_score (= var)
-    # 对 flavor="cv" ：左图显示 hvg_score (= std/mean)
-    # 这样可直接对齐你自己的排序逻辑
     df["var_norm_display"] = df["score_expr"]
 
     # 非 HVG 可选抽样
@@ -968,9 +879,6 @@ def highly_variable_genes_plot(
     plot_hvg = plot_df[plot_df["is_hvg"]].copy()
     plot_other = plot_df[~plot_df["is_hvg"]].copy()
 
-    # -------------------------------------------------
-    # 3️⃣ 画图（Scanpy-like style）
-    # -------------------------------------------------
     fig, axes = plt.subplots(1, 2, figsize=figsize, facecolor="white")
 
     # ---------- 左图 ----------
@@ -1060,30 +968,13 @@ def highly_variable_genes_plot(
 
 
 
+# 高变基因（HVG, Highly Variable Genes）选择图 ： seurat 版本
 def highly_variable_genes_plot_seurat(
         atlas,
         hvg_key: str = "highly_variable_genes",
         sample_other: int | None = 20000,
         save: str | None = None,
 ):
-    """
-    数据库版 Seurat-like HVG 可视化。
-
-    适配 highly_variable_genes_seurat() 的输出结果。
-    直接读取 var 表中的：
-        - means
-        - dispersions
-        - dispersions_norm
-        - highly_variable_genes
-        - highly_variable_rank
-
-    不扫描 X_CSRO_data。
-    """
-
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    from datetime import datetime
 
     print("\n==== highly_variable_genes_plot_like_seurat ====")
     start = datetime.now()
@@ -1093,15 +984,11 @@ def highly_variable_genes_plot_seurat(
     if conn is None:
         raise ValueError("atlas.connection 为空，请先连接数据库")
 
-    # -------------------------------------------------
-    # 0. DuckDB 字段安全引用
-    # -------------------------------------------------
+    # DuckDB 字段安全引用
     def _q(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
 
-    # -------------------------------------------------
-    # 1. 检查 var 中列是否存在
-    # -------------------------------------------------
+    # 检查 var 中列是否存在
     var_cols = [
         r[0]
         for r in conn.execute("""
@@ -1128,9 +1015,7 @@ def highly_variable_genes_plot_seurat(
             f"请先运行 highly_variable_genes_seurat(atlas)"
         )
 
-    # -------------------------------------------------
-    # 2. 读取 var 中已经保存好的 HVG 结果
-    # -------------------------------------------------
+    # 读取 var 中已经保存好的 HVG 结果
     df = conn.execute(f"""
         SELECT
             atlas_gene_id,
@@ -1143,9 +1028,7 @@ def highly_variable_genes_plot_seurat(
         ORDER BY atlas_gene_id
     """).fetchdf()
 
-    # -------------------------------------------------
-    # 3. 清理 nan / inf
-    # -------------------------------------------------
+    # 清理 nan / inf
     for col in ["means", "dispersions", "dispersions_norm"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)
@@ -1162,9 +1045,7 @@ def highly_variable_genes_plot_seurat(
     print(f"[INFO] genes for plot = {len(df):,}")
     print(f"[INFO] HVGs = {int(df['is_hvg'].sum()):,}")
 
-    # -------------------------------------------------
-    # 4. 非 HVG 可选抽样
-    # -------------------------------------------------
+    # 非 HVG 可选抽样
     if sample_other is not None:
         df_hvg = df[df["is_hvg"]].copy()
         df_other = df[~df["is_hvg"]].copy()
@@ -1186,9 +1067,7 @@ def highly_variable_genes_plot_seurat(
     plot_hvg = plot_df[plot_df["is_hvg"]].copy()
     plot_other = plot_df[~plot_df["is_hvg"]].copy()
 
-    # -------------------------------------------------
-    # 5. 画图
-    # -------------------------------------------------
+    # 画图
     fig, axes = plt.subplots(
         1,
         2,
@@ -1196,9 +1075,7 @@ def highly_variable_genes_plot_seurat(
         facecolor="white",
     )
 
-    # =================================================
     # 左图：normalized dispersions
-    # =================================================
     ax = axes[0]
 
     other_norm = plot_other[plot_other["dispersions_norm"].notna()]
@@ -1242,9 +1119,7 @@ def highly_variable_genes_plot_seurat(
     ax.spines["right"].set_visible(False)
     ax.tick_params(axis="both", labelsize=11)
 
-    # =================================================
     # 右图：raw dispersions
-    # =================================================
     ax = axes[1]
 
     other_disp = plot_other[plot_other["dispersions"].notna()]

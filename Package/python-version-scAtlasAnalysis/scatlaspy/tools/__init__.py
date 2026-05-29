@@ -11,7 +11,6 @@ from ._kmeans import (
 
 from ._umap import (
     umap,
-    parametric_umap,
 )
 
 from ._annotation import (

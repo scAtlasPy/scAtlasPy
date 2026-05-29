@@ -1,20 +1,20 @@
+from ..data import Atlas
+from sklearn.decomposition import IncrementalPCA
 import numpy as np
 from tqdm import tqdm
-from ..data import Atlas
-import matplotlib.pyplot as plt
-from sklearn.decomposition import IncrementalPCA
+from sklearn.decomposition import PCA
 import pandas as pd
-from datetime import datetime
-# 使用 scikit-learn 里的 IncrementalPCA，专门用于 大数据 / 分批训练（streaming） 的 PCA
+import time
 
-''' 第 1 层：算法执行层 '''
-# 一个“流式 PCA 引擎”；支持 batch-by-batch 训练 + 推理
+
+# 流式 PCA ；支持 minibatch 训练 + 推理
 class StreamingPCA:
 
     # 初始化
-    def __init__(self, n_components = 50,
-                 fit_batches: int = 1000,  # ✅ 新增
-                 buffer_batch_num: int = 5,  # ✅ 新增
+    def __init__(self,
+                 n_components = 30,
+                 fit_batches: int = 1000,
+                 buffer_batch_num: int = 5,
                  ):
 
         self.n_components = n_components # PCA 目标维度
@@ -22,55 +22,13 @@ class StreamingPCA:
         self.fit_batches = fit_batches
         self.buffer_batch_num = buffer_batch_num
 
-        # 假设你有一个表达矩阵（已经标准化）：
-        # cell × gene：
-        #       g1   g2
-        # c1    2    2
-        # c2    3    3
-        # c3    4    4
-        # c4    5    5
-        # g1 和 g2 完全一样（强相关）
+        self.components_ = None                 # components_ = 坐标轴  → 方向（往哪里投影）
+        self.explained_variance_ = None         # variance = 每个轴有多重要   → 强度（这个方向多重要）
+        self.explained_variance_ratio_ = None   # ratio = 占总信息多少        → 占比（解释了多少信息）
 
-        # PCA 会找一个新方向：
-        # PC1 ≈ (g1 + g2) / √2
-        # PC2 ≈ (g1 - g2) / √2
-
-        # 训练完成后保存的结果（对齐 Scanpy）
-        self.components_ = None                 # 现在还没训练 → 没有结果                 → 方向（往哪里投影）
-        # adata.varm["PCs"]    特征向量
-        # self.components_.shape = (n_components, n_genes)
-        # components_ =  👉 每个 PC 是“基因的线性组合方向”
-        # PC1: [0.707, 0.707]  PC1：两个基因一起涨 → 最重要方向
-        # PC2: [0.707, -0.707] PC2：一个涨一个跌 → 几乎没信息
-        # 🎯 components_ = 坐标轴
-        # 👉 新坐标系长啥样
-
-
-        self.explained_variance_ = None         # 每个主成分的“方差大小”,这个方向有多重要    → 强度（这个方向多重要）
-        # adata.uns["pca"]["variance"]   特征值
-        # explained_variance_ = [10.0, 0.01]  👉 每个主成分上的“数据方差大小”
-        # PC1：数据 spread 很大 → 信息多
-        # PC2：几乎没有变化 → 信息少
-        # 就像：
-        # PC1 = 主干道路（很多车）
-        # PC2 = 小巷子（几乎没人）
-        # 📏 variance = 每个轴有多重要
-        # 👉 哪个轴“更有用”
-
-
-        self.explained_variance_ratio_ = None   # 每个主成分解释的数据比例（百分比）         → 占比（解释了多少信息）
-        # adata.uns["pca"]["variance_ratio"]  特征值归一化
-        # explained_variance_ratio_ = [0.999, 0.001]
-        # 👉 每个 PC 解释了“多少比例的信息”
-        # PC1：解释了 99.9% 的信息
-        # PC2：几乎没用
-        # 📊 ratio = 占总信息多少
-        # 👉 保留了多少信息
-
-        # explained_variance_ratio_ = explained_variance_ / sum(explained_variance_)
 
     # 新建 obsm_X_pca 表
-    def _create_pca_table(self, atlas:Atlas, n_components=50, table_name="obsm_X_pca"):
+    def _create_pca_table(self, atlas:Atlas, n_components = 30, table_name="obsm_X_pca"):
 
         atlas.connection.execute(f""" DROP TABLE IF EXISTS {table_name}; """)
 
@@ -86,7 +44,7 @@ class StreamingPCA:
         print("obsm_X_pca 新建完成")
 
     # 新建 varm_PCs 表
-    def _create_pcs_table(self, atlas:Atlas,  n_components=50, table_name="varm_PCs"):
+    def _create_pcs_table(self, atlas:Atlas,  n_components = 30, table_name="varm_PCs"):
 
         atlas.connection.execute(f""" DROP TABLE IF EXISTS {table_name}; """)
 
@@ -121,10 +79,9 @@ class StreamingPCA:
 
         n = X_batch.shape[0]
 
-        # atlas_cell_id
-        cell_ids = np.arange(cell_offset, cell_offset + n, dtype=np.int64)
-        # float32（节省空间）
-        X_batch = X_batch.astype(np.float32)
+        cell_ids = np.arange(cell_offset, cell_offset + n, dtype=np.int32) # atlas_cell_id
+
+        X_batch = X_batch.astype(np.float32) # float32（节省空间）
 
         # 构建 DataFrame
         df = pd.DataFrame(
@@ -140,14 +97,6 @@ class StreamingPCA:
 
     # 写 varm_PCs 表
     def _writer_varm_PCs(self, atlas: Atlas, table_name="varm_PCs"):
-
-        # components_.shape     = (PC, gene)
-        # components_.T.shape   = (gene, PC)
-        # 结果示例
-        # varm_PCs（基因 × PCA权重）
-        # atlas_gene_id	 pc0	 pc1	pc2
-        #  0	    0.2	    0.1	    0.6
-        #  1	    0.3	    -0.2	0.1
 
         pcs = self.components_.T.astype(np.float32)  # (n_genes, n_components)
         df = pd.DataFrame(
@@ -240,21 +189,10 @@ class StreamingPCA:
         cell_offset = 0  # 🔥关键：全局递增
 
         for X_batch in tqdm(atlas.minibatch_dense( pass_mode="single-pass")):
+
             X_pca = self.ipca.transform(X_batch)
-            # transform 内部其实做的就是：
-            # X_pca = X_batch @ components_.T
-            # @ 表示 矩阵乘法
-            # components_
-            # 👉 定义了“新坐标轴”
-            # X @ components_.T
-            # 👉 把数据投影到这些新坐标轴上
 
-            # 维度
-            # X_batch.shape        = (n_cells, n_genes)
-            # components_.shape    = (n_components, n_genes)
-            # components_.T.shape  = (n_genes, n_components)
-
-            # # ✅ 只写 obsm（每个batch）
+            # 只写 obsm（每个batch）
             cell_offset = self._writer_obsm_X_pca(
                 atlas,
                 X_pca,
@@ -268,19 +206,18 @@ class StreamingPCA:
 
         print("[PCA] Fit + Transform")
 
-        # 1️⃣ 训练
+        # 训练
         self.fit(atlas)
 
-        # # ✅ 写一次模型结果
+        # 写一次模型结果
         self._writer_varm_PCs(atlas)
         self._writer_uns_pca_stats(atlas)
 
-        # 2️⃣ transform（写 obsm）
+        # transform（写 obsm）
         self.transform(atlas)
         return self
 
-
-    # 获取结果（类似 scanpy）
+    # 获取结果
     def get_results(self):
         return {
             "components": self.components_,
@@ -288,25 +225,21 @@ class StreamingPCA:
             "explained_variance_ratio": self.explained_variance_ratio_
         }
 
-
     # 从数据库读取 PCA components，并恢复到 self.components_
     def load_components(self, atlas, table_name="varm_PCs"):
-        """
-        从数据库读取 PCA components，并恢复到 self.components_
-        """
+
         conn = atlas.connection
 
-        # 1️⃣ 读取整张表
+        # 读取整张表
         df = conn.execute(f"""
             SELECT * FROM {table_name}
             ORDER BY atlas_gene_id
         """).fetchdf()
 
-        # 2️⃣ 去掉 atlas_gene_id
+        # 去掉 atlas_gene_id
         pcs = df.drop(columns=["atlas_gene_id"]).values
 
-        # 3️⃣ 转置回 PCA 原始格式
-        # (gene, pc) -> (pc, gene)
+        # 转置回 PCA 原始格式；(gene, pc) -> (pc, gene)
         components_ = pcs.T.astype(np.float32)
 
         print(f"[Load] components_ shape = {components_.shape}")
@@ -315,14 +248,13 @@ class StreamingPCA:
 
     def run(self, atlas: Atlas):
 
-        # 建表
-        # ✅ 修改：建表维度必须和本次 PCA 输出维度 self.n_components 对齐
+        # 建表；建表维度必须和本次 PCA 输出维度 self.n_components 对齐
         self._create_pca_table(
             atlas,
             n_components=self.n_components
         )
 
-        # ✅ 修改：varm_PCs 表维度必须和 self.components_.T 的列数一致
+        # varm_PCs 表维度必须和 self.components_.T 的列数一致
         self._create_pcs_table(
             atlas,
             n_components=self.n_components
@@ -340,45 +272,14 @@ class StreamingPCA:
         if np.allclose(components, self.components_):
             print(" components 提取正确")
 
-    # 外部执行 run 函数
-    # def run(self,atlas: Atlas):
-    #
-    #     # 建表
-    #     self._create_pca_table(atlas)
-    #     self._create_pcs_table(atlas)
-    #     self._create_pca_stats_table(atlas)
-    #
-    #     # 运行PCA
-    #     self.fit_transform(atlas)
-    #
-    #     # 对比信息
-    #     components = self.load_components(atlas)
-    #     if np.array_equal(components, self.components_):
-    #         print(" components 提取正确")
-    #     if np.allclose(components, self.components_):
-    #         print(" components 提取正确")
 
-
-#  PCA 总入口（Scanpy 风格）
+# 流式 PCA 入口
 def pca(
         atlas: Atlas,
         n_components: int = 50,
-        fit_batches: int = 1000,        # ✅ 新增
-        buffer_batch_num: int = 5,      # ✅ 新增
+        fit_batches: int = 1000,
+        buffer_batch_num: int = 5,
 ):
-    """
-    PCA 总入口（Scanpy 风格）
-
-    示例
-    ----
-    sap.tl.pca(
-        atlas,
-        n_components=30,
-        fit_batches=1000
-    )
-    """
-
-    import time
 
     t_start = time.time()
 
@@ -398,47 +299,12 @@ def pca(
     return pca_runner
 
 
-# todo 2700 x 32738
-# 1 轮
-# [PCA] 累计解释方差比例（前 50 个主成分）：0.2892
-# [PCA] 前 10 个主成分的累计解释方差比例：
-# [0.03334165 0.04753095 0.05819701 0.06609452 0.0731115  0.07977109
-#  0.08617575 0.09239872 0.09848478 0.10447507]
-# [PCA] 最终累计解释方差比例：0.2892
 
-# 10 轮
-# [PCA] 累计解释方差比例（前 50 个主成分）：0.2892
-# [PCA] 前 10 个主成分的累计解释方差比例：
-# [0.03334164 0.04753093 0.058197   0.0660945  0.07311148 0.07977106
-#  0.08617574 0.0923987  0.09848477 0.10447505]
-# [PCA] 最终累计解释方差比例：0.2892
-
-# 全量的 PCA
-# [PCA] 累计解释方差比例（前 50 个主成分）：0.2877
-# [PCA] 前 10 个主成分的累计解释方差比例：
-# [0.03334164 0.04753095 0.058197   0.06609449 0.07311138 0.07977074
-#  0.08617501 0.09239761 0.09848297 0.10447221]
-# [PCA] 最终累计解释方差比例：0.2877
-
-# todo 819200 细胞
-# [PCA] 累计解释方差比例（前 50 个主成分）：0.4531
-# [PCA] 前 10 个主成分的累计解释方差比例：
-# [0.0724051  0.1290006  0.16795102 0.20260295 0.22874527 0.25148278
-#  0.2708412  0.2882735  0.30078217 0.311649  ]
-# [PCA] 最终累计解释方差比例：0.4531
-# 🔥 PCA解释比例较高，结构较明显
-
-
-
-import numpy as np
-from tqdm import tqdm
-from sklearn.decomposition import PCA
-import pandas as pd
-
-
+# 全量pca
 class SimplePCA:
 
-    def __init__(self, n_components=50):
+    def __init__(self, n_components = 30):
+
         self.n_components = n_components
         self.pca = PCA(n_components=n_components)
 
@@ -446,9 +312,7 @@ class SimplePCA:
         self.explained_variance_ = None
         self.explained_variance_ratio_ = None
 
-    # ================================
-    # 1️⃣ 收集全量数据
-    # ================================
+    # 收集全量数据
     def _collect_all_data(self, atlas):
 
         print("[PCA] Collecting all data into memory...")
@@ -464,9 +328,7 @@ class SimplePCA:
 
         return X
 
-    # ================================
-    # 2️⃣ Fit（一次性 PCA）
-    # ================================
+    # Fit（一次性 PCA）
     def fit(self, atlas):
 
         X = self._collect_all_data(atlas)
@@ -480,9 +342,7 @@ class SimplePCA:
 
         print("[PCA] Fit done")
 
-        # ================================
-        # 📊 解释方差评估（🔥你要的部分）
-        # ================================
+        # 解释方差评估
         cum_ratio = np.cumsum(self.explained_variance_ratio_)
 
         print("[PCA] 累计解释方差比例（前 {} 个主成分）：{:.4f}".format(
@@ -497,7 +357,7 @@ class SimplePCA:
 
         total_ratio = cum_ratio[-1]
 
-        # ✅ 自动评价
+        # 自动评价
         if total_ratio < 0.1:
             print("⚠️ PCA解释比例较低，可能需要检查数据或增加主成分数")
         elif total_ratio < 0.2:
@@ -509,9 +369,7 @@ class SimplePCA:
 
         return X
 
-    # ================================
-    # 3️⃣ 写 obsm
-    # ================================
+    # 写 obsm
     def _write_obsm(self, atlas, X_pca):
 
         atlas.connection.execute("DROP TABLE IF EXISTS obsm_X_pca")
@@ -534,9 +392,7 @@ class SimplePCA:
 
         atlas.connection.append("obsm_X_pca", df)
 
-    # ================================
-    # 4️⃣ 写 varm
-    # ================================
+    # 写 varm
     def _write_varm(self, atlas):
 
         atlas.connection.execute("DROP TABLE IF EXISTS varm_PCs")
@@ -561,9 +417,7 @@ class SimplePCA:
 
         atlas.connection.append("varm_PCs", df)
 
-    # ================================
-    # 5️⃣ 写 uns
-    # ================================
+    # 写 uns
     def _write_uns(self, atlas):
 
         atlas.connection.execute("DROP TABLE IF EXISTS uns_pca_stats")
@@ -584,19 +438,17 @@ class SimplePCA:
 
         atlas.connection.append("uns_pca_stats", df)
 
-    # ================================
-    # 6️⃣ 主流程
-    # ================================
+    # 主流程
     def run(self, atlas):
 
-        # 1️⃣ fit
+        # fit
         X = self.fit(atlas)
 
-        # 2️⃣ transform
+        # transform
         print("[PCA] Transform...")
         X_pca = self.pca.transform(X)
 
-        # 3️⃣ 写库
+        # 写库
         self._write_obsm(atlas, X_pca)
         self._write_varm(atlas)
         self._write_uns(atlas)
@@ -604,10 +456,8 @@ class SimplePCA:
         print("[PCA] Done ✅")
 
 
-# ================================
-# 🎯 Scanpy 风格入口
-# ================================
-def pca_simple(atlas, n_components=50):
+# 全量pca 入口
+def pca_simple(atlas, n_components = 30):
 
     print("\n==== sap.tl.pca (simple) ====")
 

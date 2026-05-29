@@ -1,13 +1,10 @@
-import time
 from typing import *
 from _duckdb import DuckDBPyConnection
 import duckdb
 import os
-import logging # 管理各种类型的日志
+import logging
 from ._minibatch import MinibatchFetchMultiThreads
 from ._filter_index import FilterBuildIndex
-import scatlaspy as sap
-import numpy as np
 
 # 配置日志
 logging.basicConfig(
@@ -40,10 +37,7 @@ class Atlas:
         Args:
             name: 名称
             path: 文件夹路径
-            file_path：数据库文件的绝对路径
         """
-
-        self.ipca = None # todo PCA降维 调试用
 
         logger.info(f"开始初始化 Atlas 实例，名称: {name}, 路径: {path}")
 
@@ -265,13 +259,8 @@ class Atlas:
 
 
     ''' 过滤 + 建新表 + 建tid分块索引 '''
-    #  833206 * 17745   耗时 1:12
-    #  2840130 x 24552  耗时 03:48
     def filter_build_index(
             self,
-            fetch_size: int = 1_0000_0000,
-            producer_num: int = 10,
-            chunk_size: int = 2_0000_0000,
             cell_condition: str | None = None,
             gene_condition: str | None = None,
             use_hvg: bool = True,
@@ -279,9 +268,6 @@ class Atlas:
     ):
         builder = FilterBuildIndex(
             self.file_path,
-            fetch_size=fetch_size,
-            producer_num=producer_num,
-            chunk_size=chunk_size,
             cell_condition=cell_condition,
             gene_condition=gene_condition,
             use_hvg=use_hvg,
@@ -291,7 +277,6 @@ class Atlas:
 
 
     ''' minibatch_CSR 格式读取 '''
-    # 833206 * 17745   203 batch/s
     def minibatch_CSR(self , X_type = "CSR" ):
 
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type =  X_type )
@@ -300,60 +285,24 @@ class Atlas:
             # yield X_batch
 
     ''' minibatch_CSR 格式读取 '''
-    # 833206 * 17745   single-pass 单次遍历 38 batch/s
-    #                  multi-pass  多次遍历（加入缓存区，保证多次的随机性） 但会变慢
-    # 缓冲区batch数量    buffer_batch_num = 2   17.93 batch/s
-    #                  buffer_batch_num = 3   18.86 batch/s
-    #                  buffer_batch_num = 5   19.30 batch/s
-    #                  buffer_batch_num = 10  19.93 batch/s
-    #                  buffer_batch_num = 15  20.21 batch/s
-    #                  buffer_batch_num = 20  19.94 batch/s
     def minibatch_dense(
             self,
             pass_mode: str = "single-pass",
             buffer_batch_num: int = 5,
-            max_batches: int | None = None,  # ✅ 新增：最多输出多少个 batch
-            max_passes: int | None = None,  # ✅ 新增：最多遍历多少遍
-            batch_size: int = 2048,  # ✅ 新增：传给 fetcher
-            producer_num: int = 10,  # ✅ 新增：传给 fetcher
+            max_batches: int | None = None,  # 最多输出多少个 batch
+            batch_size: int = 2048,
     ):
-        """
-        输出 dense minibatch。
-
-        pass_mode
-        ---------
-        single-pass:
-            只遍历数据库一遍。
-
-        multi-pass:
-            遍历完一遍后，自动重新创建 fetcher，
-            继续第二遍、第三遍，直到满足 max_batches 或 max_passes。
-
-        max_batches
-        -----------
-        最多输出多少个 batch。
-        例如 PCA 训练需要 1000 个 batch：
-            atlas.minibatch_dense(pass_mode="multi-pass", max_batches=1000)
-
-        max_passes
-        ----------
-        最多遍历多少遍数据库。
-        如果 max_batches=None 且 max_passes=None，
-        multi-pass 会无限遍历，外部 break 后停止。
-        """
 
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
 
-        # =====================================================
+
         # 1. single-pass：只跑一遍
-        # =====================================================
         if pass_mode == "single-pass":
 
             fetcher = MinibatchFetchMultiThreads(
                 file_path=self.file_path,
                 batch_size=batch_size,
-                producer_num=producer_num,
                 X_type="dense",
                 pass_mode="single-pass",
                 buffer_batch_num=buffer_batch_num,
@@ -362,21 +311,15 @@ class Atlas:
 
             for X_batch in fetcher.run():
                 yield X_batch
+                # pass
 
             return
 
-        # =====================================================
         # 2. multi-pass：自动循环多遍
-        # =====================================================
         produced_batches = 0
         pass_id = 0
 
         while True:
-
-            # 如果达到 max_passes，停止
-            if max_passes is not None and pass_id >= max_passes:
-                print(f"[minibatch_dense] reach max_passes={max_passes}, stop")
-                break
 
             # 如果达到 max_batches，停止
             if max_batches is not None and produced_batches >= max_batches:
@@ -398,7 +341,6 @@ class Atlas:
             fetcher = MinibatchFetchMultiThreads(
                 file_path=self.file_path,
                 batch_size=batch_size,
-                producer_num=producer_num,
                 X_type="dense",
                 pass_mode="multi-pass",
                 buffer_batch_num=buffer_batch_num,
@@ -412,6 +354,7 @@ class Atlas:
                 pass_batches += 1
 
                 yield X_batch
+                # pass
 
                 if max_batches is not None and produced_batches >= max_batches:
                     break

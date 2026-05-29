@@ -5,13 +5,14 @@ import logging
 from numbers import Number
 import math
 import os
+import numpy as np
+import pandas as pd
 from datetime import datetime
 
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
 
-'''=== 归一化 normalize 法 1 ： 分块， 在 X_CSRO_data 表上直接处理 ， 不替换原数据  =========='''
-#  833206 * 17745  sap.pp.normalize_total(atlas)  49.41 秒
+'''normalize 法 1 ： 小内存 快速版 '''
 def normalize_total_fast(
         atlas,
         target_sum: float = 10000,
@@ -25,30 +26,24 @@ def normalize_total_fast(
 
     conn = atlas.connection
 
-    # -------------------------------------------------
     # 0. 设置线程（可选）
-    # -------------------------------------------------
     try:
         conn.execute(f"PRAGMA threads={os.cpu_count()}")
     except:
         pass
 
-    # -------------------------------------------------
     # 1. 字段检查
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 2. 计算每个 cell 的总表达（只做一次）
-    # -------------------------------------------------
     print("Step 1: compute cell sums")
 
     conn.execute(f"""
@@ -56,55 +51,47 @@ def normalize_total_fast(
         SELECT
             atlas_cell_id,
             SUM({select_data}) AS total
-        FROM X_CSRO_data
+        FROM X_HyS_data
         GROUP BY atlas_cell_id
         HAVING total > 0
     """)
 
-    # -------------------------------------------------
-    # 🔥 关键修改：先删除源表中的旧列（保证 x.* 不冲突）
-    # -------------------------------------------------
+    # 先删除源表中的旧列（保证 x.* 不冲突）
     print("Step 1.5: drop old column in source table")
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
-    # -------------------------------------------------
     # 3. 创建目标表（结构复制 + 新列）
-    # -------------------------------------------------
     print("Step 2: create target table")
 
     conn.execute("""
-        CREATE OR REPLACE TABLE X_CSR_data_norm AS
-        SELECT * FROM X_CSRO_data WHERE 1=0
+        CREATE OR REPLACE TABLE X_HyS_data_norm AS
+        SELECT * FROM X_HyS_data WHERE 1=0
     """)
 
     # 现在源表已经没有该列 → 可以安全添加
     conn.execute(f"""
-        ALTER TABLE X_CSR_data_norm
+        ALTER TABLE X_HyS_data_norm
         ADD COLUMN {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 4. 获取 id 范围
-    # -------------------------------------------------
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
     print(f"Step 3: {n_chunks} chunks")
 
-    # -------------------------------------------------
     # 5. 分块 INSERT（保持 x.*）
-    # -------------------------------------------------
     for i in range(n_chunks):
         start_id = min_id + i * chunk_size
         end_id = start_id + chunk_size - 1
@@ -112,23 +99,23 @@ def normalize_total_fast(
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
-            INSERT INTO X_CSR_data_norm
+            INSERT INTO X_HyS_data_norm
             SELECT
                 x.*,
                 x.{select_data} * {float(target_sum)} / s.total AS {add_field}
-            FROM X_CSRO_data x
+            FROM X_HyS_data x
             JOIN _cell_sum s
               ON x.atlas_cell_id = s.atlas_cell_id
             WHERE x.id BETWEEN {start_id} AND {end_id}
+            ORDER BY x.id
         """)
 
-    # -------------------------------------------------
     # 6. 替换原表
-    # -------------------------------------------------
     print("Step 4: replace table")
 
-    conn.execute("DROP TABLE X_CSRO_data")
-    conn.execute("ALTER TABLE X_CSR_data_norm RENAME TO X_CSRO_data")
+    conn.execute("DROP TABLE X_HyS_data")
+    conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
+    conn.execute("CHECKPOINT")
 
     # 清理临时表（建议）
     conn.execute("DROP TABLE IF EXISTS _cell_sum")
@@ -136,21 +123,12 @@ def normalize_total_fast(
     print("normalize_total_streaming 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
-# 运行结果
-#   X_CSRO_data 表
-#     新增字段	             含义
-#  data_normalize	     归一化后的data值
 
-
-# todo 修改
-# ✅ 不再有全量 _cell_sum
-# ✅ 每次只产生 cell_chunk_size 级别的小临时表
-# ✅ 仍然生成 data_normalize 字段
-# ⚠️ 仍然需要一个完整 X_CSR_data_norm 新表，这是写回大表不可避免的代价
+''' normalize 法 2 ： 大数据 安全版 '''
 def normalize_total(
         atlas,
         target_sum: float = 10000,
-        cell_chunk_size: int = 500_000,      # ✅ 修改1：从 id chunk 改成 cell chunk
+        cell_chunk_size: int = 500_000,  
         add_field: str = "data_normalize",
         select_data: str = "data"
 ) -> None:
@@ -160,64 +138,54 @@ def normalize_total(
 
     conn = atlas.connection
 
-    # -------------------------------------------------
     # 0. 设置线程
-    # -------------------------------------------------
     try:
         conn.execute(f"PRAGMA threads={os.cpu_count() or 1}")
     except Exception:
         pass
 
-    # -------------------------------------------------
     # 1. 字段检查
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 2. 删除源表旧 normalize 字段
-    # -------------------------------------------------
     print("Step 1: drop old normalize column")
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
-    # -------------------------------------------------
     # 3. 创建目标表
-    # -------------------------------------------------
     print("Step 2: create target table")
 
-    conn.execute("DROP TABLE IF EXISTS X_CSR_data_norm")
+    conn.execute("DROP TABLE IF EXISTS X_HyS_data_norm")
 
     conn.execute("""
-        CREATE TABLE X_CSR_data_norm AS
-        SELECT * FROM X_CSRO_data WHERE 1=0
+        CREATE TABLE X_HyS_data_norm AS
+        SELECT * FROM X_HyS_data WHERE 1=0
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_CSR_data_norm
+        ALTER TABLE X_HyS_data_norm
         ADD COLUMN {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 4. 获取 cell_id 范围
-    # -------------------------------------------------
     min_cell, max_cell = conn.execute("""
         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
     if min_cell is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / cell_chunk_size)
@@ -226,9 +194,7 @@ def normalize_total(
     print(f"cell_chunk_size = {cell_chunk_size:,}")
     print(f"chunks = {n_chunks:,}")
 
-    # -------------------------------------------------
     # 5. cell 分块：小 _cell_sum_chunk + 写入目标表
-    # -------------------------------------------------
     for i in range(n_chunks):
 
         c_start = min_cell + i * cell_chunk_size
@@ -236,8 +202,7 @@ def normalize_total(
 
         print(f"  -> chunk {i + 1}/{n_chunks}: cell [{c_start:,}, {c_end:,}]")
 
-        # ✅ 修改2：只计算当前 cell chunk 的 sum
-        # 不再创建全量 _cell_sum
+        # 只计算当前 cell chunk 的 sum
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
         conn.execute(f"""
@@ -245,42 +210,49 @@ def normalize_total(
             SELECT
                 atlas_cell_id,
                 SUM({select_data}) AS total
-            FROM X_CSRO_data
+            FROM X_HyS_data
             WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
             GROUP BY atlas_cell_id
             HAVING total > 0
         """)
 
-        # ✅ 修改3：只写入当前 cell chunk 的 X 数据
+        # 只写入当前 cell chunk 的 X 数据
         conn.execute(f"""
-            INSERT INTO X_CSR_data_norm
+            INSERT INTO X_HyS_data_norm
             SELECT
                 x.*,
                 x.{select_data} * {float(target_sum)} / s.total AS {add_field}
-            FROM X_CSRO_data x
+            FROM X_HyS_data x
             JOIN _cell_sum_chunk s
               ON x.atlas_cell_id = s.atlas_cell_id
             WHERE x.atlas_cell_id BETWEEN {c_start} AND {c_end}
+            ORDER BY x.id
         """)
 
-        # ✅ 修改4：每个 chunk 后立即清理
+        # 每个 chunk 后立即清理
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
-    # -------------------------------------------------
     # 6. 替换原表
-    # -------------------------------------------------
     print("Step 4: replace table")
 
-    conn.execute("DROP TABLE X_CSRO_data")
-    conn.execute("ALTER TABLE X_CSR_data_norm RENAME TO X_CSRO_data")
+    conn.execute("DROP TABLE X_HyS_data")
+    conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
 
     print("normalize_total_streaming_cell_chunk 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+# atlas.connection.execute("CHECKPOINT")
+# atlas.connection.close()
+# atlas.connection = atlas.connect("r+")
+# gc.collect()
+
+# 运行结果
+#   X_HyS_data 表
+#     新增字段	             含义
+#  data_normalize	     归一化后的data值
 
 
-'''=== 归一化 normalize 法 2： 参照scanpy，在 obs表上记录 scale_factor ， 等到使用的时候在计算 ==========='''
-# 833206 * 17745  sap.pp.normalize_total_scale_factor(atlas) 0.86 秒
+''' normalize 法 3： 小内存 快速版，在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
 def normalize_total_scale_factor_fast(
                     atlas: Atlas,
                     target_sum: float = 10000,
@@ -288,15 +260,15 @@ def normalize_total_scale_factor_fast(
                     select_data: str = "data" ) -> None:
     """
     高性能 normalize_total（Scanpy 等价）：
-    - 不修改 X_CSRO_data
+    - 不修改 X_HyS_data
     - 只计算每个 cell 的 scale_factor
-    - 支持指定使用 X_CSRO_data 中的任意字段作为表达值
+    - 支持指定使用 X_HyS_data 中的任意字段作为表达值
 
     Args:
         atlas: Atlas 对象
         target_sum: 归一化目标和；
         add_key: 写入 obs 的 scale_factor 字段名
-        select_data: X_CSRO_data 中用于计算 total 的字段名
+        select_data: X_HyS_data 中用于计算 total 的字段名
                      （如 'data', 'data_normalized', 'X_log1p'）
     """
 
@@ -313,12 +285,12 @@ def normalize_total_scale_factor_fast(
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     # 1. 计算每个 cell 的 total
     conn.execute(f"""
@@ -326,7 +298,7 @@ def normalize_total_scale_factor_fast(
         SELECT
             atlas_cell_id,
             SUM({select_data}) AS total
-        FROM X_CSRO_data
+        FROM X_HyS_data
         GROUP BY atlas_cell_id
         ORDER BY atlas_cell_id
     """)
@@ -352,6 +324,8 @@ def normalize_total_scale_factor_fast(
     print(f"normalize_total 完成，target_sum={target_sum}")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+
+''' normalize 法 4： 大数据 安全版，在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
 def normalize_total_scale_factor(
         atlas,
         target_sum: float = 10000,
@@ -363,7 +337,7 @@ def normalize_total_scale_factor(
     高性能 normalize_total（scale_factor only）
 
     ✅ 大数据安全版：
-    - 不修改 X_CSRO_data
+    - 不修改 X_HyS_data
     - 不创建全量 _cell_sum
     - 按 cell_id 分块计算 total
     - 每个 chunk 只生成小 _cell_sum_chunk
@@ -380,36 +354,30 @@ def normalize_total_scale_factor(
     except Exception:
         pass
 
-    # -------------------------------------------------
     # 0. 基本安全检查
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. obs 添加 scale_factor 字段
-    # -------------------------------------------------
     conn.execute(f"""
         ALTER TABLE obs
         ADD COLUMN IF NOT EXISTS {add_key} REAL
     """)
 
-    # ✅ 修改2：先初始化，避免空 cell 或未命中 cell 保留旧值
+    # 先初始化，避免空 cell 或未命中 cell 保留旧值
     conn.execute(f"""
         UPDATE obs
         SET {add_key} = 0
     """)
 
-    # -------------------------------------------------
     # 2. 获取 cell_id 范围
-    # -------------------------------------------------
     min_cell, max_cell = conn.execute("""
         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
         FROM obs
@@ -425,9 +393,7 @@ def normalize_total_scale_factor(
     print(f"cell_chunk_size = {cell_chunk_size:,}")
     print(f"chunks = {n_chunks:,}")
 
-    # -------------------------------------------------
     # 3. 分块计算 total + 写回 obs
-    # -------------------------------------------------
     for i in range(n_chunks):
 
         c_start = min_cell + i * cell_chunk_size
@@ -435,7 +401,7 @@ def normalize_total_scale_factor(
 
         print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
-        # ✅ 修改3：只计算当前 chunk 的 cell sum
+        # 只计算当前 chunk 的 cell sum
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
         conn.execute(f"""
@@ -443,12 +409,12 @@ def normalize_total_scale_factor(
             SELECT
                 atlas_cell_id,
                 SUM({select_data}) AS total
-            FROM X_CSRO_data
+            FROM X_HyS_data
             WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
             GROUP BY atlas_cell_id
         """)
 
-        # ✅ 修改4：只更新当前 chunk 对应 obs
+        # 只更新当前 chunk 对应 obs
         conn.execute(f"""
             UPDATE obs
             SET {add_key} =
@@ -461,7 +427,7 @@ def normalize_total_scale_factor(
             WHERE obs.atlas_cell_id = s.atlas_cell_id
         """)
 
-        # ✅ 修改5：每个 chunk 后立即清理
+        # 每个 chunk 后立即清理
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
     print(f"normalize_total 完成，target_sum={target_sum}")
@@ -473,8 +439,7 @@ def normalize_total_scale_factor(
 #   scale_factor	     scale_factor，等到使用的时候在计算，data * scale_factor ，即可
 
 
-'''===  log1p_fast  法 1 ： 不分块 ， 大数据不安全  ========== '''
-# 833206 * 17745    2.04秒 只适用于小数据
+''' log1p 法 1 ： 小内存 快速版  '''
 def log1p_fast(
             atlas: 'Atlas',
             base: Optional[Number] = None,
@@ -482,7 +447,7 @@ def log1p_fast(
             select_data: str = "data_normalize" ) -> None:
     """
     对表达值进行 log(1+x) 转换
-    - 支持选择 X_CSRO_data 中任意字段进行计算
+    - 支持选择 X_HyS_data 中任意字段进行计算
     """
 
     logger.info("开始执行 log(1+x) 转换...")
@@ -500,12 +465,12 @@ def log1p_fast(
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     # 1. 构造 log1p 表达式
     if base is None:
@@ -516,17 +481,17 @@ def log1p_fast(
     if add_field is None:
         raise ValueError("必须指定 add_field")
 
-    print(f"创建新字段 X_CSRO_data.{add_field} ...")
+    print(f"创建新字段 X_HyS_data.{add_field} ...")
 
     # 2. 确保输出字段存在
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN IF NOT EXISTS {add_field} REAL
     """)
 
     # 3. 执行 log1p
     conn.execute(f"""
-        UPDATE X_CSRO_data
+        UPDATE X_HyS_data
         SET {add_field} = {log_expr}
         WHERE {select_data} IS NOT NULL
     """)
@@ -535,14 +500,8 @@ def log1p_fast(
     print("log1p 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
-# 运行结果
-#   X_CSRO_data 表
-#     新增字段	             含义
-#   data_log1p	     对表达值进行 log(1+x) 转换
 
-
-'''===  log1p  法 2 ： 分块  大数据安全 ========== '''
-# 833206 * 17745  2.65 秒
+''' log1p 法 2 ： 大数据 安全版 '''
 def log1p(
                 atlas: 'Atlas',
                 base: Optional[Number] = None,
@@ -553,7 +512,7 @@ def log1p(
     1e8 级 CSR 安全的 log1p 实现
     - 不一次性 UPDATE 全表
     - 按 id 分块
-    - 支持指定 X_CSRO_data 中的任意字段作为输入
+    - 支持指定 X_HyS_data 中的任意字段作为输入
     """
 
     logger.info("开始执行 log1p (chunked)...")
@@ -562,63 +521,50 @@ def log1p(
 
     conn = atlas.connection
 
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
+    conn.execute(f"PRAGMA threads = 10 ")
 
-    # -------------------------------------------------
     # 0. 字段存在性检查（重要）
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. 构造 log 表达式
-    # -------------------------------------------------
     if base is None:
         log_expr = f"ln(1.0 + {select_data})"
     else:
         log_expr = f"log({float(base)}, 1.0 + {select_data})"
 
-    # -------------------------------------------------
     # 2. 确保输出字段存在
-    # -------------------------------------------------
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN  {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 3. 获取 id 范围
-    # -------------------------------------------------
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
     print(f"共 {n_chunks} 个 chunk")
 
-    # -------------------------------------------------
     # 4. 分块 UPDATE
-    # -------------------------------------------------
     for i in range(n_chunks):
         start_id = min_id + i * chunk_size
         end_id = start_id + chunk_size - 1
@@ -626,37 +572,34 @@ def log1p(
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
-            UPDATE X_CSRO_data
+            UPDATE X_HyS_data
             SET {add_field} = {log_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
               AND {select_data} IS NOT NULL
         """)
 
-    # -------------------------------------------------
     # 5. 结束
-    # -------------------------------------------------
     print("log1p (chunked) 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 # 运行结果
-#   X_CSRO_data 表
+#   X_HyS_data 表
 #     新增字段	             含义
 #   data_log1p	     对表达值进行 log(1+x) 转换
 
 
-'''===== expm1 是  log1p的逆运算 ========== '''
-# 833206 * 17745  2.46 秒 运行完别的函数再运行这个， 16.65 秒，
+''' expm1：log1p的逆运算 '''
 def expm1(
         atlas: 'Atlas',
         base: Optional[Number] = None,
         add_field: str = "data_exp1",
         select_data: str = "data_log1p",
-        chunk_size: int = 100_000_000 ) -> None:
+        chunk_size: int = 50_000_000 ) -> None:
     """
     log1p_chunked 的逆运算：exp(x) - 1
     - ln(1+x)  → exp(x) - 1
     - log_b(1+x) → b^x - 1
-    - 按 X_CSRO_data.id 分块，支持 1e8 CSR
+    - 按 X_HyS_data.id 分块，支持 1e8 CSR
     """
 
     logger.info("开始执行 expm1 (chunked)...")
@@ -670,58 +613,48 @@ def expm1(
     except:
         pass
 
-    # -------------------------------------------------
     # 0. 字段存在性检查
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 1. 构造 exp 表达式
-    # -------------------------------------------------
     if base is None:
         exp_expr = f"exp({select_data}) - 1.0"
     else:
         exp_expr = f"pow({float(base)}, {select_data}) - 1.0"
 
-    # -------------------------------------------------
     # 2. 确保输出字段存在
-    # -------------------------------------------------
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 3. 获取 id 范围
-    # -------------------------------------------------
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
     print(f"共 {n_chunks} 个 chunk")
 
-    # -------------------------------------------------
     # 4. 分块 UPDATE
-    # -------------------------------------------------
     for i in range(n_chunks):
         start_id = min_id + i * chunk_size
         end_id = start_id + chunk_size - 1
@@ -729,26 +662,23 @@ def expm1(
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
-            UPDATE X_CSRO_data
+            UPDATE X_HyS_data
             SET {add_field} = {exp_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
               AND {select_data} IS NOT NULL
         """)
 
-    # -------------------------------------------------
     # 5. 结束
-    # -------------------------------------------------
     print("expm1 (chunked) 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 # 运行结果
-#   X_CSRO_data 表
+#   X_HyS_data 表
 #     新增字段	             含义
 #   data_exp1	     对表达值进行 log(1+x) 转换 的 还原
 
 
-'''===== normalize_and_log1p： normalize 法 3 + log1p 法 2 ===='''
-# 833206 * 17745     9.34 秒 再次运行  3.43 秒
+''' normalize_and_log1p： normalize 法 4 + log1p 法 2 ===='''
 def normalize_and_log1p(
             atlas: Atlas,
             target_sum: Optional[float] = 10000,
@@ -756,12 +686,12 @@ def normalize_and_log1p(
             add_field: str = "data_log1p",
             select_data: str = "data",
             base: Optional[Number] = None,
-            chunk_size: int = 100_000_000 ) -> None:
+            chunk_size: int = 50_000_000 ) -> None:
     """
     Scanpy 等价的 normalize_total + log1p
     - normalize_total：只计算 scale_factor（obs）
     - log1p：log(1 + select_data * scale_factor)
-    - 按 X_CSRO_data.id 分块（✔ 正确的 1e8 CSR 方式）
+    - 按 X_HyS_data.id 分块（✔ 正确的 1e8 CSR 方式）
     """
 
     print("==== normalize_and_log1p (Scanpy-equivalent) ====")
@@ -773,22 +703,18 @@ def normalize_and_log1p(
     except:
         pass
 
-    # =================================================
     # 0. 字段存在性检查（防止 silent bug）
-    # =================================================
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # =================================================
     # 1. 调用上面的函数 normalize_total → 计算 scale_factor
-    # =================================================
     normalize_total_scale_factor(
         atlas=atlas,
         target_sum=target_sum,
@@ -796,45 +722,37 @@ def normalize_and_log1p(
         select_data=select_data,
     )
 
-    # =================================================
-    # 2. 构造 log 表达式（🔥 改这里）
-    # =================================================
+    # 2. 构造 log 表达式
     if base is None:
         log_expr = f"ln(1.0 + x.{select_data} * o.{scale_key})"
     else:
         log_expr = f"log({float(base)}, 1.0 + x.{select_data} * o.{scale_key})"
 
-    # =================================================
     # 3. 准备输出字段
-    # =================================================
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN {add_field} REAL
     """)
 
-    # =================================================
-    # 4. 获取 X_CSRO_data.id 范围
-    # =================================================
+    # 4. 获取 X_HyS_data.id 范围
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
     print(f"log1p 分 {n_chunks} 个 id chunk")
 
-    # =================================================
-    # 5. 分块 UPDATE（核心）
-    # =================================================
+    # 5. 分块 UPDATE
     for i in range(n_chunks):
         start_id = min_id + i * chunk_size
         end_id   = start_id + chunk_size - 1
@@ -842,32 +760,27 @@ def normalize_and_log1p(
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
-            UPDATE X_CSRO_data AS x
+            UPDATE X_HyS_data AS x
             SET {add_field} = {log_expr}
             FROM obs AS o
             WHERE x.atlas_cell_id = o.atlas_cell_id
               AND x.id BETWEEN {start_id} AND {end_id}
         """)
 
-    # =================================================
     # 6. 结束
-    # =================================================
     print("normalize_and_log1p 完成")
     print("总耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 # 运行结果
-#   X_CSRO_data 表
+#   X_HyS_data 表
 #     新增字段	             含义
 #   data_log1p	     对表达值进行 normalize_total +  log(1+x) 转换
 
 
-'''===== highly_variable_genes：  识别高变基因 - 在 X_CSRO 表上进行操作 '''
-# 833206 * 17745  1.51 秒
-# 类似 sc.pp.highly_variable_genes（全细胞含0统计版，最小化修改）
-# 第二次运行覆盖第一次,旧的 TRUE 不会残留
+''' HVG '''
 def highly_variable_genes(
                         atlas: Atlas,
-                        flavor: Literal["var", "cv"] = "var",
+                        flavor: Literal["var", "cv"] = "cv",
                         n_top_genes: int = 2000,
                         add_key: str = "highly_variable_genes",
                         select_data: str = "data_log1p"
@@ -875,7 +788,7 @@ def highly_variable_genes(
     """
     类似 sc.pp.highly_variable_genes（全细胞含0统计版，最小化修改）
 
-    - 不修改 X_CSRO_data
+    - 不修改 X_HyS_data
     - 在 var 表中新建布尔字段 add_key
     - 使用“全细胞（含0）”定义的 mean / var / std
     - 不会真的补 0，仍然保持稀疏、大数据安全
@@ -894,22 +807,18 @@ def highly_variable_genes(
     except:
         pass
 
-    # -------------------------------------------------
-    # 0️⃣ 检查字段存在
-    # -------------------------------------------------
+    # 检查字段存在
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
-    # ✅【修改1】确保 var 表有可复用统计列
-    # -------------------------------------------------
+    # 确保 var 表有可复用统计列
     conn.execute("""
         ALTER TABLE var
         ADD COLUMN IF NOT EXISTS hvg_mean REAL
@@ -931,9 +840,7 @@ def highly_variable_genes(
         ADD COLUMN IF NOT EXISTS hvg_nnz BIGINT
     """)
 
-    # -------------------------------------------------
-    # ✅【修改2】取总细胞数 N（全细胞统计的关键）
-    # -------------------------------------------------
+    # 取总细胞数 N（全细胞统计的关键）
     n_cells = conn.execute("""
         SELECT COUNT(*) FROM obs
     """).fetchone()[0]
@@ -941,10 +848,7 @@ def highly_variable_genes(
     if n_cells == 0:
         raise ValueError("obs 为空，无法计算 highly_variable_genes")
 
-    # -------------------------------------------------
-    # 1️⃣ 计算每个 gene 的全细胞 mean / var / std
-    #    不补 0，直接用 sum / sumsq / N_cells 推导
-    # -------------------------------------------------
+    # 计算每个 gene 的全细胞 mean / var / std ; 不补 0，直接用 sum / sumsq / N_cells 推导
     print("Step 1: 计算 gene-level 统计量（全细胞含0）")
 
     conn.execute(f"""
@@ -955,7 +859,7 @@ def highly_variable_genes(
                 COUNT(*) AS nnz,
                 SUM({select_data}) AS sum_x,
                 SUM(({select_data}) * ({select_data})) AS sum_x2
-            FROM X_CSRO_data
+            FROM X_HyS_data
             WHERE {select_data} IS NOT NULL
             GROUP BY atlas_gene_id
         )
@@ -980,9 +884,7 @@ def highly_variable_genes(
           ON v.atlas_gene_id = g.atlas_gene_id
     """)
 
-    # -------------------------------------------------
-    # 2️⃣ 计算排序指标
-    # -------------------------------------------------
+    # 计算排序指标
     if flavor == "var":
         score_expr = "var"
     elif flavor == "cv":
@@ -999,9 +901,7 @@ def highly_variable_genes(
         FROM _gene_stats
     """)
 
-    # -------------------------------------------------
-    # ✅【修改3】把统计量和 score 写回 var，后续画图直接复用
-    # -------------------------------------------------
+    # 把统计量和 score 写回 var，后续画图直接复用
     print("Step 1.5: 写入 var.hvg_mean / hvg_var / hvg_std / hvg_score")
 
     conn.execute("""
@@ -1033,9 +933,7 @@ def highly_variable_genes(
         WHERE v.atlas_gene_id = gs.atlas_gene_id
     """)
 
-    # -------------------------------------------------
-    # 3️⃣ 选 top genes
-    # -------------------------------------------------
+    # 选 top genes
     if n_top_genes is not None:
         print(f"Step 2: 选取 top {n_top_genes} genes")
 
@@ -1055,9 +953,7 @@ def highly_variable_genes(
             FROM _gene_score
         """)
 
-    # -------------------------------------------------
-    # 4️⃣ 在 var 表中写入布尔结果
-    # -------------------------------------------------
+    # 在 var 表中写入布尔结果
     print(f"Step 3: 写入 var.{add_key}")
 
     conn.execute(f"""
@@ -1077,16 +973,12 @@ def highly_variable_genes(
         WHERE var.atlas_gene_id = _hvg.atlas_gene_id
     """)
 
-    # -------------------------------------------------
-    # 5️⃣ 清理临时表
-    # -------------------------------------------------
+    # 清理临时表
     conn.execute("DROP TABLE IF EXISTS _gene_stats")
     conn.execute("DROP TABLE IF EXISTS _gene_score")
     conn.execute("DROP TABLE IF EXISTS _hvg")
 
-    # -------------------------------------------------
-    # 6️⃣ 结束
-    # -------------------------------------------------
+    # 结束
     print("highly_variable_genes 完成（全细胞含0统计版）")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
@@ -1095,7 +987,7 @@ def highly_variable_genes(
 #     新增字段	                     含义
 #   highly_variable_genes	     对 n_top_genes 标记为true
 
-# highly_variable_genes_seurat
+''' HVG - seurat '''
 def highly_variable_genes_seurat(
         atlas,
         n_top_genes: int = 2000,
@@ -1154,7 +1046,7 @@ def highly_variable_genes_seurat(
         写回 var 的 HVG 布尔列名。
 
     select_data
-        X_CSRO_data 中用于计算 HVG 的字段。
+        X_HyS_data 中用于计算 HVG 的字段。
         对 flavor='seurat'，推荐使用 data_log1p。
 
     n_bins
@@ -1173,10 +1065,6 @@ def highly_variable_genes_seurat(
         False：返回 gene_df，不写回。
     """
 
-    import os
-    import numpy as np
-    import pandas as pd
-    from datetime import datetime
 
     print("==== highly_variable_genes_seurat (Scanpy-like) ====")
     start = datetime.now()
@@ -1200,7 +1088,7 @@ def highly_variable_genes_seurat(
     # -------------------------------------------------
     # 1. 检查基础表
     # -------------------------------------------------
-    for table_name in ["obs", "var", "X_CSRO_data"]:
+    for table_name in ["obs", "var", "X_HyS_data"]:
         exists = conn.execute("""
             SELECT COUNT(*)
             FROM information_schema.tables
@@ -1216,12 +1104,12 @@ def highly_variable_genes_seurat(
     col_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = ?
     """, [select_data]).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     # -------------------------------------------------
     # 3. 检查 filter 字段是否存在
@@ -1342,7 +1230,7 @@ def highly_variable_genes_seurat(
             SELECT
                 x.atlas_gene_id,
                 EXP(x.{_q(select_data)}) - 1.0 AS x_raw
-            FROM X_CSRO_data AS x
+            FROM X_HyS_data AS x
             JOIN _hvg_obs_keep AS o
               ON x.atlas_cell_id = o.atlas_cell_id
             JOIN _hvg_var_keep AS v
@@ -1666,9 +1554,7 @@ def highly_variable_genes_seurat(
         return gene_df
 
 
-'''=====  scale ：  进行 z-score转换 - 大数据安全 '''
-#  2840130 x 24552  耗时:  1187.70 秒   833206 * 17745 51.21 秒 大数据安全
-# 保留原结构 + 保留原 id + 一次性算 gene_stat + 按 id 分块回写 + 直接 update 56.51 秒
+''' scale  法 1 ： 大数据，安全版 '''
 def scale(
         atlas,
         select_data: str = "data_log1p",
@@ -1685,7 +1571,7 @@ def scale(
     ✅ 含 0 版本：
     - mean/std 按全细胞统计，包括隐式 0
     - 不真的补 0
-    - 不增加 X_CSRO_data 行数
+    - 不增加 X_HyS_data 行数
     - 只改变 gene_stat 的计算公式
     """
 
@@ -1693,9 +1579,7 @@ def scale(
     start_all = datetime.now()
     conn = atlas.connection
 
-    # -------------------------------------------------
     # 0. 并行
-    # -------------------------------------------------
     try:
         n_threads = 4
         conn.execute(f"PRAGMA threads={n_threads}")
@@ -1703,45 +1587,39 @@ def scale(
     except Exception:
         pass
 
-    # -------------------------------------------------
     # 1. 输入字段检查
-    # -------------------------------------------------
     if conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
     """).fetchone()[0] == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     if conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = 'id'
     """).fetchone()[0] == 0:
-        raise ValueError("X_CSRO_data 中不存在 id 字段，无法按 id 分块回写")
+        raise ValueError("X_HyS_data 中不存在 id 字段，无法按 id 分块回写")
 
     if conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = 'atlas_gene_id'
     """).fetchone()[0] == 0:
-        raise ValueError("X_CSRO_data 中不存在 atlas_gene_id 字段")
+        raise ValueError("X_HyS_data 中不存在 atlas_gene_id 字段")
 
-    # -------------------------------------------------
     # 2. 输出字段准备
-    # -------------------------------------------------
-    conn.execute(f""" ALTER TABLE X_CSRO_data DROP COLUMN IF EXISTS {add_field} """)
-    conn.execute(f""" ALTER TABLE X_CSRO_data ADD COLUMN IF NOT EXISTS {add_field} REAL """)
+    conn.execute(f""" ALTER TABLE X_HyS_data DROP COLUMN IF EXISTS {add_field} """)
+    conn.execute(f""" ALTER TABLE X_HyS_data ADD COLUMN IF NOT EXISTS {add_field} REAL """)
 
     conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_field_to_var} """)
     conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL """)
 
-    # -------------------------------------------------
     # 3. 准备目标 gene 集合
-    # -------------------------------------------------
     print("-> 准备 target genes ...")
     conn.execute("DROP TABLE IF EXISTS _target_genes")
 
@@ -1771,9 +1649,7 @@ def scale(
 
     print(f"-> Total target genes: {n_genes}")
 
-    # -------------------------------------------------
-    # ✅ 修改1：获取全细胞数量
-    # -------------------------------------------------
+    # 获取全细胞数量
     n_cells = conn.execute("""
         SELECT COUNT(*) FROM obs
     """).fetchone()[0]
@@ -1784,30 +1660,12 @@ def scale(
 
     print(f"-> Total cells for zero-aware scaling: {n_cells:,}")
 
-    # -------------------------------------------------
     # 4. 一次性计算所有目标 gene 的 mean/std
-    # -------------------------------------------------
     print("-> 计算 _gene_stat（一次，全局，含 0 统计）...")
     t0 = datetime.now()
 
     conn.execute("DROP TABLE IF EXISTS _gene_stat")
 
-    # =================================================
-    # ✅ 修改2：把 AVG / STDDEV_POP 改成“含 0”公式
-    #
-    # 原来：
-    #   AVG(x.select_data)
-    #   STDDEV_POP(x.select_data)
-    #
-    # 现在：
-    #   mean = SUM(x) / n_cells
-    #   std  = sqrt(SUM(x^2) / n_cells - mean^2)
-    #
-    # 注意：
-    #   这里仍然只扫描 CSR 中的非零行
-    #   不会补 0
-    #   不会增加 X_CSRO_data 存储量
-    # =================================================
     conn.execute(f"""
         CREATE TEMP TABLE _gene_stat AS
         SELECT
@@ -1823,7 +1681,7 @@ def scale(
                 )
             ) AS std
 
-        FROM X_CSRO_data x
+        FROM X_HyS_data x
         JOIN _target_genes t
           ON x.atlas_gene_id = t.atlas_gene_id
         WHERE x.{select_data} IS NOT NULL
@@ -1834,9 +1692,7 @@ def scale(
         (datetime.now() - t0).total_seconds()
     ))
 
-    # -------------------------------------------------
     # 5. 更新 var：记录 0 值 的缩放因子 -> z-score
-    # -------------------------------------------------
     print("-> 更新 var ...")
     t0 = datetime.now()
 
@@ -1869,25 +1725,21 @@ def scale(
         (datetime.now() - t0).total_seconds()
     ))
 
-    # -------------------------------------------------
     # 6. 获取 id 范围
-    # -------------------------------------------------
     print("-> 获取 id 范围 ...")
     min_id, max_id, total_rows = conn.execute("""
         SELECT MIN(id), MAX(id), COUNT(*)
-        FROM X_CSRO_data
+        FROM X_HyS_data
     """).fetchone()
 
-    print(f"-> X_CSRO_data rows: {total_rows}")
+    print(f"-> X_HyS_data rows: {total_rows}")
     print(f"-> id range: {min_id} ~ {max_id}")
     print(f"-> id_chunk_size: {id_chunk_size}")
 
     n_chunks = math.ceil((max_id - min_id + 1) / id_chunk_size)
     print(f"-> Total id chunks: {n_chunks}")
 
-    # -------------------------------------------------
     # 7. 按 id 分块直接 UPDATE
-    # -------------------------------------------------
     print("-> 开始按 id 分块直接回写 ...")
 
     done_chunks = 0
@@ -1905,25 +1757,10 @@ def scale(
 
         conn.execute("BEGIN")
         try:
-            # todo ✅ 修改：删除 chunk 内的 SET NULL
-            # 当前 chunk 先置 NULL，避免旧值残留
-            # conn.execute(f"""
-            #     UPDATE X_CSRO_data
-            #     SET {add_field} = NULL
-            #     WHERE id BETWEEN {chunk_start} AND {chunk_end}
-            # """)
-            #
-            # 原因：
-            # 前面已经 DROP COLUMN + ADD COLUMN，
-            # 新增的 {add_field} 默认就是 NULL。
-            #
-            # 所以这里不需要每个 chunk 再 UPDATE 成 NULL，
-            # 否则会导致每个 chunk 多写一遍大表。
-            # =================================================
 
             # 对显式存储的非零值写入 z-score
             conn.execute(f"""
-                UPDATE X_CSRO_data x
+                UPDATE X_HyS_data x
                 SET {add_field} =
                     CASE
                         WHEN g.std > 0 THEN
@@ -1963,9 +1800,7 @@ def scale(
             )
         )
 
-    # -------------------------------------------------
     # 8. 清理临时表
-    # -------------------------------------------------
     print("\n-> 清理临时表 ...")
     conn.execute("DROP TABLE IF EXISTS _target_genes")
     conn.execute("DROP TABLE IF EXISTS _gene_stat")
@@ -1975,16 +1810,8 @@ def scale(
         (datetime.now() - start_all).total_seconds()
     ))
 
-# 运行结果
-#   X_CSRO_data 表
-#     新增字段	                     含义
-#   data_scale	             对 data 进行 z-score 标准化， z = (x - mean_g) / std_g
-#   var 表  新增字段
-#   zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
 
-
-'''=====  scale_fast ： 进行 z-score转换 - 在 X_CSRO 表上进行操作 '''
-# 833206 * 17745    3.67 秒 大数据不安全
+''' scale_fast 法 2 ： 小内存 快速版   '''
 def scale_fast(
         atlas,
         select_data: str = "data_log1p",
@@ -1999,7 +1826,7 @@ def scale_fast(
     特点：
     - mean/std 按全细胞含 0 统计
     - 不真的补 0
-    - X_CSRO_data 只写显式非零值的 scale
+    - X_HyS_data 只写显式非零值的 scale
     - var.zero_scale_transform 存隐式 0 的 scale 值
     """
 
@@ -2007,9 +1834,7 @@ def scale_fast(
     start_all = datetime.now()
     conn = atlas.connection
 
-    # -------------------------------------------------
     # 0. 并行
-    # -------------------------------------------------
     try:
         n_threads = os.cpu_count()
         conn.execute(f"PRAGMA threads={n_threads}")
@@ -2017,24 +1842,20 @@ def scale_fast(
     except Exception:
         pass
 
-    # -------------------------------------------------
     # 1. 输入字段检查
-    # -------------------------------------------------
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name='X_CSRO_data'
+        WHERE table_name='X_HyS_data'
           AND column_name='{select_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
-    # -------------------------------------------------
     # 2. 输出字段准备
-    # -------------------------------------------------
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN IF NOT EXISTS {add_field} REAL
     """)
     conn.execute(f"""
@@ -2042,9 +1863,7 @@ def scale_fast(
         ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL
     """)
 
-    # -------------------------------------------------
     # 3. gene 列表
-    # -------------------------------------------------
     if use_hvg:
         print("-> 使用 HVG gene 子集")
         gene_ids = conn.execute(f"""
@@ -2070,9 +1889,7 @@ def scale_fast(
 
     gene_list_sql = ",".join(map(str, gene_ids))
 
-    # -------------------------------------------------
-    # ✅ 修改1：获取总细胞数，用于含 0 统计
-    # -------------------------------------------------
+    # 获取总细胞数，用于含 0 统计
     n_cells = conn.execute("""
         SELECT COUNT(*) FROM obs
     """).fetchone()[0]
@@ -2082,10 +1899,7 @@ def scale_fast(
 
     print(f"-> Total cells for zero-aware scaling: {n_cells:,}")
 
-    # -------------------------------------------------
-    # 4. 计算 gene-wise 统计 + 线性化系数 a,b
-    # ✅ 修改2：AVG/STDDEV_POP 改成含 0 公式
-    # -------------------------------------------------
+    # 4. 计算 gene-wise 统计 + 线性化系数 a,b；AVG/STDDEV_POP 改成含 0 公式
     print("-> 计算 gene-wise mean/std -> a,b（含 0 统计）")
 
     conn.execute(f"""
@@ -2095,7 +1909,7 @@ def scale_fast(
                 atlas_gene_id,
                 SUM({select_data}) AS sum_x,
                 SUM({select_data} * {select_data}) AS sum_x2
-            FROM X_CSRO_data
+            FROM X_HyS_data
             WHERE atlas_gene_id IN ({gene_list_sql})
               AND {select_data} IS NOT NULL
             GROUP BY atlas_gene_id
@@ -2128,12 +1942,10 @@ def scale_fast(
         FROM gene_stat
     """)
 
-    # -------------------------------------------------
-    # 5. 直接 UPDATE X_CSRO_data
-    # -------------------------------------------------
+    # 5. 直接 UPDATE X_HyS_data
     print("-> 直接应用线性化 z-score + clip")
     conn.execute(f"""
-        UPDATE X_CSRO_data x
+        UPDATE X_HyS_data x
         SET {add_field} = 
             LEAST(
                 {float(max_value)},
@@ -2147,9 +1959,7 @@ def scale_fast(
           AND x.{select_data} IS NOT NULL
     """)
 
-    # -------------------------------------------------
     # 6. 更新 var 表 zero_scale_transform
-    # -------------------------------------------------
     print("-> 更新 var zero_scale_transform")
     conn.execute(f"""
         UPDATE var v
@@ -2166,15 +1976,14 @@ def scale_fast(
 
 
 # 运行结果
-#   X_CSRO_data 表
+#   X_HyS_data 表
 #     新增字段	                     含义
 #   data_scale	             对 data 进行 z-score 标准化， z = (x - mean_g) / std_g
 #   var 表  新增字段
 #   zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
 
 
-'''===== sqrt  法 1 ： 不分块，大数据 不安全========== '''
-# 833206 * 17745   1.62 秒
+''' sqrt 法 1 ： 小内存，快速版 '''
 def sqrt_fast(
     atlas: "Atlas",
     add_field: str = "data_sqrt",
@@ -2198,71 +2007,56 @@ def sqrt_fast(
 
     conn = atlas.connection
 
-    # -------------------------------------------------
     # 0. 字段存在性检查（防止 silent bug）
-    # -------------------------------------------------
     col_exists = conn.execute(
         f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
         """
     ).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     if add_field is None:
         raise ValueError("必须指定 add_field")
 
-    print(f"创建 / 使用字段 X_CSRO_data.{add_field} ...")
+    print(f"创建 / 使用字段 X_HyS_data.{add_field} ...")
 
-    # -------------------------------------------------
     # 1. 构造 sqrt 表达式（不处理 0）
-    # -------------------------------------------------
     sqrt_expr = f"sqrt({select_data})"
 
-    # -------------------------------------------------
     # 2. 确保输出字段存在
-    # -------------------------------------------------
+
     # 先删除旧列，避免旧值残留
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 3. 执行 sqrt
-    # -------------------------------------------------
     conn.execute(
         f"""
-        UPDATE X_CSRO_data
+        UPDATE X_HyS_data
         SET {add_field} = {sqrt_expr}
         WHERE {select_data} IS NOT NULL
         """
     )
 
-    # -------------------------------------------------
     # 4. 结束
-    # -------------------------------------------------
     elapsed = (datetime.now() - start).total_seconds()
     print("sqrt 转换完成")
     print(f"耗时: {elapsed:.2f} 秒")
 
-# 运行结果
-#   X_CSRO_data 表
-#     新增字段	                     含义
-#   data_sqrt	             对 data 进行 sqrt
 
-
-'''===== sqrt  法 2 ： 分块，大数据 安全========== '''
-#   833206 * 17745   2.97 秒 二次 1.97 秒   其他  61.69 秒
+''' sqrt  法 3 ： 大数据，安全版 '''
 def sqrt(
     atlas: "Atlas",
     add_field: str = "data_sqrt",
@@ -2272,7 +2066,7 @@ def sqrt(
     1e8 级 CSR 安全的 sqrt 实现
     - 不一次性 UPDATE 全表
     - 按 id 分块
-    - 支持指定 X_CSRO_data 中的任意字段作为输入
+    - 支持指定 X_HyS_data 中的任意字段作为输入
     - 不对 0 做任何处理（sqrt(0)=0）
     """
 
@@ -2287,64 +2081,54 @@ def sqrt(
     except Exception:
         pass
 
-    # -------------------------------------------------
-    # 0. 字段存在性检查（重要）
-    # -------------------------------------------------
+    # 0. 字段存在性检查
     col_exists = conn.execute(
         f"""
         SELECT COUNT(*)
         FROM information_schema.columns
-        WHERE table_name = 'X_CSRO_data'
+        WHERE table_name = 'X_HyS_data'
           AND column_name = '{select_data}'
         """
     ).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_CSRO_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
 
     if add_field is None:
         raise ValueError("必须指定 add_field")
 
-    # -------------------------------------------------
     # 1. 构造 sqrt 表达式（不处理 0）
-    # -------------------------------------------------
     sqrt_expr = f"sqrt({select_data})"
 
-    # -------------------------------------------------
     # 2. 确保输出字段存在
-    # -------------------------------------------------
-    # ✅ 修改1：先删旧列
+    # 先删旧列
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_field}
     """)
 
-    # ✅ 修改2：重新添加 REAL 字段
+    # 重新添加 REAL 字段
     conn.execute(f"""
-        ALTER TABLE X_CSRO_data
+        ALTER TABLE X_HyS_data
         ADD COLUMN {add_field} REAL
     """)
 
-    # -------------------------------------------------
     # 3. 获取 id 范围
-    # -------------------------------------------------
     min_id, max_id = conn.execute(
         """
         SELECT MIN(id), MAX(id)
-        FROM X_CSRO_data
+        FROM X_HyS_data
         """
     ).fetchone()
 
     if min_id is None:
-        print("X_CSRO_data 为空，跳过")
+        print("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
     print(f"共 {n_chunks} 个 chunk")
 
-    # -------------------------------------------------
     # 4. 分块 UPDATE
-    # -------------------------------------------------
     for i in range(n_chunks):
         start_id = min_id + i * chunk_size
         end_id = start_id + chunk_size - 1
@@ -2353,21 +2137,19 @@ def sqrt(
 
         conn.execute(
             f"""
-            UPDATE X_CSRO_data
+            UPDATE X_HyS_data
             SET {add_field} = {sqrt_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
               AND {select_data} IS NOT NULL
             """
         )
 
-    # -------------------------------------------------
     # 5. 结束
-    # -------------------------------------------------
     elapsed = (datetime.now() - start).total_seconds()
     print("sqrt (chunked) 完成")
     print(f"耗时: {elapsed:.2f} 秒")
 
 # 运行结果
-#   X_CSRO_data 表
+#   X_HyS_data 表
 #     新增字段	                     含义
 #   data_sqrt	             对 data 进行 sqrt

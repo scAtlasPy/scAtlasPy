@@ -2,19 +2,9 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
-
-# =========================================================
-# 1️⃣ 内置 PBMC marker reference（Phase 1）
-#    ✅ 来自你截图那张表
-# =========================================================
+# 示例： 内置 PBMC marker reference（Phase 1）
 def _get_builtin_pbmc_marker_reference():
-    """
-    Phase 1 内置 PBMC / blood marker reference
 
-    返回
-    ----
-    ref_dict : dict[cell_type -> list[str]]
-    """
     return {
         "CD4 T cells": ["IL7R"],
         "CD14+ Monocytes": ["CD14", "LYZ"],
@@ -27,10 +17,9 @@ def _get_builtin_pbmc_marker_reference():
     }
 
 
-# =========================================================
-# 2️⃣ 工具函数：0~1 归一化
-# =========================================================
+# 工具函数：0~1 归一化
 def _minmax_scale(series: pd.Series) -> pd.Series:
+
     x = series.astype(float).copy()
     if len(x) == 0:
         return x
@@ -41,34 +30,13 @@ def _minmax_scale(series: pd.Series) -> pd.Series:
     return (x - xmin) / (xmax - xmin)
 
 
-# =========================================================
-# 3️⃣ 单个 cluster × 单个 cell_type 打分（修正版）
-# =========================================================
+# 单个 cluster × 单个 cell_type 打分
 def _score_one_celltype_v2(
         marker_df: pd.DataFrame,
         marker_genes: list[str],
         top_n: int = 50,
         single_marker_penalty: float = 0.6
 ) -> tuple[float, list[str], int, float, float]:
-    """
-    对一个 cluster 的 marker 表，计算某个 cell type 的支持分数（修正版）
-
-    核心思路
-    --------
-    1. 只看 top_n marker
-    2. 对 cluster 内 marker 支持度做 0~1 归一化
-    3. gene_support = rank_weight * normalized_support
-    4. annotation_score = mean_support * match_fraction
-    5. 对单-marker cell type 做惩罚，避免 PPBP 一票通吃
-
-    返回
-    ----
-    score : float
-    support_markers : list[str]
-    matched_markers : int
-    mean_support : float
-    match_fraction : float
-    """
 
     if marker_df is None or len(marker_df) == 0:
         return 0.0, [], 0, 0.0, 0.0
@@ -84,9 +52,7 @@ def _score_one_celltype_v2(
     marker_upper = [g.upper() for g in marker_genes]
     n_ref = len(marker_upper)
 
-    # -------------------------------------------------
-    # 1️⃣ 选择主支持列
-    # -------------------------------------------------
+    # 选择主支持列
     if "final_score" in df.columns:
         base_col = "final_score"
     elif "t_like_score" in df.columns:
@@ -96,9 +62,7 @@ def _score_one_celltype_v2(
     else:
         raise ValueError("marker_df 中缺少可用主分数字段（final_score / t_like_score / score）")
 
-    # -------------------------------------------------
-    # 2️⃣ 构造融合支持度（cluster 内部）
-    # -------------------------------------------------
+    # 构造融合支持度（cluster 内部）
     df["_base_norm"] = _minmax_scale(df[base_col])
 
     if "log2fc" in df.columns:
@@ -123,17 +87,13 @@ def _score_one_celltype_v2(
         0.20 * df["_pct_norm"]
     )
 
-    # -------------------------------------------------
-    # 3️⃣ 排名权重：越靠前越重要
-    # -------------------------------------------------
+    # 排名权重：越靠前越重要
     df["_rank"] = np.arange(len(df))
     df["_rank_weight"] = 1.0 / (df["_rank"] + 1.0)
 
     df["_gene_support"] = df["_gene_support_raw"] * df["_rank_weight"]
 
-    # -------------------------------------------------
-    # 4️⃣ 命中 reference marker
-    # -------------------------------------------------
+    # 命中 reference marker
     hit_df = df[df["_gene_upper"].isin(marker_upper)].copy()
 
     if len(hit_df) == 0:
@@ -145,25 +105,17 @@ def _score_one_celltype_v2(
     mean_support = float(hit_df["_gene_support"].mean())
     match_fraction = matched_markers / max(n_ref, 1)
 
-    # -------------------------------------------------
-    # 5️⃣ 最终 annotation score
-    #    核心：平均支持度 × 命中比例
-    # -------------------------------------------------
+    # 最终 annotation score ：  核心：平均支持度 × 命中比例
     score = mean_support * match_fraction
 
-    # -------------------------------------------------
-    # 6️⃣ 单-marker cell type 惩罚
-    #    避免 PPBP 这种只靠 1 个 marker 劫持
-    # -------------------------------------------------
+    # 单-marker cell type 惩罚： 避免 PPBP 这种只靠 1 个 marker 劫持
     if n_ref == 1:
         score *= single_marker_penalty
 
     return score, support_markers, matched_markers, mean_support, match_fraction
 
 
-# =========================================================
-# 4️⃣ 主函数：自动 cluster 注释（修正版）
-# =========================================================
+# 主函数：自动 cluster 注释
 def annotate_clusters(
         atlas,
         rank_result: dict,
@@ -177,61 +129,12 @@ def annotate_clusters(
         ambiguity_threshold_high: float = 0.08,
         ambiguity_threshold_medium: float = 0.03
 ):
-    """
-    Phase 1：可用版自动 cell type 注释（修正版）
-
-    功能
-    ----
-    - 使用内置 marker reference
-    - 读取 plot_rank_genes_groups() 返回的 result_dict
-    - 计算 cluster × cell_type score
-    - 输出 summary 表
-    - 写入 obs.cell_type_auto
-
-    修正版改进
-    ----------
-    - 只看 top_n marker
-    - 分数归一化，避免原始 score 尺度劫持
-    - 使用 mean_support × match_fraction
-    - 对单 marker cell type 保守处理
-
-    参数
-    ----
-    atlas : Atlas
-    rank_result : dict[group -> DataFrame]
-        plot_rank_genes_groups() 返回结果
-    groupby : str
-        obs 中的 cluster 列，例如 kmeans / leiden
-    reference_name : str
-        当前只支持 "builtin_pbmc"
-    write_to_obs : bool
-        是否把结果写入 obs
-    obs_col : str
-        自动注释列名
-    obs_conf_col : str
-        置信度列名
-    top_n : int
-        只使用每个 cluster 前 top_n 个 marker
-    unknown_label : str
-        无法判定时的标签
-    ambiguity_threshold_high : float
-        best vs runner_up 的差值阈值（high）
-    ambiguity_threshold_medium : float
-        best vs runner_up 的差值阈值（medium）
-
-    返回
-    ----
-    summary_df : DataFrame
-    score_df : DataFrame
-    """
 
     print("\n==== annotate_clusters (Phase 1, revised) ====")
     start = datetime.now()
     conn = atlas.connection
 
-    # -------------------------------------------------
-    # 0️⃣ 检查输入
-    # -------------------------------------------------
+    # 检查输入
     if not isinstance(rank_result, dict) or len(rank_result) == 0:
         raise ValueError("rank_result 不能为空，需传入 plot_rank_genes_groups() 的返回结果")
 
@@ -239,17 +142,13 @@ def annotate_clusters(
     if groupby not in obs_cols:
         raise ValueError(f"obs 中不存在列: {groupby}")
 
-    # -------------------------------------------------
-    # 1️⃣ 读取内置 reference
-    # -------------------------------------------------
+    # 读取内置 reference
     if reference_name != "builtin_pbmc":
         raise ValueError("Phase 1 当前只支持 reference_name='builtin_pbmc'")
 
     ref_dict = _get_builtin_pbmc_marker_reference()
 
-    # -------------------------------------------------
-    # 2️⃣ 计算 cluster × cell_type score
-    # -------------------------------------------------
+    # 计算 cluster × cell_type score
     score_rows = []
 
     for grp, marker_df in rank_result.items():
@@ -277,9 +176,7 @@ def annotate_clusters(
     if len(score_df) == 0:
         raise ValueError("score_df 为空，无法注释")
 
-    # -------------------------------------------------
-    # 3️⃣ 生成 summary
-    # -------------------------------------------------
+    # 生成 summary
     summary_rows = []
 
     cluster_ids = list(score_df["cluster_id"].unique())
@@ -313,9 +210,7 @@ def annotate_clusters(
 
         delta = best_score - runner_score
 
-        # -------------------------------------------------
-        # 置信度规则（修正版）
-        # -------------------------------------------------
+        # 置信度规则
         if best_score <= 0 or best_matched == 0:
             predicted = unknown_label
             confidence = "low"
@@ -352,9 +247,7 @@ def annotate_clusters(
 
     summary_df = pd.DataFrame(summary_rows)
 
-    # -------------------------------------------------
-    # 4️⃣ 写数据库：cluster_annotation_scores
-    # -------------------------------------------------
+    # 写数据库：cluster_annotation_scores
     conn.execute("DROP TABLE IF EXISTS cluster_annotation_scores")
     conn.execute("""
         CREATE TABLE cluster_annotation_scores (
@@ -370,9 +263,7 @@ def annotate_clusters(
     """)
     conn.append("cluster_annotation_scores", score_df)
 
-    # -------------------------------------------------
-    # 5️⃣ 写数据库：cluster_annotation_summary
-    # -------------------------------------------------
+    # 写数据库：cluster_annotation_summary
     conn.execute("DROP TABLE IF EXISTS cluster_annotation_summary")
     conn.execute("""
         CREATE TABLE cluster_annotation_summary (
@@ -390,9 +281,7 @@ def annotate_clusters(
     """)
     conn.append("cluster_annotation_summary", summary_df)
 
-    # -------------------------------------------------
-    # 6️⃣ 写入 obs
-    # -------------------------------------------------
+    # 写入 obs
     if write_to_obs:
         obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 

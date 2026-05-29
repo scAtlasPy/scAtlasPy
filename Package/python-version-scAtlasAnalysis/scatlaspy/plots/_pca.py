@@ -1,54 +1,27 @@
-import numpy as np
 from ..data import Atlas
+import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-
-''' 可视化 / 对外入口层 '''
-# 用 PCA 的前两个主成分（PC1, PC2）做二维散点图
+# 可视化 / 对外入口层 ;  用 PCA 的前两个主成分（PC1, PC2）做二维散点图
 def pca(
         atlas,
-        color: str | None = None,          # ✅ 修改：支持 obs 列名 或 gene name
+        color: str | None = None,
         x_pc: int = 0,
         y_pc: int = 1,
         annotate_var_explained: bool = True,
         sample_n: int | None = 500000,
         use_expr_field: str = "data_log1p",
-        figsize=(14, 4.2),                 # ✅ 修改：从 (6, 6) 改宽，更接近 Scanpy 横向布局
-        point_size: float = 1.0,            # ✅ 修改：从 8 改小，避免点太大
-        alpha: float = 0.7,                 # ✅ 修改：从 0.9 改低一点，更接近 Scanpy 密度感
-        cmap: str = "viridis",             # ✅ 新增：连续变量 colormap
-        palette: str = "tab20",            # ✅ 新增：分类变量 palette
-        legend_loc: str = "right_margin",  # ✅ 新增：分类 legend 位置
-        frameon: bool = True,              # ✅ 新增：Scanpy 风格 frame
-        return_df: bool = False,           # ✅ 新增：是否返回绘图数据
+        figsize=(22, 8),
+        point_size: float = 1.0,
+        alpha: float = 0.7,
+        cmap: str = "viridis",
+        palette: str = "tab20",
+        legend_loc: str = "right_margin",
+        frameon: bool = True,
+        return_df: bool = False,
 ):
-    """
-    数据库版 Scanpy 风格 PCA 图。
-
-    color 支持两种：
-    1. obs 表列名：
-        - celltype
-        - BATCH
-        - kmeans
-        - leiden
-        - 其他 obs 中的连续/分类字段
-
-    2. var.atlas_gene_name 中的基因名：
-        - CST3
-        - NKG7
-        - MS4A1
-        - 其他基因名
-
-    不支持：
-    - var 表普通列名直接给 cell PCA 上色
-      因为 PCA 图的点是 cell，var 列是 gene-level 信息。
-    """
-
-    import numpy as np
-    import pandas as pd
-    import matplotlib.pyplot as plt
-    from datetime import datetime
 
     print("\n==== pca plot ====")
     start = datetime.now()
@@ -57,18 +30,14 @@ def pca(
     if conn is None:
         raise ValueError("atlas.connection 为空，请先连接数据库")
 
-    # =====================================================
-    # ✅ 修改 1：DuckDB 字段安全引用
-    # =====================================================
+    # DuckDB 字段安全引用
     def _q(name: str) -> str:
         return '"' + name.replace('"', '""') + '"'
 
     pcx = f"pc{x_pc}"
     pcy = f"pc{y_pc}"
 
-    # =====================================================
-    # 0️⃣ 检查 PCA 表和 PC 列是否存在
-    # =====================================================
+    # 检查 PCA 表和 PC 列是否存在
     pca_table_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -89,9 +58,7 @@ def pca(
             f"请确认 PCA 是否已经计算，或者 x_pc / y_pc 是否超出范围。"
         )
 
-    # =====================================================
-    # 1️⃣ 读取 explained variance ratio
-    # =====================================================
+    # 读取 explained variance ratio
     evr_map = {}
 
     pca_stats_exists = conn.execute("""
@@ -119,9 +86,7 @@ def pca(
         if y_pc in evr_map:
             y_label += f" ({evr_map[y_pc] * 100:.2f}%)"
 
-    # =====================================================
-    # 2️⃣ SQL 先抽样 PCA 坐标
-    # =====================================================
+    # SQL 先抽样 PCA 坐标
     if sample_n is None:
         pca_query = f"""
             SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
@@ -141,19 +106,11 @@ def pca(
 
     plot_df = pca_df.copy()
 
-    # =====================================================
-    # ✅ 修改 2：Scanpy 风格解析 color
-    #     优先级：
-    #       1. obs 表列名
-    #       2. var.atlas_gene_name 基因名
-    # =====================================================
     color_kind = None
 
     if color is not None:
 
-        # -------------------------------------------------
-        # 2.1 获取 obs / var / X_CSRO_data 字段
-        # -------------------------------------------------
+        # 获取 obs / var / X_HyS_data 字段
         obs_cols = [
             r[1]
             for r in conn.execute("PRAGMA table_info(obs)").fetchall()
@@ -166,12 +123,10 @@ def pca(
 
         x_cols = [
             r[1]
-            for r in conn.execute("PRAGMA table_info(X_CSRO_data)").fetchall()
+            for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()
         ]
 
-        # =================================================
-        # ✅ 修改 3：color 是 obs 表列名
-        # =================================================
+        # color 是 obs 表列名
         if color in obs_cols:
 
             print(f"[COLOR] obs column: {color}")
@@ -197,9 +152,7 @@ def pca(
 
             color_kind = "obs"
 
-        # =================================================
-        # ✅ 修改 4：color 是 var.atlas_gene_name 基因名
-        # =================================================
+        # color 是 var.atlas_gene_name 基因名
         else:
             gene_row = conn.execute("""
                 SELECT atlas_gene_id
@@ -214,7 +167,7 @@ def pca(
 
                 if use_expr_field not in x_cols:
                     raise ValueError(
-                        f"X_CSRO_data 中不存在表达字段: {use_expr_field}"
+                        f"X_HyS_data 中不存在表达字段: {use_expr_field}"
                     )
 
                 gene_id = int(gene_row[0])
@@ -226,7 +179,7 @@ def pca(
                         c.atlas_cell_id,
                         COALESCE(x.{_q(use_expr_field)}, 0.0) AS color_value
                     FROM _pca_cells_tmp AS c
-                    LEFT JOIN X_CSRO_data AS x
+                    LEFT JOIN X_HyS_data AS x
                       ON c.atlas_cell_id = x.atlas_cell_id
                      AND x.atlas_gene_id = {gene_id}
                 """).fetchdf()
@@ -243,9 +196,7 @@ def pca(
 
                 color_kind = "gene"
 
-            # =================================================
-            # ✅ 修改 5：如果是 var 普通列，明确报错
-            # =================================================
+            # 如果是 var 普通列，明确报错
             elif color in var_cols:
                 raise ValueError(
                     f"color='{color}' 是 var 表中的列。\n"
@@ -260,18 +211,14 @@ def pca(
                     f"它既不是 obs 表列名，也不是 var.atlas_gene_name 中的基因名。"
                 )
 
-    # =====================================================
-    # 3️⃣ 绘图
-    # =====================================================
+    # 绘图
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
     x = plot_df[pcx].to_numpy()
     y = plot_df[pcy].to_numpy()
 
-    # =====================================================
     # 情况 A：不指定 color，灰色散点
-    # =====================================================
     if color is None:
         ax.scatter(
             x,
@@ -283,9 +230,7 @@ def pca(
             rasterized=True,
         )
 
-    # =====================================================
     # 情况 B：基因表达，连续色条
-    # =====================================================
     elif color_kind == "gene":
         sc_plot = ax.scatter(
             x,
@@ -302,11 +247,9 @@ def pca(
         cbar.set_label(color, fontsize=12)
         cbar.ax.tick_params(labelsize=10)
 
-    # =====================================================
     # 情况 C：obs 列
     #       数值型 → 连续色条
     #       分类/字符串/布尔 → 离散 legend
-    # =====================================================
     elif color_kind == "obs":
         values = plot_df["color_value"]
 
@@ -314,9 +257,7 @@ def pca(
         is_bool = pd.api.types.is_bool_dtype(values)
         is_numeric = pd.api.types.is_numeric_dtype(values)
 
-        # -------------------------
         # C1. obs 数值列：连续色条
-        # -------------------------
         if is_numeric and not is_bool:
             sc_plot = ax.scatter(
                 x,
@@ -333,9 +274,7 @@ def pca(
             cbar.set_label(color, fontsize=12)
             cbar.ax.tick_params(labelsize=10)
 
-        # -------------------------
         # C2. obs 分类列：离散颜色 + legend
-        # -------------------------
         else:
             values = values.astype("object").where(values.notna(), "NA")
             values = values.astype(str).astype("category")
@@ -348,7 +287,7 @@ def pca(
                 for i, cat in enumerate(cats)
             }
 
-            # ✅ 修改：按类别分组绘图，Scanpy 风格 legend
+            # 按类别分组绘图，Scanpy 风格 legend
             for cat in cats:
                 mask = values == cat
 
@@ -364,22 +303,51 @@ def pca(
                 )
 
             if legend_loc == "right_margin":
-                # ✅ 修改：legend 改成两列，并且放在右侧中部，接近 Scanpy 横向布局
+                # 根据类别数量自动调整 legend 列数和字体
+                n_cat = len(cats)
+                max_label_len = max([len(str(c)) for c in cats], default=0)
+
+                # ✅ 修改：legend 字体不要自动缩得太小
+                if n_cat <= 14:
+                    legend_ncol = 1  # 列数
+                    legend_fontsize = 20  # 字体大小
+                elif n_cat <= 30:
+                    legend_ncol = 2
+                    legend_fontsize = 20
+                elif n_cat <= 60:
+                    legend_ncol = 4
+                    legend_fontsize = 20
+                else:
+                    legend_ncol = 5
+                    legend_fontsize = 20
+
+                if max_label_len >= 18: # 图例中所有类别名称里，最长那个名称的字符长度
+                    legend_fontsize = min(legend_fontsize, 20)
+                if max_label_len >= 28:
+                    legend_fontsize = min(legend_fontsize, 20)
+
                 leg = ax.legend(
                     title=color,
-                    bbox_to_anchor=(1.04, 0.5),   # ✅ 修改：从右上改为右侧居中
-                    loc="center left",            # ✅ 修改：从 upper left 改为 center left
+                    bbox_to_anchor=(1.03, 0.5),
+                    loc="center left",
                     frameon=False,
-                    markerscale=2,
-                    fontsize=9,
-                    title_fontsize=10,
+                    markerscale=8.0, # 图例圆点
+                    fontsize=legend_fontsize,
+                    title_fontsize=legend_fontsize + 1,
                     borderaxespad=0.0,
-                    ncol=2,                       # ✅ 修改：关键，legend 分两列显示
-                    columnspacing=1.2,            # ✅ 修改：两列间距
-                    handletextpad=0.4,            # ✅ 修改：点和文字间距
+                    ncol=legend_ncol,
+                    columnspacing=1.0,
+                    handletextpad=0.35,
+                    labelspacing=0.35,
+                    handlelength=0.8,
                 )
 
-                # ✅ 修改：关键，不让 tight_layout / layout 系统为了 legend 压缩主图
+                # 强制放大 legend 里的 scatter 圆点，更稳定
+                for h in leg.legend_handles:
+                    if hasattr(h, "set_sizes"):
+                        h.set_sizes([35])
+
+                # 不让 tight_layout / layout 系统为了 legend 压缩主图
                 leg.set_in_layout(False)
 
             elif legend_loc == "on_data":
@@ -408,9 +376,7 @@ def pca(
                     "legend_loc 只支持 'right_margin'、'on_data' 或 None"
                 )
 
-    # =====================================================
-    # 4️⃣ Scanpy 风格美化
-    # =====================================================
+    # Scanpy 风格美化
     ax.set_xlabel(x_label, fontsize=14)
     ax.set_ylabel(y_label, fontsize=14)
 
@@ -419,7 +385,7 @@ def pca(
     else:
         ax.set_title(str(color), fontsize=14, pad=8)
 
-    # ✅ 修改：更接近 Scanpy，默认不画网格
+    # 更接近 Scanpy，默认不画网格
     ax.grid(False)
 
     if frameon:
@@ -440,14 +406,12 @@ def pca(
 
     ax.set_aspect("auto")
 
-    # ✅ 修改：控制 PCA 主图框的高宽比例，避免变成图2那种瘦高图
+    # 控制 PCA 主图框的高宽比例，避免变成图2那种瘦高图
     ax.set_box_aspect(0.75)
 
-    # =====================================================
-    # ✅ 修改：不要让 tight_layout 把主图挤窄
-    # =====================================================
+    # 不要让 tight_layout 把主图挤窄
     if legend_loc == "right_margin":
-        # ✅ 修改：手动给右侧 legend 留空间，主图不会被压成竖条
+        # 手动给右侧 legend 留空间，主图不会被压成竖条
         fig.subplots_adjust(
             left=0.06,
             right=0.38,
@@ -465,69 +429,298 @@ def pca(
         return plot_df
 
 
-# 1️⃣ 画 pca_variance_ratio（最像 sc.pl.pca_variance_ratio）
-# 单个PC贡献 👉 每个PC单独贡献多少信息
-# 🎯 这个图的核心用途
-# 👉 找：
-# ✔️ “elbow point（拐点）”
-def pca_variance_ratio(atlas: Atlas, n_pcs=50, log=True, figsize=(16, 8)):
+# 画 pca_variance_ratio
+def pca_variance_ratio(
+        atlas: Atlas,
+        n_pcs: int = 30,
+        *,
+        log: bool = False,
+        show: bool | None = None,
+        save: bool | str | None = None,
+        figsize=(16, 8),
+        return_fig: bool = False,
+):
     """
-    直接从数据库 uns_pca_stats 画 explained variance ratio
-    类似：sc.pl.pca_variance_ratio(adata, log=True, n_pcs=50)
+    从 Atlas 数据库中绘制 PCA 主成分方差解释率图。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象，内部需要包含 DuckDB 数据库连接 atlas.connection。
+
+    n_pcs
+        要展示的主成分数量。例如 n_pcs=30 表示展示前 30 个 PC。
+
+    log
+        是否使用对数坐标显示 y 轴。
+        如果 log=True，则 y 轴使用 log scale。
+
+    show
+        是否显示图像。
+        如果 show=True，则直接显示图像。
+        如果 show=False，则不显示图像。
+        如果 show=None，则默认显示图像。
+
+    save
+        是否保存图像。
+        如果 save=True，则保存为默认文件名 'pca_variance_ratio.png'。
+        如果 save 是字符串，则根据字符串保存文件。
+
+        示例：
+            save=True              -> 保存为 pca_variance_ratio.png
+            save=".pdf"            -> 保存为 pca_variance_ratio.pdf
+            save="_test.png"       -> 保存为 pca_variance_ratio_test.png
+            save="my_pca.png"      -> 保存为 my_pca.png
+
+    figsize
+        图像大小，默认是 (16, 8)。
+
+    return_fig
+        是否返回 matplotlib 的 fig 和 ax 对象。
+        如果 return_fig=True，则返回 fig, ax，方便后续继续修改图像。
     """
+
+    # 获取数据库连接
     conn = atlas.connection
 
-    df = conn.execute(f"""
-        SELECT pc_index, variance, variance_ratio
-        FROM uns_pca_stats
-        ORDER BY pc_index
-        LIMIT {n_pcs}
-    """).fetchdf()
-
-    x = df["pc_index"].to_numpy() + 1  # Scanpy 习惯从 PC1 开始
-    y = df["variance_ratio"].to_numpy()
-
-    plt.figure(figsize=figsize)
-    plt.plot(x, y, marker="o")
-    plt.xlabel("Principal component")
-    plt.ylabel("Explained variance ratio")
-    plt.title("PCA variance ratio")
-
-    if log:
-        plt.yscale("log")
-
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-
-# 2️⃣ 画累计解释方差（这个也很常用）
-# 看“总信息覆盖多少”
-# 👉 横轴：PC1 → PC50
-# 👉 纵轴：累计解释了多少数据信息
-def pca_variance_ratio_cumsum(atlas: Atlas, n_pcs=50, figsize=(16, 8)):
-    """
-    画累计 explained variance ratio
-    """
-    conn = atlas.connection
-
+    # 2. 从 uns_pca_stats 表中读取 PCA 方差解释率
+    # uns_pca_stats 表中通常包含：
+    # pc_index        ：主成分编号，通常从 0 开始
+    # variance_ratio  ：每个主成分解释的方差比例
     df = conn.execute(f"""
         SELECT pc_index, variance_ratio
         FROM uns_pca_stats
         ORDER BY pc_index
-        LIMIT {n_pcs}
+        LIMIT {int(n_pcs)}
     """).fetchdf()
 
+
+    if df.empty:
+        raise ValueError("uns_pca_stats 为空，请先运行 PCA 后再绘图。")
+
+    # 3. 准备绘图数据
+    # 数据库中的 pc_index 一般从 0 开始：
+    # 0, 1, 2, ...
+    # 但 Scanpy 绘图习惯显示为：
+    # PC1, PC2, PC3, ...
+    # 所以这里 +1
     x = df["pc_index"].to_numpy() + 1
+
+    # y 轴为每个主成分的方差解释率
     y = df["variance_ratio"].to_numpy()
+
+    # 4. 创建图像对象
+    # 使用 fig, ax 的方式，而不是直接 plt.figure()
+    # 这样更方便后续控制 show、save 和 return_fig
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # 绘制折线图
+    ax.plot(x, y, marker="o")
+
+    # 设置坐标轴标签和标题
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Explained variance ratio")
+    ax.set_title("PCA variance ratio")
+
+    # 如果 log=True，则使用对数坐标
+    if log:
+        ax.set_yscale("log")
+
+    # 添加网格线，让图更容易阅读
+    ax.grid(True, alpha=0.3)
+
+    # 自动调整布局，避免标签或标题被裁剪
+    fig.tight_layout()
+
+    # 5. 保存图像
+    # 这里模仿 Scanpy 的 save 风格：
+    # save=True       -> 使用默认文件名
+    # save=".pdf"     -> 默认文件名 + 后缀
+    # save="_xxx.png" -> 默认文件名 + 自定义后缀
+    # save="xxx.png"  -> 使用完整自定义文件名
+    if save:
+        default_name = "pca_variance_ratio"
+
+        # save=True：保存为默认 png 文件
+        if save is True:
+            save_path = f"{default_name}.png"
+
+        # save 是字符串：根据字符串形式判断保存路径
+        elif isinstance(save, str):
+
+            # 例如 save=".pdf" / ".png" / ".svg"
+            # 保存为 pca_variance_ratio.pdf / pca_variance_ratio.png / pca_variance_ratio.svg
+            if save.startswith("."):
+                save_path = f"{default_name}{save}"
+
+            # 例如 save="_test.png"
+            # 保存为 pca_variance_ratio_test.png
+            elif save.startswith("_"):
+                save_path = f"{default_name}{save}"
+
+            # 例如 save="my_pca.png"
+            # 直接使用用户提供的完整文件名
+            else:
+                save_path = save
+
+        else:
+            raise ValueError("save 只支持 bool 或 str。")
+
+        # 保存图像
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        print(f"[pca_variance_ratio] 图像已保存到: {save_path}")
+
+    # 6. 显示或关闭图像
+    # 如果 show=None，则默认显示图像
+    if show is None:
+        show = True
+
+    # show=True：显示图像
+    if show:
+        plt.show()
+
+    # show=False：不显示图像，并关闭 fig，避免占用内存
+    else:
+        plt.close(fig)
+
+    # 7. 是否返回 fig, ax
+    # 如果 return_fig=True，返回 fig 和 ax，方便外部继续修改图像
+    if return_fig:
+        return fig, ax
+
+
+# 画累计解释方差
+def pca_variance_ratio_cumsum(
+        atlas: Atlas,
+        n_pcs: int = 30,
+        *,
+        log: bool = False,
+        show: bool | None = None,
+        save: bool | str | None = None,
+        figsize=(16, 8),
+        return_fig: bool = False,
+):
+    """
+    从 Atlas 数据库中绘制 PCA 累计方差解释率图。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象，内部需要包含 DuckDB 数据库连接 atlas.connection。
+
+    n_pcs
+        要展示的主成分数量。例如 n_pcs=30 表示展示前 30 个 PC。
+
+    log
+        是否使用对数坐标显示 y 轴。
+        一般累计方差解释率不建议使用 log=True，但这里保留接口，方便统一风格。
+
+    show
+        是否显示图像。
+        如果 show=True，则直接显示图像。
+        如果 show=False，则不显示图像。
+        如果 show=None，则默认显示图像。
+
+    save
+        是否保存图像。
+        如果 save=True，则保存为默认文件名 'pca_variance_ratio_cumsum.png'。
+        如果 save 是字符串，则根据字符串保存文件。
+
+        示例：
+            save=True              -> 保存为 pca_variance_ratio_cumsum.png
+            save=".pdf"            -> 保存为 pca_variance_ratio_cumsum.pdf
+            save="_test.png"       -> 保存为 pca_variance_ratio_cumsum_test.png
+            save="my_pca_cum.png"  -> 保存为 my_pca_cum.png
+
+    figsize
+        图像大小，默认是 (16, 8)。
+
+    return_fig
+        是否返回 matplotlib 的 fig 和 ax 对象。
+        如果 return_fig=True，则返回 fig, ax，方便后续继续修改图像。
+    """
+
+    # 1. 获取数据库连接
+    conn = atlas.connection
+
+    # 2. 从 uns_pca_stats 表中读取 PCA 方差解释率
+    df = conn.execute(f"""
+        SELECT pc_index, variance_ratio
+        FROM uns_pca_stats
+        ORDER BY pc_index
+        LIMIT {int(n_pcs)}
+    """).fetchdf()
+
+    # 如果表中没有数据，说明还没有运行 PCA，或者 PCA 结果没有写入数据库
+    if df.empty:
+        raise ValueError("uns_pca_stats 为空，请先运行 PCA 后再绘图。")
+
+    # 3. 准备绘图数据
+    # 数据库中的 pc_index 通常从 0 开始；
+    # Scanpy 风格绘图中通常显示为 PC1, PC2, PC3...
+    x = df["pc_index"].to_numpy() + 1
+
+    # 每个 PC 的方差解释率
+    y = df["variance_ratio"].to_numpy()
+
+    # 累计方差解释率
     y_cum = np.cumsum(y)
 
-    plt.figure(figsize=figsize)
-    plt.plot(x, y_cum, marker="o")
-    plt.xlabel("Principal component")
-    plt.ylabel("Cumulative explained variance ratio")
-    plt.title("Cumulative PCA variance ratio")
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
+    # 4. 创建图像对象
+    fig, ax = plt.subplots(figsize=figsize)
+
+    ax.plot(x, y_cum, marker="o")
+
+    ax.set_xlabel("Principal component")
+    ax.set_ylabel("Cumulative explained variance ratio")
+    ax.set_title("Cumulative PCA variance ratio")
+
+    # 一般累计解释率不需要 log，但保留这个参数以统一接口
+    if log:
+        ax.set_yscale("log")
+
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    # 5. 保存图像
+    if save:
+        default_name = "pca_variance_ratio_cumsum"
+
+        # save=True：保存为默认 png 文件
+        if save is True:
+            save_path = f"{default_name}.png"
+
+        # save 是字符串：根据字符串形式判断保存路径
+        elif isinstance(save, str):
+
+            # save=".pdf" / ".png" / ".svg"
+            if save.startswith("."):
+                save_path = f"{default_name}{save}"
+
+            # save="_test.png"
+            elif save.startswith("_"):
+                save_path = f"{default_name}{save}"
+
+            # save="my_pca_cum.png"
+            else:
+                save_path = save
+
+        else:
+            raise ValueError("save 只支持 bool 或 str。")
+
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        print(f"[pca_variance_ratio_cumsum] 图像已保存到: {save_path}")
+
+    # 6. 显示或关闭图像
+    if show is None:
+        show = True
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    # 7. 是否返回 fig, ax
+    if return_fig:
+        return fig, ax
 

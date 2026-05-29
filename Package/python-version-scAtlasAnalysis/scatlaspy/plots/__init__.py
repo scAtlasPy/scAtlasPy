@@ -18,8 +18,6 @@ from ._qc import (
 
 from ._umap import (
     umap,
-    plot_umap_obs,
-    plot_umap_features,
     plot_rank_genes_groups,
     plot_rank_genes_groups_violin,
     violin,

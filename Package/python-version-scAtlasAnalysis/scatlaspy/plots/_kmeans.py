@@ -3,9 +3,7 @@ from datetime import datetime
 from ..data import Atlas
 
 
-# 看数量（cluster 大小）
-# 只负责：KMeans 聚类结果图
-# 不负责：训练、不负责 UMAP、不负责 PCA
+# KMeans 聚类结果图,看数量（cluster 大小）
 def kmeans_cluster_size(
         atlas: Atlas,
         obs_col: str = "kmeans",
@@ -13,29 +11,12 @@ def kmeans_cluster_size(
         show_percent: bool = True,
         title: str | None = None
 ):
-    """
-    KMeans 聚类结果可视化。
-
-    只负责画图，不训练 KMeans。
-
-    前提
-    ----
-    请先运行：
-        sap.tl.kmeans(atlas)
-
-    功能
-    ----
-    从 obs.{obs_col} 读取 cluster label，
-    画每个 cluster 的细胞数量 / 占比柱状图。
-    """
 
     print("\n==== plot_kmeans ====")
     start = datetime.now()
     conn = atlas.connection
 
-    # -------------------------------------------------
-    # 0️⃣ 检查 obs 中是否存在 kmeans 列
-    # -------------------------------------------------
+    # 检查 obs 中是否存在 kmeans 列
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     if obs_col not in obs_cols:
         raise ValueError(
@@ -43,9 +24,7 @@ def kmeans_cluster_size(
             f"请先运行 sap.tl.kmeans(atlas, obs_col='{obs_col}')"
         )
 
-    # -------------------------------------------------
-    # 1️⃣ 统计 cluster 数量
-    # -------------------------------------------------
+    # 统计 cluster 数量
     df = conn.execute(f"""
         SELECT
             {obs_col} AS cluster,
@@ -65,9 +44,7 @@ def kmeans_cluster_size(
     df["cluster"] = df["cluster"].astype(int).astype(str)
     df["pct"] = df["n_cells"] / df["n_cells"].sum() * 100
 
-    # -------------------------------------------------
-    # 2️⃣ 画图
-    # -------------------------------------------------
+    # 画图
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
