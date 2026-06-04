@@ -7,43 +7,72 @@ from ._minibatch import MinibatchFetchMultiThreads
 from ._filter_index import FilterBuildIndex
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # 输出到控制台
-        logging.FileHandler('atlas.log')  # 输出到文件
-    ]
-)
-logger = logging.getLogger('Atlas')
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
+
+
+def set_verbosity(level: str = "warning"):
+    """Set the verbosity level for Atlas logging.
+
+    Parameters
+    ----------
+    level
+        Verbosity level. Available options are `"error"`, `"warning"`,
+        `"info"`, and `"debug"`.
+
+        - `"error"` only shows error messages.
+        - `"warning"` shows warnings and errors.
+        - `"info"` shows general running information.
+        - `"debug"` shows detailed debugging information.
+
+    Returns
+    -------
+    None
+        The logging level is updated in place.
+
+    Examples
+    --------
+    Show general running information::
+
+        set_verbosity("info")
+
+    Show detailed debugging information::
+
+        set_verbosity("debug")
+
+    """
+
+    level_map = {
+        "error": logging.ERROR,
+        "warning": logging.WARNING,
+        "info": logging.INFO,
+        "debug": logging.DEBUG,
+    }
+
+    if level not in level_map:
+        raise ValueError("level 只支持: error, warning, info, debug")
+
+    logging.basicConfig(
+        level=level_map[level],
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
+    logging.getLogger("Atlas").setLevel(level_map[level])
 
 class Atlas:
     """
     这是一个Atlas类，用来管理和待分析数据集的数据库的交互
 
     """
-    __reserved_words__={ # 这是一个SQL保留关键字列表。这些是在SQL语言中具有特殊含义的单词，不能直接用作表名、列名等标识符，除非使用引号转义。
-        'add', 'all', 'alter', 'and', 'any', 'as', 'asc', 'between', 'by', 'case', 'cast', 'check',
-		'column', 'create', 'cross', 'current_date', 'current_time', 'default', 'delete', 'desc',
-		'distinct', 'drop', 'else', 'exists', 'false', 'for', 'foreign', 'from', 'full', 'group',
-		'having', 'in', 'inner', 'insert', 'interval', 'into', 'is', 'join', 'left', 'like', 'limit',
-		'not', 'null', 'on', 'or', 'order', 'outer', 'primary', 'references', 'right', 'select',
-		'set', 'table', 'then', 'to', 'true', 'union', 'unique', 'update', 'values', 'when', 'where'
-    }
 
     def __init__(self, name: str, path:str):
-        """
-        初始化类实例
-        Args:
-            name: 名称
-            path: 文件夹路径
-        """
 
         logger.info(f"开始初始化 Atlas 实例，名称: {name}, 路径: {path}")
 
         self.__name = name  # 该数据库的名称（无后缀）
         self.__path = path  # 该数据库所在文件夹的路径
         self.__connection = None  # 存储当前的数据库连接
+        self.__mode: Literal["r+", "r"] = "r+"  # 当前连接模式，默认读写
         self.__file_path = os.path.join(self.__path, f"{self.__name}.sasql") # 数据库文件的绝对路径
 
         if not os.path.exists(self.file_path):
@@ -59,6 +88,81 @@ class Atlas:
             logger.info(f"数据库文件已存在: {self.file_path}，已创建连接")
 
         logger.info("Atlas 实例初始化完成")
+
+    @classmethod
+    def open(
+            cls,
+            file_path: str,
+            mode: Literal["r+", "r"] = "r+",
+    ) -> "Atlas":
+        """
+        打开一个已经存在的 Atlas 数据库。
+
+        推荐用法：
+            atlas = Atlas.open(r"F:\\data\\xxx.sasql")
+            atlas = Atlas.open(r"F:\\data\\xxx.sasql", mode="r")
+        """
+
+        file_path = os.path.abspath(file_path)
+
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(
+                f"数据库文件不存在，无法打开: {file_path}\n"
+                f"如果你想创建新数据库，请使用 Atlas.create(name, path)"
+            )
+
+        if os.path.isdir(file_path):
+            raise IsADirectoryError(
+                f"传入的是文件夹，不是数据库文件: {file_path}\n"
+                f"请传入完整数据库文件路径，例如：Atlas.open(r'F:\\data\\xxx.sasql')"
+            )
+        path = os.path.dirname(file_path)
+        filename = os.path.basename(file_path)
+
+        if filename.endswith(".sasql"):
+            name = filename[:-len(".sasql")]
+        else:
+            name = os.path.splitext(filename)[0]
+
+        # 绕过 __init__，避免触发“自动创建数据库”的逻辑
+        atlas = cls.__new__(cls)
+
+        atlas._Atlas__name = name
+        atlas._Atlas__path = path
+        atlas._Atlas__file_path = file_path
+        atlas._Atlas__connection = None
+        atlas._Atlas__mode = mode
+
+        atlas.connect(mode)
+
+        logger.info(f"已打开 Atlas 数据库: {file_path}, mode={mode}")
+
+        return atlas
+
+    @classmethod
+    def create(
+            cls,
+            name: str,
+            path: str,
+    ) -> "Atlas":
+        """
+        创建一个新的 Atlas 数据库。
+
+        推荐用法：
+            atlas = Atlas.create("my_atlas", r"F:\\data")
+        """
+
+        path = os.path.abspath(path)
+        file_path = os.path.join(path, f"{name}.sasql")
+
+        if os.path.exists(file_path):
+            raise FileExistsError(
+                f"数据库已存在: {file_path}\n"
+                f"如果你只是想重新连接已有数据库，请使用：\n"
+                f"Atlas.open(r'{file_path}')"
+            )
+
+        return cls(name=name, path=path)
 
     @property
     def file_path(self) -> str:
@@ -246,19 +350,137 @@ class Atlas:
 
     def query_raw(self, query):
         """
-        全量查询
-        用sql语句进行查询，返回sql结果
-        :param query:
-        :return:
+        用 SQL 查询，返回 DuckDB 原始结果对象。
+        不改变当前数据库连接模式。
         """
         logger.info("查询数据库，返回值类型为duckDB")
-        self.connect("r")
+
+        if self.__connection is None:
+            self.connect("r+")
+
         result = self.connection.execute(query)
         return result
 
+    def describe(self) -> str:
+        """
+        显示 Atlas 数据库的基本信息：
+        database / tables / table names / n_cells / n_genes
+        """
+
+        if self.__connection is None:
+            self.connect("r+")
+
+        conn = self.__connection
+
+        # 1. 数据库路径
+        database = self.file_path
+
+        # 2. 查询所有表
+        try:
+            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+        except Exception:
+            tables = []
+
+        table_names = ", ".join(tables) if len(tables) > 0 else "None"
+
+        # 3. 查询 obs 细胞数
+        if "obs" in tables:
+            try:
+                n_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
+            except Exception:
+                n_cells = None
+        else:
+            n_cells = None
+
+        # 4. 查询 var 基因数
+        if "var" in tables:
+            try:
+                n_genes = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
+            except Exception:
+                n_genes = None
+        else:
+            n_genes = None
+
+        # 5. 格式化输出
+        def fmt(x):
+            return "NA" if x is None else f"{int(x):,}"
+
+        text = (
+            f"database    : {database}\n"
+            f"tables      : {len(tables)}\n"
+            f"table names : {table_names}\n"
+            f"n_cells     : {fmt(n_cells)}\n"
+            f"n_genes     : {fmt(n_genes)}"
+        )
+
+        return text
+
+    def show(self, table_name: str, n: int = 5):
+        """
+        显示指定表的字段名和前 n 行数据。
+
+        用法：
+            atlas.show("obs")
+            atlas.show("var")
+            atlas.show("X_HyS_data", n=5)
+        """
+
+        if self.__connection is None:
+            self.connect("r+")
+
+        conn = self.__connection
+
+        # 1. 检查表是否存在
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+
+        if table_name not in tables:
+            raise ValueError(
+                f"数据库中不存在表: {table_name}\n"
+                f"当前可用表: {', '.join(tables) if len(tables) > 0 else 'None'}"
+            )
+
+        # 2. 安全引用表名
+        table_sql = '"' + table_name.replace('"', '""') + '"'
+
+        # 3. 获取字段名
+        columns = [
+            r[0]
+            for r in conn.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+            """, [table_name]).fetchall()
+        ]
+
+        # 4. 查询前 n 行
+        df = conn.execute(f"""
+            SELECT *
+            FROM {table_sql}
+            LIMIT {int(n)}
+        """).df()
+
+        # 5. 打印结果
+        print(f"table   : {table_name}")
+        print(f"columns : {', '.join(columns)}")
+        print(f"rows    : first {int(n)}")
+        print(df)
+
+        return df
+
+    def __repr__(self) -> str:
+        """
+        在交互环境中直接显示 Atlas 基本信息。
+        """
+        return self.describe()
 
 
-    ''' 过滤 + 建新表 + 建tid分块索引 '''
+    def __str__(self) -> str:
+        """
+        print(atlas) 时显示 Atlas 基本信息。
+        """
+        return self.describe()
+
     def filter_build_index(
             self,
             cell_condition: str | None = None,
@@ -266,6 +488,7 @@ class Atlas:
             use_hvg: bool = True,
             select_data: str = "data_scale",
     ):
+        ''' 过滤 + 建新表 + 建tid分块索引 '''
         builder = FilterBuildIndex(
             self.file_path,
             cell_condition=cell_condition,
@@ -276,23 +499,23 @@ class Atlas:
         builder.run()
 
 
-    ''' minibatch_CSR 格式读取 '''
     def minibatch_CSR(self , X_type = "CSR" ):
+        ''' minibatch_CSR 格式读取 '''
 
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type =  X_type )
         for X_batch in fetcher.run():
             pass
             # yield X_batch
 
-    ''' minibatch_CSR 格式读取 '''
+
     def minibatch_dense(
             self,
             pass_mode: str = "single-pass",
             buffer_batch_num: int = 5,
-            max_batches: int | None = None,  # 最多输出多少个 batch
+            max_batches: int | None = None,
             batch_size: int = 2048,
     ):
-
+        ''' minibatch_dense 格式读取 '''
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
 

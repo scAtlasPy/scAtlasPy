@@ -7,7 +7,7 @@ from datetime import datetime
 
 
 # 最高表达基因占比图（highest expressed genes）: 用来检查 有没有少数基因“垄断”表达（技术偏差）
-def highest_expr_genes_sql(
+def highest_expr_genes(
         atlas,
         n_top: int = 20,
         use_all_cells: bool = True,

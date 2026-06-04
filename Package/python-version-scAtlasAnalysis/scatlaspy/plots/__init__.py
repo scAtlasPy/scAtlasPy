@@ -9,7 +9,7 @@ from ._kmeans import (
 )
 
 from ._qc import (
-    highest_expr_genes_sql,
+    highest_expr_genes,
     violin_qc_metrics,
     scatter_qc_metrics,
     highly_variable_genes_plot,
@@ -18,9 +18,13 @@ from ._qc import (
 
 from ._umap import (
     umap,
-    plot_rank_genes_groups,
-    plot_rank_genes_groups_violin,
     violin,
     dotplot,
     stacked_violin,
+)
+
+from ._rank_genes_groups import (
+    rank_genes_groups,
+    rank_genes_groups_volcano,
+    rank_genes_groups_violin
 )

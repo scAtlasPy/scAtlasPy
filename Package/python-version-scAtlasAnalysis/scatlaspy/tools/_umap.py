@@ -350,18 +350,18 @@ def umap(
 
     # 简单自动评价
     if trustworthiness_score < 0.80:
-        print("⚠️ UMAP局部结构保持较弱，建议增大 fit_sample_n / 调整 n_neighbors / 检查 PCA")
+        print(" UMAP局部结构保持较弱，建议增大 fit_sample_n / 调整 n_neighbors / 检查 PCA")
     elif trustworthiness_score < 0.90:
-        print("✅ UMAP局部结构保持正常")
+        print(" UMAP局部结构保持正常")
     else:
-        print("🔥 UMAP局部结构保持很好")
+        print(" UMAP局部结构保持很好")
 
     if knn_overlap_score < 0.20:
-        print("⚠️ KNN重叠率偏低，低维空间近邻和PCA空间差异较大")
+        print(" KNN重叠率偏低，低维空间近邻和PCA空间差异较大")
     elif knn_overlap_score < 0.40:
-        print("✅ KNN重叠率正常，单细胞UMAP中常见")
+        print(" KNN重叠率正常，单细胞UMAP中常见")
     else:
-        print("🔥 KNN重叠率较高，局部邻域保持很好")
+        print(" KNN重叠率较高，局部邻域保持很好")
 
     # 建输出表
     conn.execute(f"DROP TABLE IF EXISTS {table_name}")

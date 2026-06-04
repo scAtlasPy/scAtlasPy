@@ -8,9 +8,60 @@ import os
 import numpy as np
 import pandas as pd
 from datetime import datetime
+import gc
 
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
+
+def _cleanup_transform_after_step(
+        conn,
+        temp_tables=None,
+        unregister_tables=None,
+        checkpoint: bool = False,
+        collect: bool = True,
+):
+    """
+    transformation 内部轻量清理函数：
+    - 删除 DuckDB 临时表
+    - 取消注册 pandas 临时表
+    - 可选 CHECKPOINT
+    - gc.collect()
+    - 不关闭 DuckDB connection
+    """
+
+    if temp_tables is None:
+        temp_tables = []
+
+    if unregister_tables is None:
+        unregister_tables = []
+
+    # 1. 取消注册 pandas / Arrow 临时对象
+    for t in unregister_tables:
+        try:
+            conn.unregister(t)
+        except Exception:
+            pass
+
+    # 2. 删除 DuckDB 临时表
+    for t in temp_tables:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        except Exception:
+            pass
+
+    # 3. 大表 UPDATE / DROP / RENAME 后建议 checkpoint
+    if checkpoint:
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception:
+            pass
+
+    # 4. Python 层垃圾回收
+    if collect:
+        try:
+            gc.collect()
+        except Exception:
+            pass
 
 '''normalize 法 1 ： 小内存 快速版 '''
 def normalize_total_fast(
@@ -115,10 +166,13 @@ def normalize_total_fast(
 
     conn.execute("DROP TABLE X_HyS_data")
     conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
-    conn.execute("CHECKPOINT")
-
-    # 清理临时表（建议）
-    conn.execute("DROP TABLE IF EXISTS _cell_sum")
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_cell_sum"],
+        checkpoint=True,
+        collect=True,
+    )
 
     print("normalize_total_streaming 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
@@ -238,6 +292,14 @@ def normalize_total(
     conn.execute("DROP TABLE X_HyS_data")
     conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
 
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_cell_sum_chunk"],
+        checkpoint=True,
+        collect=True,
+    )
+
     print("normalize_total_streaming_cell_chunk 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
@@ -320,6 +382,14 @@ def normalize_total_scale_factor_fast(
         FROM _cell_sum AS s
         WHERE obs.atlas_cell_id = s.atlas_cell_id
     """)
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_cell_sum"],
+        checkpoint=False,
+        collect=True,
+    )
 
     print(f"normalize_total 完成，target_sum={target_sum}")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
@@ -430,6 +500,14 @@ def normalize_total_scale_factor(
         # 每个 chunk 后立即清理
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_cell_sum_chunk"],
+        checkpoint=False,
+        collect=True,
+    )
+
     print(f"normalize_total 完成，target_sum={target_sum}")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
@@ -495,6 +573,14 @@ def log1p_fast(
         SET {add_field} = {log_expr}
         WHERE {select_data} IS NOT NULL
     """)
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=[],
+        checkpoint=True,
+        collect=True,
+    )
 
     # 4. 结束
     print("log1p 完成")
@@ -577,6 +663,14 @@ def log1p(
             WHERE id BETWEEN {start_id} AND {end_id}
               AND {select_data} IS NOT NULL
         """)
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=[],
+        checkpoint=True,
+        collect=True,
+    )
 
     # 5. 结束
     print("log1p (chunked) 完成")
@@ -667,6 +761,14 @@ def expm1(
             WHERE id BETWEEN {start_id} AND {end_id}
               AND {select_data} IS NOT NULL
         """)
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=[],
+        checkpoint=True,
+        collect=True,
+    )
 
     # 5. 结束
     print("expm1 (chunked) 完成")
@@ -766,6 +868,14 @@ def normalize_and_log1p(
             WHERE x.atlas_cell_id = o.atlas_cell_id
               AND x.id BETWEEN {start_id} AND {end_id}
         """)
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_cell_sum_chunk"],
+        checkpoint=True,
+        collect=True,
+    )
 
     # 6. 结束
     print("normalize_and_log1p 完成")
@@ -973,10 +1083,13 @@ def highly_variable_genes(
         WHERE var.atlas_gene_id = _hvg.atlas_gene_id
     """)
 
-    # 清理临时表
-    conn.execute("DROP TABLE IF EXISTS _gene_stats")
-    conn.execute("DROP TABLE IF EXISTS _gene_score")
-    conn.execute("DROP TABLE IF EXISTS _hvg")
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_gene_stats", "_gene_score", "_hvg"],
+        checkpoint=False,
+        collect=True,
+    )
 
     # 结束
     print("highly_variable_genes 完成（全细胞含0统计版）")
@@ -1540,12 +1653,39 @@ def highly_variable_genes_seurat(
 
         conn.unregister("_hvg_seurat_py")
 
-    # -------------------------------------------------
-    # 12. 清理临时表
-    # -------------------------------------------------
-    conn.execute("DROP TABLE IF EXISTS _gene_sum")
-    conn.execute("DROP TABLE IF EXISTS _hvg_obs_keep")
-    conn.execute("DROP TABLE IF EXISTS _hvg_var_keep")
+    # 12. 统一清理 SQL 临时表 / pandas 注册表
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_gene_sum", "_hvg_obs_keep", "_hvg_var_keep"],
+        unregister_tables=["_hvg_seurat_py"],
+        checkpoint=False,
+        collect=False,
+    )
+
+    # 如果 inplace=True，不需要返回 gene_df，就删除 Python 大对象
+    if inplace:
+        try:
+            del gene_df
+        except Exception:
+            pass
+        try:
+            del work
+        except Exception:
+            pass
+        try:
+            del rank_df
+        except Exception:
+            pass
+        try:
+            del write_df
+        except Exception:
+            pass
+        try:
+            del disp_stats
+        except Exception:
+            pass
+
+    gc.collect()
 
     print("highly_variable_genes_seurat 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
@@ -1802,8 +1942,14 @@ def scale(
 
     # 8. 清理临时表
     print("\n-> 清理临时表 ...")
-    conn.execute("DROP TABLE IF EXISTS _target_genes")
-    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+
+    # 清理内存
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_target_genes", "_gene_stat"],
+        checkpoint=True,
+        collect=True,
+    )
 
     print("\n==== scale_ultra_safe_update_by_id_chunk_direct_zero_aware 完成 ====")
     print("总耗时: {:.2f} 秒".format(
@@ -1968,7 +2114,13 @@ def scale_fast(
         WHERE v.atlas_gene_id = g.atlas_gene_id
     """)
 
-    conn.execute("DROP TABLE IF EXISTS _gene_stat")
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=["_gene_stat"],
+        checkpoint=True,
+        collect=True,
+    )
 
     print("\n==== scale_ultra zero-aware 完成 ====")
     print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
@@ -2048,6 +2200,14 @@ def sqrt_fast(
         SET {add_field} = {sqrt_expr}
         WHERE {select_data} IS NOT NULL
         """
+    )
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=[],
+        checkpoint=True,
+        collect=True,
     )
 
     # 4. 结束
@@ -2143,6 +2303,14 @@ def sqrt(
               AND {select_data} IS NOT NULL
             """
         )
+
+    # 内存清理
+    _cleanup_transform_after_step(
+        conn,
+        temp_tables=[],
+        checkpoint=True,
+        collect=True,
+    )
 
     # 5. 结束
     elapsed = (datetime.now() - start).total_seconds()

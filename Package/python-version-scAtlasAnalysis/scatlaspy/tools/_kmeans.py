@@ -24,21 +24,20 @@ class StreamingPCAMiniBatchKMeans:
         self.batch_size = batch_size
         self.fit_batches = fit_batches  # KMeans 训练使用多少个 minibatch
         self.buffer_batch_num = buffer_batch_num # multi-pass 时 ShuffleBuffer 的 batch 数
-        # self.kmeans = MiniBatchKMeans(
-        #     n_clusters=n_clusters,
-        #     batch_size=batch_size,
-        #     init="k-means++",
-        #     n_init="auto",
-        # )
-        # todo 修改
         self.kmeans = MiniBatchKMeans(
             n_clusters=n_clusters,
             batch_size=batch_size,
-            init="random",  # ✅ 修改：避免第一次 partial_fit 卡在 k-means++ 初始化
-            n_init=1,  # ✅ 修改：不要用 auto
-            random_state=42,  # ✅ 新增：保证可复现
-            reassignment_ratio=0,  # ✅ 新增：减少运行中重新分配中心带来的额外开销
+            init="k-means++",
+            n_init="auto",
         )
+        # self.kmeans = MiniBatchKMeans(
+        #     n_clusters=n_clusters,
+        #     batch_size=batch_size,
+        #     init="random",  # ✅ 修改：避免第一次 partial_fit 卡在 k-means++ 初始化
+        #     n_init=1,  # ✅ 修改：不要用 auto
+        #     random_state=42,  # ✅ 新增：保证可复现
+        #     reassignment_ratio=0,  # ✅ 新增：减少运行中重新分配中心带来的额外开销
+        # )
 
     # 写 obs_cluster
     def _write_clusters(self, atlas, cell_ids, labels, table_name):
@@ -237,16 +236,16 @@ class StreamingPCAMiniBatchKMeans:
         print(f"[KMeans] total predicted cells = {cell_offset:,}")
         print(f"[KMeans] total predict batches = {predict_batch_count}")
 
-        # todo 结果完整性检查
-        check_df = conn.execute(f"""
-        SELECT
-            (SELECT COUNT(*) FROM obs WHERE filter_cell_id IS NOT NULL) AS filtered_cell_n,
-            (SELECT COUNT(*) FROM {cluster_table}) AS cluster_n,
-            (SELECT COUNT(DISTINCT atlas_cell_id) FROM {cluster_table}) AS cluster_unique_n,
-            (SELECT COUNT(*) FROM obs WHERE {obs_col} IS NOT NULL) AS obs_labeled_n
-        """).fetchdf()
-
-        print(check_df)
+        # 结果完整性检查
+        # check_df = conn.execute(f"""
+        # SELECT
+        #     (SELECT COUNT(*) FROM obs WHERE filter_cell_id IS NOT NULL) AS filtered_cell_n,
+        #     (SELECT COUNT(*) FROM {cluster_table}) AS cluster_n,
+        #     (SELECT COUNT(DISTINCT atlas_cell_id) FROM {cluster_table}) AS cluster_unique_n,
+        #     (SELECT COUNT(*) FROM obs WHERE {obs_col} IS NOT NULL) AS obs_labeled_n
+        # """).fetchdf()
+        #
+        # print(check_df)
 
         # 保存 centers
         self._write_centers(atlas, table_name="kmeans_centers")

@@ -1,10 +1,13 @@
 from ..data import Atlas
+import concurrent.futures as futures
 import os
 import logging
 import h5py
 import pyarrow as pa
+import pyarrow.parquet as pq
 import time
 import gc
+import zlib
 import numpy as np
 import pandas as pd
 import scanpy as sc
@@ -16,7 +19,7 @@ logger = logging.getLogger('Atlas')
 
 
 ''' 方法1 ： 随机读取 , 多个大文件, 只支持 h5ad格式 '''
-def load_big_h5ad_list_to_duckdb_random_batch_pool(
+def load_h5ad_list_random(
     h5ad_paths: list[str],
     atlas,
     batch_size: int = 4096,
@@ -112,7 +115,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
 
     var_written = False
 
-    print("\n==== load_big_h5ad_list_to_duckdb_random_batch_pool ====")
+    print("\n==== load_h5ad_list_random ====")
     print(f"[INFO] 文件数量: {file_num:,}")
     print(f"[INFO] batch_size: {batch_size:,}")
     print(f"[INFO] pool_block_num: {pool_block_num:,}")
@@ -512,7 +515,7 @@ def load_big_h5ad_list_to_duckdb_random_batch_pool(
 
 
 ''' 方法2 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
-def load_big_h5ad_to_duckdb_random_batch_window(
+def load_h5ad_random(
     h5ad_path: str,
     atlas,
     batch_size: int = 4096,
@@ -535,6 +538,8 @@ def load_big_h5ad_to_duckdb_random_batch_window(
     - commit_every = shuffle_window_batches * 2
     - gc_every     = shuffle_window_batches * 4
     """
+
+    t_start= time.time()
 
     # =====================================================
     # ✅ 修改 2：内部自动派生 commit_every / gc_every
@@ -792,9 +797,668 @@ def load_big_h5ad_to_duckdb_random_batch_window(
 
     gc.collect()
 
+    t_end = time.time()
+    print( f"total time: {t_end-t_start:.2f} seconds ")
+
     print("✔ 全部数据成功导入 DuckDB（shuffle-window 随机导入）")
     print(f"  - cells: {global_cell_id:,}")
     print(f"  - nnz:   {global_data_id:,}")
+
+
+def load_h5ad_fast(
+    h5ad_path: str,
+    atlas,
+    batch_size: int = 4096,
+    shuffle_window_batches: int = 5,
+    store_type: str = "count",
+    staging_dir: str | None = None,
+    parquet_compression: str = "NONE",
+    parquet_workers: int = 2,
+    h5ad_read_workers: int = 2,
+    keep_staging: bool = False,
+):
+    """
+    大文件 shuffle-window 随机导入 DuckDB，X 使用 Parquet staging 加速。
+
+    保持 X_HyS_data 的业务列不变:
+        id, atlas_cell_id, atlas_gene_id, data
+
+    优化点:
+    1. obs/var 仍直接写 DuckDB。
+    2. X_HyS_indptr / X_HyS_data 先按 window 写入临时 Parquet parts。
+    3. 最后用 DuckDB read_parquet 一次性建表，减少逐 window INSERT 开销。
+    """
+
+    t_start=time.time()
+
+    if store_type not in {"count", "log"}:
+        raise ValueError(f"store_type 只能是 'count' 或 'log'，当前为: {store_type}")
+    if parquet_workers <= 0:
+        raise ValueError("parquet_workers 必须 > 0")
+    if h5ad_read_workers <= 0:
+        raise ValueError("h5ad_read_workers 必须 > 0")
+
+    conn = atlas.connect("r+")
+    atlas.connection = conn
+    conn.execute("PRAGMA threads=10")
+    conn.execute("PRAGMA preserve_insertion_order=false")
+
+    # X_HyS is staged outside DuckDB first, then loaded with DuckDB's
+    # parallel Parquet scanner. Keeping indptr/data in separate folders
+    # mirrors the final table layout and keeps each read_parquet call simple.
+    if staging_dir is None:
+        staging_dir = f"{atlas.file_path}.hys_parquet_staging"
+    staging_dir = os.path.abspath(staging_dir)
+    indptr_dir = os.path.join(staging_dir, "X_HyS_indptr")
+    data_dir = os.path.join(staging_dir, "X_HyS_data")
+
+    if os.path.exists(staging_dir):
+        import shutil
+
+        shutil.rmtree(staging_dir)
+    os.makedirs(indptr_dir, exist_ok=True)
+    os.makedirs(data_dir, exist_ok=True)
+    conn.execute(f"PRAGMA temp_directory='{staging_dir}'")
+
+    global_cell_id = 0
+    global_indptr_id = 0
+    global_indptr_offset = 0
+    global_data_id = 0
+    var_written = False
+
+    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+    n_cells = adata_backed.n_obs
+
+    # Optional fast path for gzip-compressed CSR h5ad files. If the file layout
+    # is not exactly supported, this returns None and the scanpy backed path is
+    # used without changing caller behavior.
+    x_reader = _ParallelH5adCSRReader.open_if_supported(
+        h5ad_path,
+        n_vars=adata_backed.n_vars,
+        workers=h5ad_read_workers,
+    )
+
+    source_store_type = _detect_X_store_type_from_backed(adata_backed, sample_n=1000)
+    source_var = adata_backed.var.copy()
+    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
+    print(f"[INFO] 目标存储类型 store_type = {store_type}")
+    if source_store_type == store_type:
+        print("[INFO] X 数据不需要转换，直接写入。")
+    else:
+        print(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
+
+    # Randomize at block granularity: each block is read as a contiguous cell
+    # range, then several blocks are merged and shuffled within a window.
+    block_starts = np.arange(0, n_cells, batch_size, dtype=np.int64)
+    np.random.shuffle(block_starts)
+
+    _create_obs_table_from_adata(conn, adata_backed[:1])
+    _create_var_table_from_adata(conn, adata_backed[:1])
+
+    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    print("[INFO] 使用 scanpy backed + shuffle-window + Parquet staging")
+    print(f"[INFO] batch_size = {batch_size:,}")
+    print(f"[INFO] shuffle_window_batches = {shuffle_window_batches:,}")
+    print(f"[INFO] batch block 数量 = {len(block_starts):,}")
+    print(f"[INFO] staging_dir = {staging_dir}")
+    print(f"[INFO] parquet_compression = {parquet_compression}")
+    print(f"[INFO] parquet_workers = {parquet_workers:,}")
+    print(f"[INFO] h5ad_read_workers = {h5ad_read_workers:,}")
+    if x_reader is not None:
+        print("[INFO] h5ad X 使用并行 raw gzip chunk reader")
+    elif h5ad_read_workers > 1:
+        print("[INFO] h5ad X 不满足并行 raw reader 条件，回退到 scanpy backed 读取")
+
+    window_adatas = []
+    window_batch_count = 0
+    window_counter = 0
+    parquet_part_counter = 0
+    total_batch_counter = 0
+    indptr_writer = None
+    data_writer = None
+    parquet_shards = (
+        [
+            _XHySParquetShardWriter(
+                indptr_dir=indptr_dir,
+                data_dir=data_dir,
+                part_id=part_id,
+                parquet_compression=parquet_compression,
+            )
+            for part_id in range(parquet_workers)
+        ]
+        if parquet_workers > 1
+        else None
+    )
+    parquet_futures = []
+
+    def read_h5ad_block(block_start: int, block_end: int):
+        if x_reader is None:
+            return adata_backed[block_start:block_end].to_memory()
+        X = x_reader.read_rows(block_start, block_end)
+        return AnnData(
+            X=X,
+            obs=adata_backed.obs.iloc[block_start:block_end].copy(),
+            var=source_var.copy(deep=False),
+        )
+
+    def close_parquet_writers() -> None:
+        nonlocal indptr_writer, data_writer
+        if indptr_writer is not None:
+            indptr_writer.close()
+            indptr_writer = None
+        if data_writer is not None:
+            data_writer.close()
+            data_writer = None
+
+    def append_parquet_tables(indptr_table, data_table) -> None:
+        nonlocal indptr_writer, data_writer, parquet_part_counter
+        # In parallel mode each worker owns one Parquet shard. Windows are
+        # distributed round-robin, so every shard appends row groups in order
+        # while different shards write concurrently.
+        if parquet_shards is not None:
+            shard = parquet_shards[parquet_part_counter % len(parquet_shards)]
+            parquet_part_counter += 1
+            parquet_futures.append(shard.submit(indptr_table, data_table))
+            return
+
+        # Single-writer mode appends all windows as row groups in one Parquet
+        # shard, avoiding a large in-memory staging buffer.
+        if indptr_writer is None:
+            indptr_path = os.path.join(indptr_dir, f"part_{parquet_part_counter:06d}.parquet")
+            data_path = os.path.join(data_dir, f"part_{parquet_part_counter:06d}.parquet")
+            indptr_writer = pq.ParquetWriter(
+                indptr_path,
+                indptr_table.schema,
+                compression=parquet_compression,
+            )
+            data_writer = pq.ParquetWriter(
+                data_path,
+                data_table.schema,
+                compression=parquet_compression,
+            )
+            parquet_part_counter += 1
+
+        indptr_writer.write_table(indptr_table)
+        data_writer.write_table(data_table)
+
+    conn.execute("BEGIN TRANSACTION")
+
+    try:
+        for block_i, block_start in enumerate(
+            tqdm(block_starts, desc="Shuffle-window Parquet staging")
+        ):
+            block_end = min(int(block_start) + batch_size, n_cells)
+
+            adata = read_h5ad_block(int(block_start), block_end)
+
+            block_nnz = adata.X.nnz if sparse.issparse(adata.X) else np.count_nonzero(adata.X)
+            window_adatas.append(adata)
+            window_batch_count += 1
+
+            if (block_i + 1) % 20 == 0 or block_i == 0:
+                print(
+                    f"\n[read block {block_i}] "
+                    f"cells={adata.n_obs:,}, nnz={block_nnz:,}, "
+                    f"window_batches={window_batch_count}/{shuffle_window_batches}"
+                )
+
+            if window_batch_count >= shuffle_window_batches:
+                # Build one shuffled business window, append obs/var to DuckDB,
+                # and hand off X_HyS Arrow tables to the Parquet staging layer.
+                (
+                    global_cell_id,
+                    global_indptr_id,
+                    global_indptr_offset,
+                    global_data_id,
+                    var_written,
+                    window_cells,
+                    window_nnz,
+                    indptr_table,
+                    data_table,
+                ) = _build_shuffle_window_for_parquet_staging(
+                    window_adatas=window_adatas,
+                    conn=conn,
+                    global_cell_id=global_cell_id,
+                    global_indptr_id=global_indptr_id,
+                    global_indptr_offset=global_indptr_offset,
+                    global_data_id=global_data_id,
+                    var_written=var_written,
+                    source_store_type=source_store_type,
+                    target_store_type=store_type,
+                )
+                append_parquet_tables(indptr_table, data_table)
+                window_counter += 1
+                total_batch_counter += window_batch_count
+
+                print(
+                    f"\n[stage window {window_counter}] "
+                    f"batches={window_batch_count}, cells={window_cells:,}, "
+                    f"nnz={window_nnz:,}, "
+                    f"total_cells={global_cell_id:,}, total_nnz={global_data_id:,}"
+                )
+
+                for x in window_adatas:
+                    del x
+                window_adatas.clear()
+                window_batch_count = 0
+
+                if total_batch_counter % 10 == 0:
+                    gc.collect()
+
+        if window_batch_count > 0:
+            # Flush the tail window when the number of blocks is not an exact
+            # multiple of shuffle_window_batches.
+            (
+                global_cell_id,
+                global_indptr_id,
+                global_indptr_offset,
+                global_data_id,
+                var_written,
+                window_cells,
+                window_nnz,
+                indptr_table,
+                data_table,
+            ) = _build_shuffle_window_for_parquet_staging(
+                window_adatas=window_adatas,
+                conn=conn,
+                global_cell_id=global_cell_id,
+                global_indptr_id=global_indptr_id,
+                global_indptr_offset=global_indptr_offset,
+                global_data_id=global_data_id,
+                var_written=var_written,
+                source_store_type=source_store_type,
+                target_store_type=store_type,
+            )
+            append_parquet_tables(indptr_table, data_table)
+            window_counter += 1
+
+            print(
+                f"\n[stage final window {window_counter}] "
+                f"batches={window_batch_count}, cells={window_cells:,}, "
+                f"nnz={window_nnz:,}, "
+                f"total_cells={global_cell_id:,}, total_nnz={global_data_id:,}"
+            )
+
+            for x in window_adatas:
+                del x
+            window_adatas.clear()
+            window_batch_count = 0
+            gc.collect()
+
+        conn.execute("COMMIT")
+        close_parquet_writers()
+        if parquet_shards is not None:
+            for parquet_future in futures.as_completed(parquet_futures):
+                parquet_future.result()
+            for shard in parquet_shards:
+                shard.close()
+
+        # Materialize staged Parquet parts into DuckDB tables. This lets DuckDB
+        # use its native Parquet scanner instead of many incremental INSERTs.
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE X_HyS_indptr AS
+            SELECT * FROM read_parquet('{indptr_dir}/*.parquet')
+        """)
+        conn.execute(f"""
+            CREATE OR REPLACE TABLE X_HyS_data AS
+            SELECT * FROM read_parquet('{data_dir}/*.parquet')
+        """)
+
+    except Exception:
+        close_parquet_writers()
+        if parquet_shards is not None:
+            for shard in parquet_shards:
+                shard.close(cancel_futures=True)
+        conn.execute("ROLLBACK")
+        try:
+            for x in window_adatas:
+                del x
+            window_adatas.clear()
+        except Exception:
+            pass
+        try:
+            adata_backed.file.close()
+        except Exception:
+            pass
+        if x_reader is not None:
+            x_reader.close()
+        gc.collect()
+        raise
+
+    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+    _add_varm_from_h5ad(h5ad_path, atlas)
+
+    try:
+        conn.execute("CHECKPOINT")
+    except Exception:
+        pass
+
+    try:
+        adata_backed.file.close()
+    except Exception:
+        pass
+    if x_reader is not None:
+        x_reader.close()
+
+    if not keep_staging:
+        import shutil
+
+        shutil.rmtree(staging_dir, ignore_errors=True)
+
+    gc.collect()
+
+    t_end = time.time()
+    print( f"total time: {t_end-t_start:.2f} seconds ")
+
+    print("✔ 全部数据成功导入 DuckDB（shuffle-window + Parquet staging）")
+    print(f"  - cells: {global_cell_id:,}")
+    print(f"  - nnz:   {global_data_id:,}")
+
+
+class _XHySParquetShardWriter:
+    """Own one pair of Parquet files and append windows as row groups."""
+
+    def __init__(
+        self,
+        *,
+        indptr_dir: str,
+        data_dir: str,
+        part_id: int,
+        parquet_compression: str,
+    ):
+        self._indptr_path = os.path.join(indptr_dir, f"part_{part_id:06d}.parquet")
+        self._data_path = os.path.join(data_dir, f"part_{part_id:06d}.parquet")
+        self._parquet_compression = parquet_compression
+        self._indptr_writer = None
+        self._data_writer = None
+        self._pool = futures.ThreadPoolExecutor(max_workers=1)
+
+    def submit(self, indptr_table, data_table):
+        return self._pool.submit(self._write, indptr_table, data_table)
+
+    def _write(self, indptr_table, data_table):
+        if self._indptr_writer is None:
+            self._indptr_writer = pq.ParquetWriter(
+                self._indptr_path,
+                indptr_table.schema,
+                compression=self._parquet_compression,
+            )
+            self._data_writer = pq.ParquetWriter(
+                self._data_path,
+                data_table.schema,
+                compression=self._parquet_compression,
+            )
+
+        self._indptr_writer.write_table(indptr_table)
+        self._data_writer.write_table(data_table)
+        return data_table.num_rows
+
+    def close(self, *, cancel_futures: bool = False) -> None:
+        self._pool.shutdown(wait=True, cancel_futures=cancel_futures)
+        if self._indptr_writer is not None:
+            self._indptr_writer.close()
+            self._indptr_writer = None
+        if self._data_writer is not None:
+            self._data_writer.close()
+            self._data_writer = None
+
+
+class _ParallelH5adCSRReader:
+    """Read gzip-compressed CSR X blocks by decompressing HDF5 chunks in parallel."""
+
+    def __init__(self, h5ad_path: str, n_vars: int, workers: int):
+        self._file = h5py.File(h5ad_path, "r")
+        self._x = self._file["X"]
+        self._data = self._x["data"]
+        self._indices = self._x["indices"]
+        self._indptr = self._x["indptr"]
+        self._n_vars = n_vars
+        self._pool = futures.ThreadPoolExecutor(max_workers=workers)
+
+    @classmethod
+    def open_if_supported(cls, h5ad_path: str, n_vars: int, workers: int):
+        if workers <= 1:
+            return None
+        try:
+            with h5py.File(h5ad_path, "r") as f:
+                # This fast path is intentionally narrow: AnnData stores sparse
+                # X as a CSR group with data/indices/indptr datasets. Other
+                # encodings keep using scanpy's backed reader.
+                if "X" not in f or not isinstance(f["X"], h5py.Group):
+                    return None
+                x = f["X"]
+                if x.attrs.get("encoding-type") not in {b"csr_matrix", "csr_matrix"}:
+                    return None
+                for name in ("data", "indices", "indptr"):
+                    if name not in x:
+                        return None
+                data = x["data"]
+                indices = x["indices"]
+                # read_direct_chunk returns raw compressed bytes only for
+                # chunked datasets. We currently optimize the common Tahoe case:
+                # 1-D gzip chunks for both CSR data and indices.
+                if not cls._dataset_supported(data) or not cls._dataset_supported(indices):
+                    return None
+        except Exception:
+            return None
+        return cls(h5ad_path, n_vars=n_vars, workers=workers)
+
+    @staticmethod
+    def _dataset_supported(ds) -> bool:
+        return (
+            ds.ndim == 1
+            and ds.chunks is not None
+            and len(ds.chunks) == 1
+            and ds.compression == "gzip"
+        )
+
+    def close(self) -> None:
+        self._pool.shutdown(wait=True)
+        self._file.close()
+
+    def read_rows(self, row_start: int, row_stop: int):
+        # Convert the requested cell row range into a contiguous nnz range in
+        # the CSR data/indices arrays. The returned indptr is rebased to zero
+        # so scipy can construct a standalone CSR matrix for this block.
+        indptr_abs = self._indptr[row_start : row_stop + 1].astype(np.int64, copy=False)
+        nnz_start = int(indptr_abs[0])
+        nnz_stop = int(indptr_abs[-1])
+        indptr = indptr_abs - nnz_start
+
+        data = self._read_1d_range(self._data, nnz_start, nnz_stop)
+        indices = self._read_1d_range(self._indices, nnz_start, nnz_stop)
+        return sparse.csr_matrix(
+            (data, indices, indptr),
+            shape=(row_stop - row_start, self._n_vars),
+        )
+
+    def _read_1d_range(self, ds, start: int, stop: int):
+        if stop <= start:
+            return np.empty(0, dtype=ds.dtype)
+
+        chunk_size = int(ds.chunks[0])
+        first_chunk = start // chunk_size
+        last_chunk = (stop - 1) // chunk_size
+        jobs = []
+
+        for chunk_id in range(first_chunk, last_chunk + 1):
+            chunk_start = chunk_id * chunk_size
+            chunk_stop = min(chunk_start + chunk_size, ds.shape[0])
+            raw_offset = (chunk_start,)
+
+            # HDF5 gzip chunks are independent compressed byte ranges. We read
+            # each full compressed chunk, then slice the decompressed array to
+            # the requested nnz interval; only the first/last chunks are partial.
+            filter_mask, raw_chunk = ds.id.read_direct_chunk(raw_offset)
+            if filter_mask != 0:
+                raise RuntimeError(
+                    f"Unsupported HDF5 filter mask {filter_mask} for {ds.name}"
+                )
+            jobs.append(
+                self._pool.submit(
+                    _decompress_h5ad_1d_chunk_slice,
+                    raw_chunk,
+                    ds.dtype,
+                    chunk_size,
+                    chunk_stop - chunk_start,
+                    max(start, chunk_start) - chunk_start,
+                    min(stop, chunk_stop) - chunk_start,
+                )
+            )
+
+        if len(jobs) == 1:
+            return jobs[0].result()
+        return np.concatenate([job.result() for job in jobs])
+
+
+def _decompress_h5ad_1d_chunk_slice(
+    raw_chunk: bytes,
+    dtype,
+    chunk_size: int,
+    valid_items: int,
+    slice_start: int,
+    slice_stop: int,
+):
+    # zlib.decompress releases the GIL, so ThreadPoolExecutor can parallelize
+    # gzip chunk decompression without copying through h5py's filter pipeline.
+    array = np.frombuffer(zlib.decompress(raw_chunk), dtype=dtype)
+    if valid_items != chunk_size:
+        array = array[:valid_items]
+    return array[slice_start:slice_stop].copy()
+
+
+def _build_shuffle_window_for_parquet_staging(
+    window_adatas,
+    conn,
+    global_cell_id: int,
+    global_indptr_id: int,
+    global_indptr_offset: int,
+    global_data_id: int,
+    var_written: bool,
+    source_store_type: str,
+    target_store_type: str,
+):
+    adata_window = sc.concat(
+        window_adatas,
+        axis=0,
+        join="outer",
+        merge="first",
+        index_unique=None,
+    )
+
+    if adata_window.n_obs > 1:
+        perm = np.random.permutation(adata_window.n_obs)
+        adata_window = adata_window[perm].copy()
+
+    window_cells = adata_window.n_obs
+    window_nnz = adata_window.X.nnz if sparse.issparse(adata_window.X) else np.count_nonzero(adata_window.X)
+
+    global_cell_id = _append_obs_rows(
+        adata_window,
+        conn,
+        start_cell_id=global_cell_id,
+    )
+
+    if not var_written:
+        _append_var(adata_window, conn)
+        var_written = True
+
+    adata_window = _convert_X_store_type_inplace(
+        adata_window,
+        source_store_type=source_store_type,
+        target_store_type=target_store_type,
+    )
+
+    (
+        indptr_table,
+        data_table,
+        global_indptr_id,
+        global_indptr_offset,
+        global_data_id,
+    ) = _build_X_HyS_arrow_tables(
+        adata_window,
+        base_cell_id=global_cell_id - adata_window.n_obs,
+        global_indptr_id=global_indptr_id,
+        global_indptr_offset=global_indptr_offset,
+        global_data_id=global_data_id,
+    )
+
+    del adata_window
+
+    return (
+        global_cell_id,
+        global_indptr_id,
+        global_indptr_offset,
+        global_data_id,
+        var_written,
+        window_cells,
+        window_nnz,
+        indptr_table,
+        data_table,
+    )
+
+
+def _build_X_HyS_arrow_tables(
+    adata,
+    *,
+    base_cell_id: int,
+    global_indptr_id: int,
+    global_indptr_offset: int,
+    global_data_id: int,
+):
+    X = adata.X
+
+    if not sparse.issparse(X):
+        X = sparse.csr_matrix(X)
+    elif not sparse.isspmatrix_csr(X):
+        X = X.tocsr()
+
+    indptr = X.indptr.astype(np.int64, copy=False)
+    indices = X.indices.astype(np.uint16, copy=False)
+    data = X.data.astype(np.float32, copy=False)
+    row_nnz = np.diff(indptr)
+    adj_indptr = indptr[1:] + np.int64(global_indptr_offset)
+
+    indptr_table = pa.table({
+        "atlas_cell_id": pa.array(
+            np.arange(
+                global_indptr_id,
+                global_indptr_id + len(adj_indptr),
+                dtype=np.int32,
+            ),
+            type=pa.int32(),
+        ),
+        "indptr": pa.array(adj_indptr, type=pa.int64()),
+    })
+
+    nnz = len(data)
+    cell_index = np.repeat(
+        np.arange(
+            base_cell_id,
+            base_cell_id + adata.n_obs,
+            dtype=np.int32,
+        ),
+        row_nnz,
+    )
+
+    data_table = pa.table({
+        "id": pa.array(
+            np.arange(global_data_id, global_data_id + nnz, dtype=np.int64),
+            type=pa.int64(),
+        ),
+        "atlas_cell_id": pa.array(cell_index, type=pa.int32()),
+        "atlas_gene_id": pa.array(indices, type=pa.uint16()),
+        "data": pa.array(data, type=pa.float32()),
+    })
+
+    return (
+        indptr_table,
+        data_table,
+        global_indptr_id + len(adj_indptr),
+        global_indptr_offset + nnz,
+        global_data_id + nnz,
+    )
 
 def _write_shuffle_window_to_duckdb(
     window_adatas,
@@ -1009,7 +1673,7 @@ def _convert_X_store_type_inplace(
 
 
 ''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
-def load_big_h5ad_to_duckdb(
+def load_h5ad_order(
     h5ad_path: str,
     atlas,
     batch_size: int = 4096,
@@ -1280,7 +1944,7 @@ def _create_var_table_from_adata(conn, adata):
     # 系统保留字段：由 scAtlasPy 统一创建
     reserved_cols = {"atlas_gene_id", "atlas_gene_name"}
 
-    # ✅ 强制使用你要求的类型
+    # 强制使用你要求的类型
     cols = [
         "atlas_gene_id USMALLINT",
         "atlas_gene_name VARCHAR",
@@ -1594,7 +2258,7 @@ def _add_varm_from_h5ad(h5ad_path: str, atlas):
 
 
 ''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
-def load_small_to_duckdb( file_path , atlas:Atlas):
+def load_small_data( file_path , atlas:Atlas):
 
     print("小文件读取 , 开始导入数据...")
     adata = read_smart(file_path)
@@ -1903,7 +2567,7 @@ def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
 
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
-def clean_genes_in_database(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+def clean_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """
     在数据库层面清洗基因名，直接操作数据库表
     参数:

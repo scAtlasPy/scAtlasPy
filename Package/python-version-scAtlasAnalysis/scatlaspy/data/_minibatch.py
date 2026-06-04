@@ -5,12 +5,12 @@ import queue
 import time
 import scipy.sparse as sp
 
-
 ''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
+
+
 class ShuffleBuffer:
 
-    # 初始化 缓冲区
-    def __init__(self, gene_num, batch_size, buffer_batch_num ):
+    def __init__(self, gene_num, batch_size, buffer_batch_num):
 
         self.batch_size = batch_size
         self.gene_num = gene_num
@@ -50,7 +50,6 @@ class ShuffleBuffer:
 
         # 如果 buffer 已满
         if self.write_ptr == self.buffer_cells:
-
             # 随机打乱
             perm = np.random.permutation(self.buffer_cells)
             self.X[:] = self.X[perm]
@@ -61,8 +60,8 @@ class ShuffleBuffer:
 
     # 输出一个 batch 
     def sample_batch(self):
-        
-        if not self.shuffled: # 如果还没凑够 buffer
+
+        if not self.shuffled:  # 如果还没凑够 buffer
             return None
 
         start = self.output_batch_id * self.batch_size
@@ -74,7 +73,6 @@ class ShuffleBuffer:
 
         # 如果已经输出完所有 batch
         if self.output_batch_id == self.buffer_batch_num:
-
             # reset buffer 状态
             self.write_ptr = 0
             self.output_batch_id = 0
@@ -110,53 +108,55 @@ class ShuffleBuffer:
         return batches
 
 
-
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
+
+
 class MinibatchFetchMultiThreads:
 
-    """ 初始化 """
     def __init__(self, file_path,
-                 batch_size = 2048,
-                 X_type = "CSR" ,
-                 pass_mode = "multi-pass" ,
-                 buffer_batch_num = 5  ,
-                 max_batches = None, #最多输出多少个 batch
+                 batch_size=2048,
+                 X_type="CSR",
+                 pass_mode="multi-pass",
+                 buffer_batch_num=5,
+                 max_batches=None,  # 最多输出多少个 batch
                  ):
 
-        self.X_type = X_type # 输出的X表格式 "CSR" "dense"(宽表)
-        self.file_path = file_path    # sasql 文件的绝对路径
+        self.X_type = X_type  # 输出的X表格式 "CSR" "dense"(宽表)
+        self.file_path = file_path  # sasql 文件的绝对路径
         self.batch_size = batch_size
-        self.producer_num = 10 # 线程数量
-        self.gene_num = self._get_gene_num() # 获取基因数量
+        self.producer_num = 10  # 线程数量
+        self.gene_num = self._get_gene_num()  # 获取基因数量
         self.zero_scale_transform = self._get_zero_scale_transform()
         # 获取 var 表的 zero_scale_transform ，就是每个基因的 ( 0 - g.mean) / g.std
 
         # 本轮输出多少个 batch
         self.max_batches = max_batches
-        self.stop_event = threading.Event() # 提前停止信号
+        self.stop_event = threading.Event()  # 提前停止信号
 
-        self.out_queue = queue.Queue(maxsize=20) # 输出队列
+        self.out_queue = queue.Queue(maxsize=20)  # 输出队列
 
-        self.fetch_size = 1_0000_0000 # fetch_record_batch 流式读取的size
-        self.pass_mode = pass_mode    # single-pass 单次遍历 ，multi-pass 多次遍历
+        self.fetch_size = 1_0000_0000  # fetch_record_batch 流式读取的size
+        self.pass_mode = pass_mode  # single-pass 单次遍历 ，multi-pass 多次遍历
         self.buffer_batch_num = buffer_batch_num  # 多次遍历 ，缓冲区的容量，n: 表示batch_size * n
 
-        self.indptr_queue = self._prepare_indptr() # 获取 indptr 的 rb 读取数据流
+        self.indptr_queue = self._prepare_indptr()  # 获取 indptr 的 rb 读取数据流
 
-        self.batch_nnz = self._prepare_batch_nnz_sql() # 获取batch_nnz (每批cell的非零值数量)
+        self.batch_cell_counts, self.batch_nnz = self._prepare_batch_info_sql()  # 获取batch_nnz (每批cell的非零值数量)
         self.batch_idx = 0  # 批次的编号
-        self.batch_num = len(self.batch_nnz) # 批次数量
-        self.queue = queue.Queue(maxsize=self.producer_num * 5) #  数据缓存队列 ：Queue（核心）
+        self.batch_num = len(self.batch_nnz)  # 批次数量
+        self._check_batch_info()  # 检查 batch 是否覆盖所有 cell
+
+        self.queue = queue.Queue(maxsize=self.producer_num * 5)  # 数据缓存队列 ：Queue（核心）
 
         # Ring Buffer ：切分出batch的环形缓冲池
-        self.pool_size = self.fetch_size * 10 # 容量
+        self.pool_size = self.fetch_size * 10  # 容量
         self.pool_gene_id = np.empty(self.pool_size, dtype=np.uint16)
         self.pool_data = np.empty(self.pool_size, dtype=np.float32)
 
-        self.read_ptr = 0    # 读指针
-        self.write_ptr = 0   # 写指针
-        self.used_size = 0   # 当前 Ring Buffer 里的 nnz 数据
-        self.total_batches = 0 # 计数器
+        self.read_ptr = 0  # 读指针
+        self.write_ptr = 0  # 写指针
+        self.used_size = 0  # 当前 Ring Buffer 里的 nnz 数据
+        self.total_batches = 0  # 计数器
 
         # 输出速度统计
         self.output_start_time = None
@@ -164,12 +164,11 @@ class MinibatchFetchMultiThreads:
         self.output_cells = 0
         self.speed_log_every = 5  # 每输出多少个 batch 打印一次速度；想每个batch都打印就改成1
 
-
-    """ 获取基因( 0 - g.mean) / g.std """
     def _get_zero_scale_transform(self):
         """
-        获取每个基因的 zero_scale_transform
-        返回：np.ndarray（index == filter_gene_id）
+            获取基因( 0 - g.mean) / g.std
+            获取每个基因的 zero_scale_transform
+            返回：np.ndarray（index == filter_gene_id）
         """
         conn = duckdb.connect(self.file_path)
 
@@ -183,9 +182,9 @@ class MinibatchFetchMultiThreads:
         conn.close()
         return arr.astype("float32")
 
-    """ 获取基因数量 """
     def _get_gene_num(self):
-        
+        """ 获取基因数量 """
+
         conn = duckdb.connect(self.file_path)
         gene_num = conn.execute(
             "SELECT COUNT(*) FROM var WHERE filter_gene_id IS NOT NULL"
@@ -194,9 +193,9 @@ class MinibatchFetchMultiThreads:
         conn.close()
         return gene_num
 
-    """ 获取 indptr 的 rb 读取数据流 """
     def _prepare_indptr(self):
-        
+        """ 获取 indptr 的 rb 读取数据流 """
+
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
 
@@ -215,32 +214,84 @@ class MinibatchFetchMultiThreads:
         conn.close()
         return q
 
-    """ 获取 batch_nnz : SQL 计算 """
-    def _prepare_batch_nnz_sql(self):
+    def _prepare_batch_info_sql(self):
+        """
+        获取每个 batch 的:
+        1. n_cells: 当前 batch 细胞数，最后一个 batch 可以小于 batch_size
+        2. batch_nnz: 当前 batch 的 nnz 数
+
+        支持最后 partial batch。
+        """
 
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
 
         query = f"""
         WITH t AS (
-            SELECT indptr, ROW_NUMBER() OVER (ORDER BY filter_cell_id) AS rn
+            SELECT
+                filter_cell_id,
+                indptr,
+                ROW_NUMBER() OVER (ORDER BY filter_cell_id) - 1 AS rn
             FROM X_HyS_indptr_filtered
         ),
-        picked AS (
-            SELECT indptr
+        b AS (
+            SELECT
+                rn // {self.batch_size} AS batch_id,
+                COUNT(*) AS n_cells,
+                MAX(indptr) AS end_indptr
             FROM t
-            WHERE rn % {self.batch_size} = 0
+            GROUP BY batch_id
         )
-        SELECT indptr - LAG(indptr, 1, 0) OVER (ORDER BY indptr)
-        FROM picked
+        SELECT
+            batch_id,
+            CAST(n_cells AS INTEGER) AS n_cells,
+            CAST(
+                end_indptr - LAG(end_indptr, 1, 0) OVER (ORDER BY batch_id)
+                AS BIGINT
+            ) AS batch_nnz
+        FROM b
+        ORDER BY batch_id
         """
 
         rows = conn.execute(query).fetchall()
         conn.close()
-        return [int(r[0]) for r in rows]
 
-    """ producer: 多线程 切分data ，写入queue中  """
+        batch_cell_counts = [int(r[1]) for r in rows]
+        batch_nnz = [int(r[2]) for r in rows]
+
+        return batch_cell_counts, batch_nnz
+
+    def _check_batch_info(self):
+        """
+        检查 batch 信息是否覆盖所有 filtered cells。
+        """
+
+        conn = duckdb.connect(self.file_path)
+        conn.execute("PRAGMA enable_progress_bar=false")
+
+        total_cells = conn.execute("""
+            SELECT COUNT(*)
+            FROM X_HyS_indptr_filtered
+        """).fetchone()[0]
+
+        conn.close()
+
+        total_from_batches = sum(self.batch_cell_counts)
+
+        print("[BatchInfo] total cells from indptr:", total_cells)
+        print("[BatchInfo] total cells from batches:", total_from_batches)
+        print("[BatchInfo] batch_num:", self.batch_num)
+        print("[BatchInfo] last batch cells:", self.batch_cell_counts[-1])
+        print("[BatchInfo] last batch nnz:", self.batch_nnz[-1])
+
+        if total_from_batches != total_cells:
+            raise RuntimeError(
+                f"[BatchInfo] batch 信息丢细胞: "
+                f"batches={total_from_batches}, indptr={total_cells}"
+            )
+
     def _producer(self, tid):
+        """ producer: 多线程 切分data ，写入queue中  """
 
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
@@ -278,14 +329,11 @@ class MinibatchFetchMultiThreads:
                     continue
 
                 # 用真实 rowid 计算 seq_id
-                seq_start = int(rowids[0] // self.fetch_size) # 当前 rb 第一行 rowid 属于哪个 block
+                seq_start = int(rowids[0] // self.fetch_size)  # 当前 rb 第一行 rowid 属于哪个 block
                 seq_end = int(rowids[-1] // self.fetch_size)  # 当前 rb 最后一行 rowid 属于哪个 block
 
-                # =====================================================
-                # 安全检查
-                # 一个 rb 理论上只能属于同一个 seq block
+                # 安全检查: 一个 rb 理论上只能属于同一个 seq block
                 # 如果跨 block，说明 rows_per_batch / tid 分片不匹配
-                # =====================================================
                 if seq_start != seq_end:
                     raise RuntimeError(
                         f"[Producer-{tid}] 一个 record batch 跨越多个 seq block: "
@@ -315,20 +363,15 @@ class MinibatchFetchMultiThreads:
             except queue.Full:
                 pass
 
-
-    ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''
     def _consumer(self):
+        ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''
 
         reorder_buffer = {}  # 乱序数据 缓存区 : reorder_buffer[seq_id] = (gene_id, data) ； 大小是动态的
 
         expected_seq = 0  # 下一个想要的的 batch 序号
         global_indptr_offset = 0  # 用于修正 indptr 的累积偏移量
 
-        prepared_batches = 0 # 已经读出来、构建成 dense、并放进 ShuffleBuffer 的原始 batch 数。
-
-        # 用于宽表生成
-        template = np.empty((self.batch_size, self.gene_num), dtype=np.float32)
-        X_dense = np.zeros_like(template, dtype=np.float32)
+        prepared_batches = 0  # 已经读出来、构建成 dense、并放进 ShuffleBuffer 的原始 batch 数。
 
         # 构建宽表的输出缓冲区
         shuffle_buffer = ShuffleBuffer(
@@ -352,6 +395,8 @@ class MinibatchFetchMultiThreads:
                 break
 
             need = self.batch_nnz[self.batch_idx]  # 当前 batch 所需 nnz
+            current_batch_cells = self.batch_cell_counts[
+                self.batch_idx]  # 当前 batch 的真实 cell 数,最后一个 batch 可能小于 self.batch_size
 
             # RingBuffer 中的数据不够， 填充 RingBuffer，直到够一个 batch
             while self.used_size < need:
@@ -436,9 +481,18 @@ class MinibatchFetchMultiThreads:
                 indptr_now = np.concatenate(([0], indptr_now - global_indptr_offset))
                 global_indptr_offset = last_val
 
+                # 检查 indptr 行数是否等于当前 batch cell 数
+                if len(indptr_now) != current_batch_cells + 1:
+                    raise RuntimeError(
+                        f"[Consumer] indptr 长度不匹配: "
+                        f"len(indptr_now)={len(indptr_now)}, "
+                        f"current_batch_cells={current_batch_cells}, "
+                        f"batch_idx={self.batch_idx}"
+                    )
+
                 if self.X_type == "CSR":
-                    # 输出 ： 1.构建 CSR 格式
-                    X = sp.csr_matrix((self.batch_size, self.gene_num), dtype=np.float32)
+                    # 输出类型1 ：CSR 格式
+                    X = sp.csr_matrix((current_batch_cells, self.gene_num), dtype=np.float32)
 
                     X.data = vals.copy()
                     X.indices = cols.copy()
@@ -447,8 +501,9 @@ class MinibatchFetchMultiThreads:
                     self._put_output(X)
 
                 if self.X_type == "dense":
-                    # 输出 ：2 .构建 宽表
+                    # 输出类型2 ：dense 格式
 
+                    X_dense = np.empty((current_batch_cells, self.gene_num), dtype=np.float32)
                     X_dense[:] = self.zero_scale_transform  # 按 gene_id 填充，self.zero_scale_transform
                     #  zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
                     # X_dense =
@@ -457,9 +512,9 @@ class MinibatchFetchMultiThreads:
                     #  [-0.5, 0.2, -1.1, ...],
                     #  ...
                     # ]
-                    rows = np.repeat(  # [0,0, 1, 2,2,2] 👉 每个非零元素对应的“行号”
-                        np.arange(self.batch_size),  # [0,1,2,...] 👉 表示每个 cell（行）
-                        np.diff(indptr_now)  # [2, 1, 3, ...]  👉 每个 cell 有多少个非零值（nnz）
+                    rows = np.repeat(  # [0,0, 1, 2,2,2] 每个非零元素对应的“行号”
+                        np.arange(current_batch_cells),  # [0,1,2,...]  表示每个 cell（行）
+                        np.diff(indptr_now)  # [2, 1, 3, ...]  每个 cell 有多少个非零值（nnz）
                     )
                     X_dense[rows, cols] = vals
                     # 将非零值写入对应的 行列
@@ -486,15 +541,14 @@ class MinibatchFetchMultiThreads:
                             if X_dense_random is None:
                                 break
 
-                            ok =  self._put_output (
-                                X_dense_random.copy(), # 你每轮都会复用同一块 buffer， 不 copy 会被覆盖
+                            ok = self._put_output(
+                                X_dense_random.copy(),  # 你每轮都会复用同一块 buffer， 不 copy 会被覆盖
                             )
 
                             if not ok or self._output_limit_reached():
                                 break
 
-                        # 如果已经准备够 max_batches，
-                        # 后面不再继续读新 batch，交给尾部 flush 输出剩余。
+                        # 如果已经准备够 max_batches，后面不再继续读新 batch，交给尾部 flush 输出剩余。
                         if self._read_limit_reached(prepared_batches):
                             self.stop_event.set()
 
@@ -521,12 +575,11 @@ class MinibatchFetchMultiThreads:
             f"output_batches={self.total_batches}"
         )
 
-        # 🆕 通知 run() 结束
+        # 通知 run() 结束
         self.out_queue.put(None)
 
-
-    ''' 多线程 运行函数  '''
     def run(self):
+        ''' 外部函数入口  '''
 
         # producers 多线程
         producers = []
@@ -551,13 +604,12 @@ class MinibatchFetchMultiThreads:
 
         consumer.join()
 
-
     # 辅助函数 1：是否已经达到输出上限
     def _output_limit_reached(self):
 
         return (
-            self.max_batches is not None
-            and self.total_batches >= self.max_batches
+                self.max_batches is not None
+                and self.total_batches >= self.max_batches
         )
 
     # 辅助函数 2：是否应该停止继续读取新 batch
@@ -575,7 +627,7 @@ class MinibatchFetchMultiThreads:
         return self.total_batches >= self.max_batches
 
     # 辅助函数 3：统一输出 batch
-    def _put_output(self, X_batch ):
+    def _put_output(self, X_batch):
 
         if self._output_limit_reached():
             self.stop_event.set()

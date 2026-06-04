@@ -4,6 +4,40 @@ from ..data import Atlas
 from typing import Optional
 import logging
 import math
+import gc
+
+def _cleanup_qc_after_step(
+        conn,
+        temp_tables=None,
+        checkpoint: bool = False,
+        collect: bool = True,
+):
+    """
+    QC / 统计函数内部轻量清理：
+    - 删除临时表
+    - 可选 CHECKPOINT
+    - gc.collect()
+    """
+    if temp_tables is None:
+        temp_tables = []
+
+    for t in temp_tables:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        except Exception:
+            pass
+
+    if checkpoint:
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception:
+            pass
+
+    if collect:
+        try:
+            gc.collect()
+        except Exception:
+            pass
 
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
@@ -93,6 +127,14 @@ def filter_cells_fast(atlas: 'Atlas',
     print(f"保留细胞 = {keep_cells:,}")
     print(f"过滤细胞 = {removed:,} ({removed/total_cells*100:.2f}%)")
     print("总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+    # 内存清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["keep_cells"],
+        checkpoint=False,
+        collect=True,
+    )
 
 
 ''' 过滤细胞 方法2 ：大数据安全版 '''
@@ -232,6 +274,14 @@ def filter_cells(
     print(f"过滤细胞 = {removed:,} ({removed / total_cells * 100:.2f}%)")
     print("总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
+    # 内存清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["keep_cells_chunk"],
+        checkpoint=False,
+        collect=True,
+    )
+
 
 # 运行结果
 # obs 表  新增字段
@@ -352,6 +402,14 @@ def filter_genes(
     print(f"过滤完成: 保留基因 {keep_count:,} / 总 {n_genes:,}")
     print("总耗时: {:.2f} 秒".format((datetime.now() - start_time).total_seconds()))
 
+    # 函数结束后兜底清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["gene_filter_stats_tmp"],
+        checkpoint=False,
+        collect=True,
+    )
+
 # 运行结果
 # var 表  新增字段
 #     字段	                    含义
@@ -459,9 +517,15 @@ def calculate_cell_total_counts(
         conn.execute("DROP TABLE IF EXISTS cell_total_counts_chunk")
 
     print(f"已计算细胞数 = {total_updated_cells:,}")
-    print("完成，总耗时 {:.2f} 秒".format(
-        (datetime.now() - start).total_seconds()
-    ))
+    print("完成，总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+    # 内存清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["cell_total_counts_chunk"],
+        checkpoint=False,
+        collect=True,
+    )
 
 # 运行结果
 # obs 表  新增字段
@@ -546,7 +610,14 @@ def calculate_gene_total_counts(
     """)
 
     # Step 4: 清理临时表
-    conn.execute("DROP TABLE gene_stats_tmp")
+    conn.execute("DROP TABLE IF EXISTS gene_stats_tmp")
+
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["gene_stats_tmp"],
+        checkpoint=False,
+        collect=True,
+    )
 
     logger.info("基因表达统计完成")
     logger.info("耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
@@ -690,11 +761,21 @@ def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
     """)
 
     # 清理
-    conn.execute("DROP TABLE _cell_qc")
-    conn.execute("DROP TABLE _gene_qc")
+    conn.execute("DROP TABLE IF EXISTS _cell_qc")
+    conn.execute("DROP TABLE IF EXISTS _gene_qc")
+
+    # 内存清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["_cell_qc", "_gene_qc"],
+        checkpoint=False,
+        collect=True,
+    )
 
     print("✅ SINGLE PASS QC 完成")
     print("耗时:", (datetime.now() - start).total_seconds())
+
+
 
 ''' qc 控制指标 方法 2 ：大数据安全版'''
 def calculate_qc_metrics(
@@ -893,6 +974,14 @@ def calculate_qc_metrics(
     """)
 
     conn.execute("DROP TABLE IF EXISTS _gene_qc")
+
+    # 内存清理
+    _cleanup_qc_after_step(
+        conn,
+        temp_tables=["_cell_chunk", "_gene_qc"],
+        checkpoint=False,
+        collect=True,
+    )
 
     print("✅ QC 完成")
     print("耗时:", (datetime.now() - start).total_seconds())

@@ -10,6 +10,95 @@ import matplotlib as mpl
 from matplotlib.colorbar import ColorbarBase
 from scipy.stats import gaussian_kde
 
+
+# =====================================================
+# 统一离散分类颜色池
+# -----------------------------------------------------
+# 用于 obs 分类变量上色，例如：
+# kmeans / cell_type / batch / organ 等
+#
+# 这些 palette 拼起来大约有 100 个离散颜色：
+# tab20(20) + tab20b(20) + tab20c(20)
+# + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
+# =====================================================
+DEFAULT_DISCRETE_PALETTES = (
+    "tab20",
+    "tab20b",
+    "tab20c",
+    "Set3",
+    "Paired",
+    "Accent",
+    "Dark2",
+)
+
+
+def _build_discrete_color_map(labels, palette=None):
+    """
+    根据 labels 构建离散颜色映射。
+
+    Parameters
+    ----------
+    labels
+        分类标签列表，例如 cats。
+
+    palette
+        可以是：
+        - None：使用 DEFAULT_DISCRETE_PALETTES
+        - str：例如 "tab20"
+        - list/tuple：例如 ["tab20", "tab20b", "Set3"]
+
+    Returns
+    -------
+    color_map
+        dict: label -> color
+    """
+
+    labels = list(labels)
+
+    #  默认使用大颜色池
+    if palette is None:
+        palette_names = DEFAULT_DISCRETE_PALETTES
+
+    # 兼容原来的 palette="tab20" 写法
+    elif isinstance(palette, str):
+        palette_names = (palette,)
+
+    # 支持 palette=["tab20", "tab20b", ...]
+    else:
+        palette_names = tuple(palette)
+
+    palette_colors = []
+
+    for cmap_name in palette_names:
+        cmap_obj = plt.get_cmap(cmap_name)
+
+        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        if hasattr(cmap_obj, "colors"):
+            palette_colors.extend(list(cmap_obj.colors))
+
+        # 兜底：如果是连续 colormap，就均匀取色
+        else:
+            n = getattr(cmap_obj, "N", 256)
+            palette_colors.extend([
+                cmap_obj(i / max(n - 1, 1))
+                for i in range(n)
+            ])
+
+    # 如果类别数超过颜色池，继续用 hsv 补足
+    if len(palette_colors) < len(labels):
+        extra_n = len(labels) - len(palette_colors)
+        hsv = plt.get_cmap("hsv")
+        palette_colors.extend([
+            hsv(i / max(extra_n, 1))
+            for i in range(extra_n)
+        ])
+
+    return {
+        lab: palette_colors[i]
+        for i, lab in enumerate(labels)
+    }
+
+
 # UMAP 可视化入口
 def umap(
         atlas: Atlas,
@@ -18,13 +107,16 @@ def umap(
         where: str | None = None,
         use_expr_field: str = "data_log1p",
         ncols: int = 3,
-        figsize=(18, 5.5),
+        figsize=(22, 8),
         point_size: float = 1.0,
-        alpha: float = 0.8,
+        alpha: float =  0.7 ,
+        cmap: str = "viridis",
+        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         legend_loc: str = "right_margin",
         frameon: bool = True,
         save_path: str | None = None,
-        plot_batch_size: int = 200000
+        plot_batch_size: int = 200000,
+        return_df: bool = False,
 ):
 
     print("\n==== sap.pl.umap ====")
@@ -99,9 +191,12 @@ def umap(
             figsize=figsize,
             point_size=point_size,
             alpha=alpha,
+            cmap=cmap,
+            palette=palette,
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
+            return_df=return_df,
         )
 
     # 纯 gene feature 图
@@ -131,9 +226,12 @@ def umap(
             figsize=figsize,
             point_size=point_size,
             alpha=alpha,
+            cmap=cmap,
+            palette=palette,
             frameon=frameon,
             save_path=None,
             plot_batch_size=plot_batch_size,
+            return_df=return_df,
         )
 
     if len(gene_colors) > 0:
@@ -162,12 +260,15 @@ def _plot_umap_obs(
         where: str | None = None,
         legend_loc: str = "right_margin",
         title: str | None = None,
-        figsize=(14, 7),
+        figsize=(22, 8),
         point_size: float = 1.0,
-        alpha: float = 0.8,
+        alpha: float = 0.7,
+        cmap: str = "viridis",
+        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         frameon: bool = True,
         save_path: str | None = None,
-        plot_batch_size: int = 200000
+        plot_batch_size: int = 200000,
+        return_df: bool = False,
 ):
 
     print(f"\n==== _plot_umap_obs (color={color}) ====")
@@ -250,6 +351,7 @@ def _plot_umap_obs(
             figsize=figsize,
             point_size=point_size,
             alpha=alpha,
+            palette=palette,
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size
@@ -273,20 +375,13 @@ def _plot_umap_obs(
         key=_sort_label
     )
 
-    palette = []
-    for cmap_name in ["tab20", "tab20b", "tab20c", "Set3", "Paired", "Accent", "Dark2"]:
-        cmap = plt.get_cmap(cmap_name)
-        if hasattr(cmap, "colors"):
-            palette.extend(list(cmap.colors))
+    # 使用统一大离散颜色池
+    label_to_color = _build_discrete_color_map(
+        labels=unique_labels,
+        palette=palette,
+    )
 
-    if len(palette) < len(unique_labels):
-        hsv = plt.get_cmap("hsv")
-        palette.extend([hsv(i / max(len(unique_labels), 1)) for i in range(len(unique_labels))])
-
-    palette = palette[:len(unique_labels)]
-    label_to_color = {lab: palette[i] for i, lab in enumerate(unique_labels)}
-
-    fig, ax = plt.subplots(figsize=(6.2, 5.8), facecolor="white")
+    fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
     for lab in unique_labels:
@@ -298,7 +393,8 @@ def _plot_umap_obs(
             alpha=alpha,
             c=[label_to_color[lab]],
             linewidths=0,
-            label=str(lab)
+            label=str(lab),
+            rasterized=True,
         )
 
     # 标题
@@ -311,27 +407,49 @@ def _plot_umap_obs(
 
     # 图例 / on-data 标签
     if legend_loc == "right_margin":
-        legend_handles = [
-            Line2D(
-                [0], [0],
-                marker="o",
-                color="w",
-                label=str(lab),
-                markerfacecolor=label_to_color[lab],
-                markersize=9
-            )
-            for lab in unique_labels
-        ]
-        ax.legend(
-            handles=legend_handles,
+
+        n_cat = len(unique_labels)
+        max_label_len = max([len(str(c)) for c in unique_labels], default=0)
+
+        if n_cat <= 14:
+            legend_ncol = 1
+            legend_fontsize = 20
+        elif n_cat <= 30:
+            legend_ncol = 2
+            legend_fontsize = 20
+        elif n_cat <= 60:
+            legend_ncol = 4
+            legend_fontsize = 20
+        else:
+            legend_ncol = 5
+            legend_fontsize = 12
+
+        if max_label_len >= 18:
+            legend_fontsize = min(legend_fontsize, 15)
+        if max_label_len >= 28:
+            legend_fontsize = min(legend_fontsize, 15)
+
+        leg = ax.legend(
+            title=None,
+            bbox_to_anchor=(1.03, 0.5),
             loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
             frameon=False,
+            markerscale=8.0,
+            fontsize=legend_fontsize,
             borderaxespad=0.0,
+            ncol=legend_ncol,
+            columnspacing=1.0,
+            handletextpad=0.35,
+            labelspacing=0.35,
             handlelength=0.8,
-            handletextpad=0.4,
-            fontsize=11
         )
+
+        # 强制放大 legend 圆点，和 PCA 一致
+        for h in leg.legend_handles:
+            if hasattr(h, "set_sizes"):
+                h.set_sizes([100])
+
+        leg.set_in_layout(False)
 
     elif legend_loc == "on_data":
         for lab in unique_labels:
@@ -364,7 +482,15 @@ def _plot_umap_obs(
         ax.spines["bottom"].set_linewidth(1.0)
         ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
 
-    plt.tight_layout()
+    if legend_loc == "right_margin":
+        fig.subplots_adjust(
+            left=0.06,
+            right=0.38,
+            bottom=0.16,
+            top=0.88,
+        )
+    else:
+        plt.tight_layout(pad=0.8)
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -372,7 +498,11 @@ def _plot_umap_obs(
     plt.show()
 
     print("[UMAP] Done")
-    return plot_df
+
+    if return_df:
+        return plot_df
+
+    return None
 
 
 # umap() ─ 如果 color 是 obs 列 → plot_umap_obs()
@@ -383,9 +513,10 @@ def _draw_umap_obs_streaming(
         where_sql: str,
         legend_loc: str = "right_margin",
         title: str | None = None,
-        figsize=(14, 7),
+        figsize=(22, 8),
         point_size: float = 1.0,
-        alpha: float = 0.8,
+        alpha: float = 0.7,
+        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         frameon: bool = True,
         save_path: str | None = None,
         plot_batch_size: int = 200000
@@ -421,27 +552,11 @@ def _draw_umap_obs_streaming(
         key=_sort_label
     )
 
-    # 调色板
-    palette = []
-
-    for cmap_name in ["tab20", "tab20b", "tab20c", "Set3", "Paired", "Accent", "Dark2"]:
-        cmap = plt.get_cmap(cmap_name)
-        if hasattr(cmap, "colors"):
-            palette.extend(list(cmap.colors))
-
-    if len(palette) < len(unique_labels):
-        hsv = plt.get_cmap("hsv")
-        palette.extend([
-            hsv(i / max(len(unique_labels), 1))
-            for i in range(len(unique_labels))
-        ])
-
-    palette = palette[:len(unique_labels)]
-
-    label_to_color = {
-        lab: palette[i]
-        for i, lab in enumerate(unique_labels)
-    }
+    # 使用统一大离散颜色池
+    label_to_color = _build_discrete_color_map(
+        labels=unique_labels,
+        palette=palette,
+    )
 
     # 建图
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
@@ -502,6 +617,27 @@ def _draw_umap_obs_streaming(
 
     # 图例
     if legend_loc == "right_margin":
+        n_cat = len(unique_labels)
+        max_label_len = max([len(str(c)) for c in unique_labels], default=0)
+
+        if n_cat <= 14:
+            legend_ncol = 1
+            legend_fontsize = 20
+        elif n_cat <= 30:
+            legend_ncol = 2
+            legend_fontsize = 20
+        elif n_cat <= 60:
+            legend_ncol = 4
+            legend_fontsize = 20
+        else:
+            legend_ncol = 5
+            legend_fontsize = 12
+
+        if max_label_len >= 18:
+            legend_fontsize = min(legend_fontsize, 15)
+        if max_label_len >= 28:
+            legend_fontsize = min(legend_fontsize, 15)
+
         legend_handles = [
             Line2D(
                 [0], [0],
@@ -509,31 +645,24 @@ def _draw_umap_obs_streaming(
                 color="w",
                 label=str(lab),
                 markerfacecolor=label_to_color[lab],
-                markersize=6
+                markersize=10,  # ✅【修改】圆点大小
             )
             for lab in unique_labels
         ]
 
-        # 根据类别数量自动设置 legend 列数
-        n_cat = len(unique_labels)
-
-        if n_cat >= 12:
-            legend_ncol = 2  # 长 cell_type 名字最多 2 列
-        else:
-            legend_ncol = 1
-
         leg = ax.legend(
             handles=legend_handles,
-            loc="center left",
+            title=None,
             bbox_to_anchor=(1.03, 0.5),
+            loc="center left",
             frameon=False,
+            fontsize=legend_fontsize,
             borderaxespad=0.0,
+            ncol=legend_ncol,
+            columnspacing=1.0,
+            handletextpad=0.35,
+            labelspacing=0.35,
             handlelength=0.8,
-            handletextpad=0.5,
-            labelspacing=0.6,
-            columnspacing=1.5,
-            fontsize=10,
-            ncol=legend_ncol
         )
 
         leg.set_in_layout(False)
@@ -874,664 +1003,6 @@ def _plot_umap_features(
     return plot_data
 
 
-
-# rank_genes_groups 排名图（cluster vs. rest）
-def plot_rank_genes_groups(
-        atlas,
-        groupby: str = "kmeans",
-        use_expr_field: str = "data_log1p",
-        n_genes: int = 25,
-        mask_var: str | None = "highly_variable_genes",
-        method: str = "t-test",   # "t-test" | "fusion"
-        groups: list | None = None,
-        reference: str | int | None = None,
-        save_path: str | None = None
-):
-
-    print(f"\n==== plot_rank_genes_groups (method={method}, reference={reference}) ====")
-    start = datetime.now()
-    conn = atlas.connection
-
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except Exception:
-        pass
-
-    # 检查列
-    obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
-
-    if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
-
-    if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
-
-    if mask_var is not None and mask_var not in var_cols:
-        raise ValueError(f"var 中不存在列: {mask_var}")
-
-    # group 信息
-    group_df = conn.execute(f"""
-        SELECT {groupby} AS grp, COUNT(*) AS n_cells
-        FROM obs
-        WHERE {groupby} IS NOT NULL
-        GROUP BY 1
-        ORDER BY 1
-    """).fetchdf()
-
-    if len(group_df) == 0:
-        raise ValueError(f"obs.{groupby} 中没有可用分组")
-
-    if groups is not None:
-        group_df = group_df[group_df["grp"].isin(set(groups))].reset_index(drop=True)
-
-    if len(group_df) == 0:
-        raise ValueError("groups 过滤后没有可用 group")
-
-    group_list = group_df["grp"].tolist()
-
-    if reference is not None:
-        if reference not in set(conn.execute(f"""
-            SELECT DISTINCT {groupby}
-            FROM obs
-            WHERE {groupby} IS NOT NULL
-        """).fetchnumpy()[groupby]):
-            # 上面这个判断在某些类型下可能麻烦，所以再走一次稳妥逻辑
-            ref_exist = conn.execute(f"""
-                SELECT COUNT(*)
-                FROM obs
-                WHERE {groupby} IS NOT NULL
-                  AND CAST({groupby} AS TEXT) = CAST('{reference}' AS TEXT)
-            """).fetchone()[0]
-            if ref_exist == 0:
-                raise ValueError(f"reference={reference} 不在 obs.{groupby} 中")
-
-        # 避免 group == reference
-        group_list = [g for g in group_list if str(g) != str(reference)]
-        if len(group_list) == 0:
-            raise ValueError("groups 与 reference 去重后为空")
-
-    print(f"-> groupby = {groupby}")
-    print(f"-> groups = {group_list}")
-    print(f"-> reference = {reference}")
-
-    # 候选基因集合
-    var_where = "1=1"
-    if mask_var is not None:
-        var_where = f"COALESCE({mask_var}, FALSE)=TRUE"
-
-    conn.execute("DROP TABLE IF EXISTS _rg_gene_set")
-    conn.execute(f"""
-        CREATE TEMP TABLE _rg_gene_set AS
-        SELECT atlas_gene_id, atlas_gene_name
-        FROM var
-        WHERE {var_where}
-    """)
-
-    gene_count = conn.execute("SELECT COUNT(*) FROM _rg_gene_set").fetchone()[0]
-    if gene_count == 0:
-        raise ValueError("候选基因集合为空，请检查 mask_var 设置")
-
-    print(f"-> candidate genes = {gene_count}")
-
-    # 各 group × gene 聚合统计; 一次性算好，后面避免重复扫大表
-    conn.execute("DROP TABLE IF EXISTS _rg_group")
-    conn.execute(f"""
-        CREATE TEMP TABLE _rg_group AS
-        SELECT
-            o.{groupby} AS grp,
-            x.atlas_gene_id,
-            SUM(x.{use_expr_field}) AS sum_expr,
-            SUM(x.{use_expr_field} * x.{use_expr_field}) AS sumsq_expr,
-            COUNT(*) AS nnz
-        FROM X_HyS_data x
-        JOIN obs o
-            ON x.atlas_cell_id = o.atlas_cell_id
-        JOIN _rg_gene_set gs
-            ON x.atlas_gene_id = gs.atlas_gene_id
-        WHERE o.{groupby} IS NOT NULL
-        GROUP BY 1, 2
-    """)
-
-    # 每个 group 的细胞数
-    conn.execute("DROP TABLE IF EXISTS _rg_group_n")
-    conn.execute(f"""
-        CREATE TEMP TABLE _rg_group_n AS
-        SELECT
-            {groupby} AS grp,
-            COUNT(*) AS n_cells
-        FROM obs
-        WHERE {groupby} IS NOT NULL
-        GROUP BY 1
-    """)
-
-    # 全局总和（仅用于 vs rest）
-    if reference is None:
-        total_cells = int(group_df["n_cells"].sum())
-
-        conn.execute("DROP TABLE IF EXISTS _rg_total")
-        conn.execute(f"""
-            CREATE TEMP TABLE _rg_total AS
-            SELECT
-                gs.atlas_gene_id,
-                gs.atlas_gene_name,
-                COALESCE(SUM(x.{use_expr_field}), 0) AS sum_expr,
-                COALESCE(SUM(x.{use_expr_field} * x.{use_expr_field}), 0) AS sumsq_expr,
-                COUNT(x.{use_expr_field}) AS nnz
-            FROM _rg_gene_set gs
-            LEFT JOIN X_HyS_data x
-                ON gs.atlas_gene_id = x.atlas_gene_id
-            LEFT JOIN obs o
-                ON x.atlas_cell_id = o.atlas_cell_id
-            WHERE o.{groupby} IS NOT NULL OR o.{groupby} IS NULL
-            GROUP BY 1, 2
-        """)
-
-    # 工具函数：z-score
-    def _zscore(series: pd.Series) -> np.ndarray:
-        x = series.values.astype(float)
-        std = x.std()
-        if std < 1e-9:
-            return np.zeros_like(x)
-        return (x - x.mean()) / (std + 1e-9)
-
-    # 逐 group 计算 marker ranking
-    result_dict = {}
-
-    for grp in group_list:
-
-        grp_sql = f"'{grp}'" if isinstance(grp, str) else str(grp)
-
-        if reference is None:
-            # 模式 A：group vs rest
-            df = conn.execute(f"""
-                WITH base AS (
-                    SELECT
-                        t.atlas_gene_id,
-                        t.atlas_gene_name,
-
-                        COALESCE(g.sum_expr, 0) AS sum_in,
-                        COALESCE(g.sumsq_expr, 0) AS sumsq_in,
-                        COALESCE(g.nnz, 0) AS nnz_in,
-
-                        t.sum_expr AS sum_total,
-                        t.sumsq_expr AS sumsq_total,
-                        t.nnz AS nnz_total,
-
-                        n1.n_cells AS n_in
-                    FROM _rg_total t
-                    LEFT JOIN _rg_group g
-                        ON t.atlas_gene_id = g.atlas_gene_id
-                       AND g.grp = {grp_sql}
-                    LEFT JOIN _rg_group_n n1
-                        ON CAST(n1.grp AS TEXT) = CAST({grp_sql} AS TEXT)
-                )
-                SELECT
-                    atlas_gene_id,
-                    atlas_gene_name,
-
-                    sum_in * 1.0 / NULLIF(n_in, 0) AS mean_in,
-                    (sum_total - sum_in) * 1.0 / NULLIF({total_cells} - n_in, 0) AS mean_ref,
-
-                    nnz_in * 1.0 / NULLIF(n_in, 0) AS pct_in,
-                    (nnz_total - nnz_in) * 1.0 / NULLIF({total_cells} - n_in, 0) AS pct_ref,
-
-                    CASE
-                        WHEN n_in > 0 AND ({total_cells} - n_in) > 0 THEN
-                            (
-                                (sum_in * 1.0 / NULLIF(n_in, 0))
-                                -
-                                ((sum_total - sum_in) * 1.0 / NULLIF({total_cells} - n_in, 0))
-                            )
-                        ELSE 0
-                    END AS t_like_score
-                FROM base
-            """).fetchdf()
-
-            title_suffix = "rest"
-
-        else:
-            # 模式 B：group vs reference
-            ref_sql = f"'{reference}'" if isinstance(reference, str) else str(reference)
-
-            df = conn.execute(f"""
-                WITH n_in AS (
-                    SELECT n_cells AS n_in
-                    FROM _rg_group_n
-                    WHERE CAST(grp AS TEXT) = CAST({grp_sql} AS TEXT)
-                ),
-                n_ref AS (
-                    SELECT n_cells AS n_ref
-                    FROM _rg_group_n
-                    WHERE CAST(grp AS TEXT) = CAST({ref_sql} AS TEXT)
-                ),
-                g_in AS (
-                    SELECT
-                        gs.atlas_gene_id,
-                        gs.atlas_gene_name,
-                        COALESCE(g.sum_expr, 0) AS sum_in,
-                        COALESCE(g.sumsq_expr, 0) AS sumsq_in,
-                        COALESCE(g.nnz, 0) AS nnz_in
-                    FROM _rg_gene_set gs
-                    LEFT JOIN _rg_group g
-                        ON gs.atlas_gene_id = g.atlas_gene_id
-                       AND CAST(g.grp AS TEXT) = CAST({grp_sql} AS TEXT)
-                ),
-                g_ref AS (
-                    SELECT
-                        gs.atlas_gene_id,
-                        COALESCE(g.sum_expr, 0) AS sum_ref,
-                        COALESCE(g.sumsq_expr, 0) AS sumsq_ref,
-                        COALESCE(g.nnz, 0) AS nnz_ref
-                    FROM _rg_gene_set gs
-                    LEFT JOIN _rg_group g
-                        ON gs.atlas_gene_id = g.atlas_gene_id
-                       AND CAST(g.grp AS TEXT) = CAST({ref_sql} AS TEXT)
-                )
-                SELECT
-                    i.atlas_gene_id,
-                    i.atlas_gene_name,
-
-                    i.sum_in * 1.0 / NULLIF(n_in.n_in, 0) AS mean_in,
-                    r.sum_ref * 1.0 / NULLIF(n_ref.n_ref, 0) AS mean_ref,
-
-                    i.nnz_in * 1.0 / NULLIF(n_in.n_in, 0) AS pct_in,
-                    r.nnz_ref * 1.0 / NULLIF(n_ref.n_ref, 0) AS pct_ref,
-
-                    CASE
-                        WHEN n_in.n_in > 0 AND n_ref.n_ref > 0 THEN
-                            (i.sum_in * 1.0 / NULLIF(n_in.n_in, 0))
-                            -
-                            (r.sum_ref * 1.0 / NULLIF(n_ref.n_ref, 0))
-                        ELSE 0
-                    END AS t_like_score
-                FROM g_in i
-                JOIN g_ref r
-                    ON i.atlas_gene_id = r.atlas_gene_id
-                CROSS JOIN n_in
-                CROSS JOIN n_ref
-            """).fetchdf()
-
-            title_suffix = str(reference)
-
-        if len(df) == 0:
-            result_dict[grp] = df
-            continue
-
-        # 统一后处理
-        df["log2fc"] = np.log2((df["mean_in"] + 1e-9) / (df["mean_ref"] + 1e-9))
-        df["pct_diff"] = df["pct_in"] - df["pct_ref"]
-
-        # 只保留更像 marker 的正向基因
-        df = df[
-            (df["mean_in"] > df["mean_ref"]) &
-            (df["pct_in"] >= df["pct_ref"])
-        ].copy()
-
-        if len(df) == 0:
-            result_dict[grp] = df
-            continue
-
-        # method 控制排序
-        if method == "t-test":
-            df = df.sort_values(
-                ["t_like_score", "log2fc", "pct_diff"],
-                ascending=False
-            ).reset_index(drop=True)
-            df["final_score"] = df["t_like_score"]
-
-        elif method == "fusion":
-            t_z = _zscore(df["t_like_score"])
-            fc_z = _zscore(df["log2fc"])
-            pct_z = _zscore(df["pct_diff"])
-
-            df["final_score"] = (
-                0.5 * t_z +
-                0.3 * fc_z +
-                0.2 * pct_z
-            )
-
-            df = df.sort_values(
-                ["final_score", "t_like_score", "log2fc", "pct_diff"],
-                ascending=False
-            ).reset_index(drop=True)
-
-        else:
-            raise ValueError("method 必须是 't-test' 或 'fusion'")
-
-        df["comparison"] = f"{grp} vs. {title_suffix}"
-        result_dict[grp] = df
-
-    # 作图
-    n_panels = len(result_dict)
-    if n_panels == 0:
-        raise ValueError("没有可绘制的 group 结果")
-
-    ncols = min(4, n_panels)
-    nrows = math.ceil(n_panels / ncols)
-
-    fig, axes = plt.subplots(
-        nrows,
-        ncols,
-        figsize=(4.2 * ncols, 4.8 * nrows),
-        facecolor="white"
-    )
-
-    axes = np.array(axes).reshape(-1)
-
-    for ax, (grp, df) in zip(axes, result_dict.items()):
-        plot_df = df.head(n_genes).copy()
-
-        if len(plot_df) == 0:
-            ax.set_title(f"{grp} vs. {title_suffix}")
-            ax.text(0.5, 0.5, "No markers", ha="center", va="center")
-            ax.set_axis_off()
-            continue
-
-        x = np.arange(len(plot_df))
-        y = plot_df["final_score"].values
-
-        ax.scatter(x, y, s=18, linewidths=0)
-
-        for xi, yi, gene in zip(x, y, plot_df["atlas_gene_name"]):
-            ax.text(xi, yi, gene, rotation=90, fontsize=9, ha="center", va="bottom")
-
-        ax.set_title(plot_df["comparison"].iloc[0], fontsize=18)
-        ax.set_xlabel("ranking", fontsize=16)
-        ax.set_ylabel("score", fontsize=16)
-
-        ax.set_facecolor("white")
-        ax.grid(False)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-
-    for ax in axes[n_panels:]:
-        ax.set_axis_off()
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-    print(f"-> done in {(datetime.now() - start).total_seconds():.2f}s ✅")
-
-    return result_dict
-
-
-# rank_genes_groups 排名图 对应的 提琴图
-def plot_rank_genes_groups_violin(
-        atlas,
-        group,
-        groupby: str = "kmeans",
-        reference: str | int | None = None,
-        genes: list[str] | None = None,
-        rank_result: dict | None = None,
-        n_genes: int = 8,
-        use_expr_field: str = "data_log1p",
-        sample_n_per_group: int = 2000,
-        save_path: str | None = None
-):
-
-    print(f"\n==== plot_rank_genes_groups_violin (group={group}, reference={reference}) ====")
-    conn = atlas.connection
-
-    # 检查列
-    obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
-
-    if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
-    if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
-    if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-        raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
-    if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
-
-    # gene 列表
-    if genes is None:
-        if rank_result is None:
-            raise ValueError("genes=None 时，必须提供 rank_result")
-        if group not in rank_result:
-            raise ValueError(f"rank_result 中不存在 group={group}")
-
-        rank_df = rank_result[group]
-        if len(rank_df) == 0:
-            raise ValueError(f"group={group} 在 rank_result 中为空")
-
-        genes = rank_df["atlas_gene_name"].astype(str).head(n_genes).tolist()
-
-    if isinstance(genes, str):
-        genes = [genes]
-
-    if len(genes) == 0:
-        raise ValueError("genes 为空")
-
-    print(f"-> genes = {genes}")
-
-    # gene_name -> gene_id
-    gene_name_sql = ", ".join([f"'{g}'" for g in genes])
-
-    gene_map_df = conn.execute(f"""
-        SELECT atlas_gene_id, atlas_gene_name
-        FROM var
-        WHERE atlas_gene_name IN ({gene_name_sql})
-    """).fetchdf()
-
-    if len(gene_map_df) == 0:
-        raise ValueError("var 中找不到这些基因")
-
-    gene_map = dict(zip(gene_map_df["atlas_gene_name"], gene_map_df["atlas_gene_id"]))
-
-    missing_genes = [g for g in genes if g not in gene_map]
-    if missing_genes:
-        raise ValueError(f"var 中找不到这些基因: {missing_genes}")
-
-    # 抽样目标细胞
-    group_sql = f"'{group}'" if isinstance(group, str) else str(group)
-
-    if reference is None:
-        # group vs rest
-        group_cells_df = conn.execute(f"""
-            SELECT atlas_cell_id
-            FROM obs
-            WHERE CAST({groupby} AS TEXT) = CAST({group_sql} AS TEXT)
-            ORDER BY random()
-            LIMIT {sample_n_per_group}
-        """).fetchdf()
-
-        rest_cells_df = conn.execute(f"""
-            SELECT atlas_cell_id
-            FROM obs
-            WHERE {groupby} IS NOT NULL
-              AND CAST({groupby} AS TEXT) != CAST({group_sql} AS TEXT)
-            ORDER BY random()
-            LIMIT {sample_n_per_group}
-        """).fetchdf()
-
-        ref_label = "rest"
-
-    else:
-        ref_sql = f"'{reference}'" if isinstance(reference, str) else str(reference)
-
-        group_cells_df = conn.execute(f"""
-            SELECT atlas_cell_id
-            FROM obs
-            WHERE CAST({groupby} AS TEXT) = CAST({group_sql} AS TEXT)
-            ORDER BY random()
-            LIMIT {sample_n_per_group}
-        """).fetchdf()
-
-        rest_cells_df = conn.execute(f"""
-            SELECT atlas_cell_id
-            FROM obs
-            WHERE CAST({groupby} AS TEXT) = CAST({ref_sql} AS TEXT)
-            ORDER BY random()
-            LIMIT {sample_n_per_group}
-        """).fetchdf()
-
-        ref_label = str(reference)
-
-    if len(group_cells_df) == 0:
-        raise ValueError(f"group={group} 没有细胞")
-    if len(rest_cells_df) == 0:
-        raise ValueError(f"reference/rest 没有细胞")
-
-    group_cells_df["group_label"] = str(group)
-    rest_cells_df["group_label"] = ref_label
-
-    cells_df = pd.concat([group_cells_df, rest_cells_df], ignore_index=True)
-
-    # 注册采样细胞和基因
-    conn.register("_violin_cells_tmp", cells_df)
-    conn.register("_violin_genes_tmp", gene_map_df)
-
-    # 取表达长表（含隐式 0）
-    plot_df = conn.execute(f"""
-        SELECT
-            c.group_label,
-            g.atlas_gene_name AS gene,
-            COALESCE(x.{use_expr_field}, 0.0) AS expr
-        FROM _violin_cells_tmp c
-        CROSS JOIN _violin_genes_tmp g
-        LEFT JOIN X_HyS_data x
-            ON c.atlas_cell_id = x.atlas_cell_id
-           AND g.atlas_gene_id = x.atlas_gene_id
-    """).fetchdf()
-
-    conn.unregister("_violin_cells_tmp")
-    conn.unregister("_violin_genes_tmp")
-
-    if len(plot_df) == 0:
-        raise ValueError("plot_df 为空，无法作图")
-
-    # gene 顺序保持传入顺序
-    plot_df["gene"] = pd.Categorical(plot_df["gene"], categories=genes, ordered=True)
-    plot_df = plot_df.sort_values(["gene", "group_label"]).reset_index(drop=True)
-
-    # 作图
-    fig, ax = plt.subplots(figsize=(1.25 * len(genes) + 2.5, 6), facecolor="white")
-
-    labels = [str(group), ref_label]
-    positions = np.arange(len(genes))
-
-    width = 0.36
-    pos_left = positions - width / 2
-    pos_right = positions + width / 2
-
-    color_map = {
-        str(group): "#1f77b4",   # 蓝
-        ref_label: "#ff7f0e"     # 橙
-    }
-
-    for idx, gene in enumerate(genes):
-        sub = plot_df[plot_df["gene"] == gene]
-
-        vals_group = sub[sub["group_label"] == str(group)]["expr"].values
-        vals_ref = sub[sub["group_label"] == ref_label]["expr"].values
-
-        # violin 1: group
-        if len(vals_group) > 0:
-            vp1 = ax.violinplot(
-                [vals_group],
-                positions=[pos_left[idx]],
-                widths=width,
-                showmeans=False,
-                showmedians=True,
-                showextrema=False
-            )
-            for body in vp1["bodies"]:
-                body.set_facecolor(color_map[str(group)])
-                body.set_edgecolor("black")
-                body.set_alpha(0.85)
-            if "cmedians" in vp1:
-                vp1["cmedians"].set_color("black")
-                vp1["cmedians"].set_linewidth(1.0)
-
-        # violin 2: ref/rest
-        if len(vals_ref) > 0:
-            vp2 = ax.violinplot(
-                [vals_ref],
-                positions=[pos_right[idx]],
-                widths=width,
-                showmeans=False,
-                showmedians=True,
-                showextrema=False
-            )
-            for body in vp2["bodies"]:
-                body.set_facecolor(color_map[ref_label])
-                body.set_edgecolor("black")
-                body.set_alpha(0.85)
-            if "cmedians" in vp2:
-                vp2["cmedians"].set_color("black")
-                vp2["cmedians"].set_linewidth(1.0)
-
-        # 少量散点增强可读性（抽样后再小抽一点）
-        n_dot = min(250, len(vals_group))
-        if n_dot > 0:
-            dot_idx = np.random.choice(len(vals_group), size=n_dot, replace=False)
-            jitter = (np.random.rand(n_dot) - 0.5) * 0.08
-            ax.scatter(
-                np.full(n_dot, pos_left[idx]) + jitter,
-                vals_group[dot_idx],
-                s=3,
-                c="black",
-                alpha=0.6,
-                linewidths=0
-            )
-
-        n_dot = min(250, len(vals_ref))
-        if n_dot > 0:
-            dot_idx = np.random.choice(len(vals_ref), size=n_dot, replace=False)
-            jitter = (np.random.rand(n_dot) - 0.5) * 0.08
-            ax.scatter(
-                np.full(n_dot, pos_right[idx]) + jitter,
-                vals_ref[dot_idx],
-                s=3,
-                c="black",
-                alpha=0.6,
-                linewidths=0
-            )
-
-    # 美化
-    ax.set_title(f"{group} vs. {ref_label}", fontsize=20, pad=10)
-    ax.set_xlabel("genes", fontsize=16)
-    ax.set_ylabel("expression", fontsize=16)
-
-    ax.set_xticks(positions)
-    ax.set_xticklabels(genes, rotation=90, fontsize=11)
-
-    ax.set_facecolor("white")
-    ax.grid(False)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.spines["left"].set_linewidth(1.0)
-    ax.spines["bottom"].set_linewidth(1.0)
-    ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
-
-    # 图例
-    from matplotlib.patches import Patch
-    legend_handles = [
-        Patch(facecolor=color_map[str(group)], edgecolor="black", label=str(group)),
-        Patch(facecolor=color_map[ref_label], edgecolor="black", label=ref_label),
-    ]
-    ax.legend(handles=legend_handles, frameon=False, loc="upper right", fontsize=11)
-
-    plt.tight_layout()
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-    return plot_df
-
-
-
 # 普通 violin
 def violin(
         atlas,
@@ -1618,6 +1089,24 @@ def violin(
 
     if len(group_df) == 0:
         raise ValueError("没有可用 group")
+
+    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    def _group_sort_key(x):
+        try:
+            return (0, int(x))
+        except Exception:
+            try:
+                return (0, float(x))
+            except Exception:
+                return (1, str(x))
+
+    group_df["__sort_key__"] = group_df["group_label"].map(_group_sort_key)
+    group_df = (
+        group_df
+        .sort_values("__sort_key__")
+        .drop(columns="__sort_key__")
+        .reset_index(drop=True)
+    )
 
     if order is not None:
         wanted = [str(x) for x in order]
@@ -1784,7 +1273,7 @@ def violin(
 def dotplot(
         atlas,
         genes,
-        groupby: str = "cell_type_auto",
+        groupby: str = "kmeans",
         use_expr_field: str = "data_log1p",
         sample_n_per_group: int | None = 2000,
         groups: list | None = None,
@@ -1870,6 +1359,24 @@ def dotplot(
 
     if len(group_df) == 0:
         raise ValueError("没有可用 group")
+
+    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    def _group_sort_key(x):
+        try:
+            return (0, int(x))
+        except Exception:
+            try:
+                return (0, float(x))
+            except Exception:
+                return (1, str(x))
+
+    group_df["__sort_key__"] = group_df["group_label"].map(_group_sort_key)
+    group_df = (
+        group_df
+        .sort_values("__sort_key__")
+        .drop(columns="__sort_key__")
+        .reset_index(drop=True)
+    )
 
     if order is not None:
         wanted = [str(x) for x in order]
@@ -2132,7 +1639,7 @@ def dotplot(
 
 
 
-# violin 图
+# 堆叠提琴图 violin gene 在 x 轴，group 在 y 轴，每个 group × gene 的格子里画一个小提琴形状，并用 median expression 控制颜色深浅
 def stacked_violin(
         atlas,
         genes,
@@ -2219,6 +1726,24 @@ def stacked_violin(
 
     if len(group_df) == 0:
         raise ValueError("没有可用 group")
+
+    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    def _group_sort_key(x):
+        try:
+            return (0, int(x))
+        except Exception:
+            try:
+                return (0, float(x))
+            except Exception:
+                return (1, str(x))
+
+    group_df["__sort_key__"] = group_df["group_label"].map(_group_sort_key)
+    group_df = (
+        group_df
+        .sort_values("__sort_key__")
+        .drop(columns="__sort_key__")
+        .reset_index(drop=True)
+    )
 
     if order is not None:
         wanted = [str(x) for x in order]

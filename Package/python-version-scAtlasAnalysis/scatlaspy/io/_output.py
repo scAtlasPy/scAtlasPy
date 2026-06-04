@@ -4,7 +4,7 @@ import h5py
 from tqdm import tqdm
 
 ''' 数据导出: 把数据直接变成文件'''
-def export_duckdb_to_h5ad(
+def export_atlas_to_h5ad(
     atlas,
     out_h5ad_path: str,
     *,
@@ -169,7 +169,7 @@ def export_duckdb_to_h5ad(
 
             print(f"  - varm[{key}] {df.shape}")
 
-    print("✅ 导出完成")
+    print("导出完成")
 
 
 # 写 AnnData 到 h5ad
@@ -311,7 +311,7 @@ def export_obs_to_pandas(
     df = conn.execute(sql).df()
 
     # 5. 默认 atlas_cell_id 作为 pandas index
-    df = df.set_index("atlas_cell_id")
+    df = df.set_index("atlas_cell_id", drop=False)
 
     return df
 
@@ -353,7 +353,7 @@ def get_filtered_cell_ids(obs_df, filter_col: str = "filter_cells"):
 
 
 # 根据 atlas_cell_id list，从 DuckDB 中导出子集 AnnData 到内存
-def export_cells_to_anndata(
+def export_atlas_to_anndata(
     atlas,
     atlas_cell_ids,
     x_field: str = "data",
@@ -398,12 +398,6 @@ def export_cells_to_anndata(
     AnnData
         内存中的 AnnData 对象。
 
-    Notes
-    -----
-    ✅ 修改点：
-    1. obs index 使用 atlas_cell_name，而不是 atlas_cell_id
-    2. var index 使用 atlas_gene_name，而不是 atlas_gene_id
-    3. obs.index / var.index 显式 astype(str)，消除 AnnData 的 ImplicitModificationWarning
     """
 
     import numpy as np
@@ -444,7 +438,7 @@ def export_cells_to_anndata(
     if x_field_exists == 0:
         raise ValueError(f"X_HyS_data 中不存在字段: {x_field}")
 
-    print("==== export_cells_to_anndata ====")
+    print("==== export_atlas_to_anndata ====")
     print(f"[INFO] selected cells = {len(atlas_cell_ids):,}")
     print(f"[INFO] x_field = {x_field}")
 
@@ -630,7 +624,7 @@ def export_cells_to_anndata(
     # 8. 清理临时表
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
-    print("✅ AnnData 导出完成")
+    print(" AnnData 导出完成")
     print(f"  - cells: {adata.n_obs:,}")
     print(f"  - genes: {adata.n_vars:,}")
     print(f"  - nnz:   {adata.X.nnz:,}")

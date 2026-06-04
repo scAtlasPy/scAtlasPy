@@ -4,6 +4,95 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 
+
+# =====================================================
+# 统一离散分类颜色池
+# -----------------------------------------------------
+# 用于 obs 分类变量上色，例如：
+# kmeans / cell_type / batch / organ 等
+#
+# 这些 palette 拼起来大约有 100 个离散颜色：
+# tab20(20) + tab20b(20) + tab20c(20)
+# + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
+# =====================================================
+DEFAULT_DISCRETE_PALETTES = (
+    "tab20",
+    "tab20b",
+    "tab20c",
+    "Set3",
+    "Paired",
+    "Accent",
+    "Dark2",
+)
+
+
+def _build_discrete_color_map(labels, palette=None):
+    """
+    根据 labels 构建离散颜色映射。
+
+    Parameters
+    ----------
+    labels
+        分类标签列表，例如 cats。
+
+    palette
+        可以是：
+        - None：使用 DEFAULT_DISCRETE_PALETTES
+        - str：例如 "tab20"
+        - list/tuple：例如 ["tab20", "tab20b", "Set3"]
+
+    Returns
+    -------
+    color_map
+        dict: label -> color
+    """
+
+    labels = list(labels)
+
+    #  默认使用大颜色池
+    if palette is None:
+        palette_names = DEFAULT_DISCRETE_PALETTES
+
+    # 兼容原来的 palette="tab20" 写法
+    elif isinstance(palette, str):
+        palette_names = (palette,)
+
+    # 支持 palette=["tab20", "tab20b", ...]
+    else:
+        palette_names = tuple(palette)
+
+    palette_colors = []
+
+    for cmap_name in palette_names:
+        cmap_obj = plt.get_cmap(cmap_name)
+
+        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        if hasattr(cmap_obj, "colors"):
+            palette_colors.extend(list(cmap_obj.colors))
+
+        # 兜底：如果是连续 colormap，就均匀取色
+        else:
+            n = getattr(cmap_obj, "N", 256)
+            palette_colors.extend([
+                cmap_obj(i / max(n - 1, 1))
+                for i in range(n)
+            ])
+
+    # 如果类别数超过颜色池，继续用 hsv 补足
+    if len(palette_colors) < len(labels):
+        extra_n = len(labels) - len(palette_colors)
+        hsv = plt.get_cmap("hsv")
+        palette_colors.extend([
+            hsv(i / max(extra_n, 1))
+            for i in range(extra_n)
+        ])
+
+    return {
+        lab: palette_colors[i]
+        for i, lab in enumerate(labels)
+    }
+
+
 # 可视化 / 对外入口层 ;  用 PCA 的前两个主成分（PC1, PC2）做二维散点图
 def pca(
         atlas,
@@ -17,7 +106,7 @@ def pca(
         point_size: float = 1.0,
         alpha: float = 0.7,
         cmap: str = "viridis",
-        palette: str = "tab20",
+        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         legend_loc: str = "right_margin",
         frameon: bool = True,
         return_df: bool = False,
@@ -280,12 +369,11 @@ def pca(
             values = values.astype(str).astype("category")
 
             cats = list(values.cat.categories)
-            cmap_obj = plt.get_cmap(palette)
 
-            color_map = {
-                cat: cmap_obj(i % cmap_obj.N)
-                for i, cat in enumerate(cats)
-            }
+            color_map = _build_discrete_color_map(
+                labels=cats,
+                palette=palette,
+            )
 
             # 按类别分组绘图，Scanpy 风格 legend
             for cat in cats:
@@ -307,7 +395,6 @@ def pca(
                 n_cat = len(cats)
                 max_label_len = max([len(str(c)) for c in cats], default=0)
 
-                # ✅ 修改：legend 字体不要自动缩得太小
                 if n_cat <= 14:
                     legend_ncol = 1  # 列数
                     legend_fontsize = 20  # 字体大小
@@ -319,21 +406,20 @@ def pca(
                     legend_fontsize = 20
                 else:
                     legend_ncol = 5
-                    legend_fontsize = 20
+                    legend_fontsize = 12
 
                 if max_label_len >= 18: # 图例中所有类别名称里，最长那个名称的字符长度
-                    legend_fontsize = min(legend_fontsize, 20)
+                    legend_fontsize = min(legend_fontsize, 15)
                 if max_label_len >= 28:
-                    legend_fontsize = min(legend_fontsize, 20)
+                    legend_fontsize = min(legend_fontsize, 15)
 
                 leg = ax.legend(
-                    title=color,
+                    title=None,
                     bbox_to_anchor=(1.03, 0.5),
                     loc="center left",
                     frameon=False,
                     markerscale=8.0, # 图例圆点
                     fontsize=legend_fontsize,
-                    title_fontsize=legend_fontsize + 1,
                     borderaxespad=0.0,
                     ncol=legend_ncol,
                     columnspacing=1.0,
@@ -345,7 +431,7 @@ def pca(
                 # 强制放大 legend 里的 scatter 圆点，更稳定
                 for h in leg.legend_handles:
                     if hasattr(h, "set_sizes"):
-                        h.set_sizes([35])
+                        h.set_sizes([100])
 
                 # 不让 tight_layout / layout 系统为了 legend 压缩主图
                 leg.set_in_layout(False)

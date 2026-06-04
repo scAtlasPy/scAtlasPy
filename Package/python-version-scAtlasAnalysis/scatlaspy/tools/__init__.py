@@ -1,11 +1,9 @@
 from ._pca import (
-    StreamingPCA,
     pca,
-    pca_simple,
+    pca_scanpy_arpack,
 )
 
 from ._kmeans import (
-    StreamingPCAMiniBatchKMeans,
     kmeans,
 )
 
@@ -15,4 +13,8 @@ from ._umap import (
 
 from ._annotation import (
     annotate_clusters,
+)
+
+from ._rank_genes_groups import (
+    rank_genes_groups,
 )

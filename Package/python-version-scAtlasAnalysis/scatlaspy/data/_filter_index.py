@@ -2,11 +2,7 @@ import duckdb
 from tqdm import tqdm
 from datetime import datetime
 
-'''过滤 obs / var + 建新表 X_HyS_data_filtered  + 建立索引   '''
 class FilterBuildIndex:
-    """
-    DuckDB → 过滤 → 重排 → CSR 重建
-    """
 
     def __init__(
         self,
@@ -36,7 +32,7 @@ class FilterBuildIndex:
     # 外部入口
     def run(self):
 
-        print("🚀 开始 CSR 过滤构建流程")
+        print("开始流程")
 
         start = datetime.now()
 
@@ -53,13 +49,13 @@ class FilterBuildIndex:
             (datetime.now() - start).total_seconds()
         ))
 
-        print("🎉 全流程完成（已得到真正 CSR 结构）")
+        print("全流程完成")
 
 
     # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
     def _rebuild_obs_filter_id(self):
 
-        print("Step 1：重排 obs： 过滤细胞 + 生成 filter_cell_id ")
+        print("Step 1. 重排 obs： 过滤细胞 + 生成 filter_cell_id ")
 
         # 删除旧列
         self.conn.execute(""" ALTER TABLE obs DROP COLUMN IF EXISTS filter_cell_id """)
@@ -89,13 +85,13 @@ class FilterBuildIndex:
         WHERE obs.atlas_cell_id = sub.atlas_cell_id
         """)
 
-        print("✅ obs 重排完成")
+        print(" obs 重排完成")
 
 
     # 2.重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
     def _rebuild_var_filter_id(self):
 
-        print("Step 2：重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id")
+        print("Step 2. 重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id")
 
         # 删除旧列 + 新增列
         self.conn.execute(""" ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id """)
@@ -134,13 +130,13 @@ class FilterBuildIndex:
         WHERE var.atlas_gene_id = sub.atlas_gene_id
         """)
 
-        print(f"✅ var 重排完成（use_hvg={self.use_hvg}）")
+        print(f" var 重排完成（use_hvg={self.use_hvg}）")
 
 
     # 3.重建新表：X_HyS_data_filtered
     def _rebuild_X_HyS_data_filtered(self):
 
-        print("Step 3：重建新表：X_HyS_data_filtered")
+        print("Step 3. 重建新表：X_HyS_data_filtered")
 
         conn = self.conn
 
@@ -181,7 +177,7 @@ class FilterBuildIndex:
             filter_cell_id INTEGER,
             filter_gene_id USMALLINT,
             data REAL,
-            tid TINYINT  -- 有符号 1 字节整数 ， -128 到 127 之间的整数
+            tid TINYINT
         )
         """)
 
@@ -192,7 +188,7 @@ class FilterBuildIndex:
         """).fetchone()
 
         if min_id is None:
-            print("⚠️ X_HyS_data 是空表，跳过")
+            print(" X_HyS_data 是空表，跳过")
             return
 
         total_rows = max_id - min_id + 1
@@ -235,7 +231,7 @@ class FilterBuildIndex:
 
         pbar.close()
 
-        print("✅ 计算 tid ...")
+        print(" 计算 tid ...")
 
         # 计算 tid
         conn.execute(f"""
@@ -243,19 +239,14 @@ class FilterBuildIndex:
             SET tid = CAST((rowid // {self.fetch_size}) % {self.producer_num} AS TINYINT)
         """)
 
-        # ============================================================
-        # 6️⃣ 统计最终 nnz
-        # ============================================================
         final_nnz = conn.execute("""
             SELECT COUNT(*)
             FROM X_HyS_data_filtered
         """).fetchone()[0]
 
-        print(f"✅ X_HyS_data_filtered 构建完成！nnz = {final_nnz:,}")
+        print(f" X_HyS_data_filtered 构建完成！nnz = {final_nnz:,}")
 
-        # ============================================================
-        # 7️⃣ 清理临时表
-        # ============================================================
+        # 清理临时表
         conn.execute("DROP TABLE IF EXISTS _obs_keep")
         conn.execute("DROP TABLE IF EXISTS _var_keep")
 
@@ -311,7 +302,7 @@ class FilterBuildIndex:
         ORDER BY obs.filter_cell_id
         """)
 
-        print("✅ cell_nnz 补齐完成")
+        print(" cell_nnz 补齐完成")
 
         # 3. 生成 prefix sum ；这里 indptr 存的是每个 cell 的结束位置 end_ptr
         conn.execute("""
@@ -326,4 +317,4 @@ class FilterBuildIndex:
         conn.execute("DROP TABLE IF EXISTS cell_nnz_raw")
         conn.execute("DROP TABLE IF EXISTS cell_nnz")
 
-        print("✅ X_HyS_indptr_filtered 构建完成（已从 obs 补齐空 cell）")
+        print(" X_HyS_indptr_filtered 构建完成（已从 obs 补齐空 cell）")
