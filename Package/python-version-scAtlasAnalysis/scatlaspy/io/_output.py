@@ -10,13 +10,34 @@ def export_atlas_to_h5ad(
     *,
     batch_size: int = 1_000_000, 
 ):
-    """
-    从 DuckDB 流式导出 h5ad（不经过 AnnData）
-    特点：
-      - CSR-only
-      - nnz streaming
-      - 内存 O(batch_size)
-      - scanpy / anndata 完全兼容
+    """将 Atlas 数据库导出为 h5ad 文件。
+
+    该函数从 Atlas 的 ``obs``、``var``、``X_HyS_indptr``、``X_HyS_data``、``obsm_*`` 和
+    ``varm_*`` 表中重建 AnnData/HDF5 结构。
+
+    表达矩阵会按 ``batch_size`` 分块写出，避免一次性将全量稀疏矩阵加载到内存。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    out_h5ad_path
+        导出的 h5ad 文件保存路径。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.export_atlas_to_h5ad(...)
     """
 
     conn = atlas.connection
@@ -175,6 +196,29 @@ def export_atlas_to_h5ad(
 # 写 AnnData 到 h5ad
 def _write_dataframe(f, key, df):
 
+    """将计算结果写入数据库表。
+
+    该内部函数属于数据导出模块，用于支撑同一模块中的公共 API。
+
+    把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    f
+        打开的 HDF5 文件句柄。
+
+    key
+        结果键名、表名前缀或 HDF5 group 名称。
+
+    df
+        包含中间统计量或绘图数据的 pandas DataFrame。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     g = f.create_group(key)
 
     # ---- AnnData dataframe metadata ----
@@ -228,29 +272,35 @@ def export_obs_to_pandas(
     atlas,
     columns: list[str] | str | None = None,
 ):
-    """
-    将 DuckDB 中的 obs 表导出为 pandas DataFrame。
+    """将 Atlas 的 ``obs`` 表导出为 pandas DataFrame。
+
+    该函数读取 ``obs`` 表中的指定列或全部列，并返回普通 pandas DataFrame。
+
+    它适合快速检查细胞元数据、过滤标记、聚类标签、细胞类型注释或 QC 指标。
 
     Parameters
     ----------
-    atlas : Atlas
-        scAtlasPy 的 Atlas 对象，要求 atlas.connection 已连接 DuckDB。
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
-    columns : list[str] | str | None
-        需要导出的 obs 字段。
-
-        - None：
-            导出 obs 的所有字段。
-
-        - list[str] 或 str：
-            导出 atlas_cell_id + 指定字段。
-            atlas_cell_id 一定会自动加入，用作 pandas index。
+    columns
+        需要导出的 ``obs`` 列名列表；为 ``None`` 时导出全部列。
 
     Returns
     -------
-    pandas.DataFrame
-        obs 表对应的 DataFrame。
-        默认使用 atlas_cell_id 作为 index。
+    result
+        导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.export_obs_to_pandas(...)
     """
 
     conn = atlas.connection
@@ -318,24 +368,37 @@ def export_obs_to_pandas(
 
 # 示例函数； 从 obs_df 中筛选 filter_col == True 的细胞，
 def get_filtered_cell_ids(obs_df, filter_col: str = "filter_cells"):
-    """
-    示例函数：
-    从 obs_df 中筛选 filter_col == True 的细胞，
-    返回 atlas_cell_id list。
+    """获取数据库或对象中的内部信息。
+
+    把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
+
+    函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+    整体用法和 Scanpy 中相近的 ``sap.io.get_filtered_cell_ids`` 风格 API 类似，但结果保存在 Atlas
+    数据库表中，便于后续步骤复用。
 
     Parameters
     ----------
-    obs_df : pandas.DataFrame
-        export_obs_to_pandas() 返回的 obs DataFrame。
+    obs_df
+        包含 ``obs`` 元数据的 DataFrame。
 
-    filter_col : str
-        用于筛选的布尔列名。
-        默认是 filter_cells。
+    filter_col
+        用于判断细胞是否通过过滤的 ``obs`` 列名。
 
     Returns
     -------
-    list[int]
-        满足 filter_col == True 的 atlas_cell_id 列表。
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.get_filtered_cell_ids(...)
     """
 
     if obs_df.index.name != "atlas_cell_id":
@@ -360,44 +423,44 @@ def export_atlas_to_anndata(
     include_obsm: bool = True,
     include_varm: bool = True,
 ):
-    """
-    根据 atlas_cell_id list，从 DuckDB 中导出子集 AnnData 到内存。
+    """将 Atlas 数据库导出为 AnnData 对象。
 
-    导出内容：
-    - obs  : 子集 obs
-    - var  : 全量 var
-    - X    : 子集 cell × 全量 gene
-    - obsm : 子集 obsm
-    - varm : 全量 varm
+    该函数从 Atlas 表中重建 ``obs``、``var`` 和 CSR 表达矩阵，并可选择导出 ``obsm`` 与 ``varm``。
+
+    可以通过 ``atlas_cell_ids`` 导出细胞子集，通过 ``x_field`` 指定使用哪个表达字段作为 AnnData 的 ``X``。
 
     Parameters
     ----------
-    atlas : Atlas
-        scAtlasPy 的 Atlas 对象，要求 atlas.connection 已连接 DuckDB。
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
-    atlas_cell_ids : list[int]
-        需要导出的 atlas_cell_id 列表。
-        顺序会被保留。
+    atlas_cell_ids
+        需要导出的 Atlas 细胞 ID 子集。
 
-    x_field : str
-        X_HyS_data 中作为表达矩阵值的字段。
-        默认 "data"。
-        也可以是：
-            "data_log1p"
-            "data_scale"
-            "data_normalize"
+    x_field
+        ``X_HyS_data`` 中用作 AnnData ``X`` 的表达字段。
 
-    include_obsm : bool
-        是否导出 obsm_* 表。
+    include_obsm
+        是否导出 ``obsm_*`` 表。
 
-    include_varm : bool
-        是否导出 varm_* 表。
+    include_varm
+        是否导出 ``varm_*`` 表。
 
     Returns
     -------
-    AnnData
-        内存中的 AnnData 对象。
+    result
+        导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
 
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.export_atlas_to_anndata(...)
     """
 
     import numpy as np
@@ -422,6 +485,28 @@ def export_atlas_to_anndata(
 
     # DuckDB 标识符安全引用
     def _q(name: str) -> str:
+        """为 SQL 标识符添加安全引用。
+
+        该内部函数属于数据导出模块，用于支撑同一模块中的公共 API。
+
+        把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        Returns
+-------
+        quoted_name
+            加双引号后的 SQL 标识符。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return '"' + name.replace('"', '""') + '"'
 
     # 检查 x_field 是否存在

@@ -20,13 +20,34 @@ def _cleanup_transform_after_step(
         checkpoint: bool = False,
         collect: bool = True,
 ):
-    """
-    transformation 内部轻量清理函数：
-    - 删除 DuckDB 临时表
-    - 取消注册 pandas 临时表
-    - 可选 CHECKPOINT
-    - gc.collect()
-    - 不关闭 DuckDB connection
+    """清理当前步骤产生的临时资源。
+
+    该内部函数属于表达矩阵转换模块，用于支撑同一模块中的公共 API。
+
+    对 ``X_HyS_data`` 执行 normalize、log1p、sqrt、scale 和 HVG 筛选。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    conn
+        DuckDB 数据库连接。
+
+    temp_tables
+        需要清理的临时表名称列表。
+
+    unregister_tables
+        需要从 DuckDB 连接中 unregister 的临时 relation 名称列表。
+
+    checkpoint
+        清理后是否执行 DuckDB ``CHECKPOINT``。
+
+    collect
+        清理后是否触发 Python 垃圾回收。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     if temp_tables is None:
@@ -72,6 +93,42 @@ def normalize_total_fast(
         select_data: str = "data"
 ) -> None:
 
+    """快速执行 total-count 归一化。
+
+    该函数在 DuckDB 中统计每个细胞的总表达量，计算 ``target_sum / total`` 缩放因子，并把归一化后的表达值写入
+    ``X_HyS_data`` 的新字段。
+
+    功能上类似 ``scanpy.pp.normalize_total``，但不会覆盖原始表达字段，便于在同一数据库中同时保留
+    raw、normalized 和 log-scale 表达。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    target_sum
+        归一化后每个细胞的目标总表达量。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.normalize_total_fast(...)
+    """
     print("==== normalize_total_streaming ====")
     start = datetime.now()
 
@@ -187,6 +244,40 @@ def normalize_total(
         select_data: str = "data"
 ) -> None:
 
+    """执行 total-count 归一化。
+
+    该函数按细胞分块计算总表达量，并将每个非零表达值按 ``target_sum`` 重新缩放后写入新字段。
+
+    与 fast 版本相比，该实现更强调分块稳健性，适合在内存或临时表压力较大时使用。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    target_sum
+        归一化后每个细胞的目标总表达量。
+
+    cell_chunk_size
+        按细胞分块处理时每个 chunk 的细胞数量。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.normalize_total(...)
+    """
     print("==== normalize_total_streaming_cell_chunk ====")
     start = datetime.now()
 
@@ -320,18 +411,36 @@ def normalize_total_scale_factor_fast(
                     target_sum: float = 10000,
                     add_key: str = "scale_factor",
                     select_data: str = "data" ) -> None:
-    """
-    高性能 normalize_total（Scanpy 等价）：
-    - 不修改 X_HyS_data
-    - 只计算每个 cell 的 scale_factor
-    - 支持指定使用 X_HyS_data 中的任意字段作为表达值
+    """快速计算 total-count 归一化缩放因子。
 
-    Args:
-        atlas: Atlas 对象
-        target_sum: 归一化目标和；
-        add_key: 写入 obs 的 scale_factor 字段名
-        select_data: X_HyS_data 中用于计算 total 的字段名
-                     （如 'data', 'data_normalized', 'X_log1p'）
+    该函数只计算每个细胞的 total-count scale factor，并写入 ``obs``，不直接修改 ``X_HyS_data`` 表达值。
+
+    当多个表达字段需要复用同一套归一化系数时，可以先计算 scale factor，再在后续步骤中引用。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    target_sum
+        归一化后每个细胞的目标总表达量。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.normalize_total_scale_factor_fast(...)
     """
 
     print("==== normalize_total (scale_factor only) ====")
@@ -403,15 +512,39 @@ def normalize_total_scale_factor(
         select_data: str = "data",
         cell_chunk_size: int = 500_000,   # ✅ 修改1：新增 cell 分块
 ) -> None:
-    """
-    高性能 normalize_total（scale_factor only）
+    """计算 total-count 归一化缩放因子。
 
-    ✅ 大数据安全版：
-    - 不修改 X_HyS_data
-    - 不创建全量 _cell_sum
-    - 按 cell_id 分块计算 total
-    - 每个 chunk 只生成小 _cell_sum_chunk
-    - 写入 obs.scale_factor
+    该函数分块统计每个细胞的总表达量，并把归一化缩放因子写入 ``obs`` 指定列。
+
+    结果可用于后续自定义 SQL 转换或检查不同细胞测序深度的差异。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    target_sum
+        归一化后每个细胞的目标总表达量。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    cell_chunk_size
+        按细胞分块处理时每个 chunk 的细胞数量。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.normalize_total_scale_factor(...)
     """
 
     print("==== normalize_total (scale_factor only, CHUNKED) ====")
@@ -523,9 +656,37 @@ def log1p_fast(
             base: Optional[Number] = None,
             add_field: str = "data_log1p",
             select_data: str = "data_normalize" ) -> None:
-    """
-    对表达值进行 log(1+x) 转换
-    - 支持选择 X_HyS_data 中任意字段进行计算
+    """快速执行 log1p 转换。
+
+    该函数对 ``X_HyS_data`` 中指定表达字段执行 ``log(1 + x)``，并将结果写入新的表达字段。
+
+    常用于 total-count 归一化之后，为 PCA、HVG、UMAP feature plot 和 marker 可视化准备 log-scale
+    表达。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    base
+        对数或指数转换使用的底数；为 ``None`` 时使用自然底。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.log1p_fast(...)
     """
 
     logger.info("开始执行 log(1+x) 转换...")
@@ -594,11 +755,39 @@ def log1p(
                 add_field: str = "data_log1p",
                 select_data: str = "data_normalize",
                 chunk_size: int = 100_000_000) -> None:
-    """
-    1e8 级 CSR 安全的 log1p 实现
-    - 不一次性 UPDATE 全表
-    - 按 id 分块
-    - 支持指定 X_HyS_data 中的任意字段作为输入
+    """执行 log1p 转换。
+
+    该函数以 chunk 方式对表达字段执行 log1p 转换，适合在大表更新时控制单次 SQL 写入规模。
+
+    它不会删除原始表达字段，而是把结果写入 ``add_field``，方便比较不同转换结果。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    base
+        对数或指数转换使用的底数；为 ``None`` 时使用自然底。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.log1p(...)
     """
 
     logger.info("开始执行 log1p (chunked)...")
@@ -689,11 +878,39 @@ def expm1(
         add_field: str = "data_exp1",
         select_data: str = "data_log1p",
         chunk_size: int = 50_000_000 ) -> None:
-    """
-    log1p_chunked 的逆运算：exp(x) - 1
-    - ln(1+x)  → exp(x) - 1
-    - log_b(1+x) → b^x - 1
-    - 按 X_HyS_data.id 分块，支持 1e8 CSR
+    """执行 expm1 逆转换。
+
+    该函数对 log-scale 表达值执行 ``exp(x) - 1``，将表达恢复到近似 count/linear scale，并写入新字段。
+
+    常用于需要从 log1p 表达回到线性表达空间进行比较或导出的场景。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    base
+        对数或指数转换使用的底数；为 ``None`` 时使用自然底。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.expm1(...)
     """
 
     logger.info("开始执行 expm1 (chunked)...")
@@ -789,11 +1006,47 @@ def normalize_and_log1p(
             select_data: str = "data",
             base: Optional[Number] = None,
             chunk_size: int = 50_000_000 ) -> None:
-    """
-    Scanpy 等价的 normalize_total + log1p
-    - normalize_total：只计算 scale_factor（obs）
-    - log1p：log(1 + select_data * scale_factor)
-    - 按 X_HyS_data.id 分块（✔ 正确的 1e8 CSR 方式）
+    """依次执行归一化和 log1p 转换。
+
+    该函数把 total-count 归一化和 log1p 转换合并在一个高层入口中，先根据 ``target_sum`` 缩放表达值，再写入
+    log-scale 表达字段。
+
+    它对应 Scanpy 工作流中常见的 ``normalize_total`` + ``log1p`` 组合，适合为
+    PCA/HVG/可视化准备表达矩阵。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    target_sum
+        归一化后每个细胞的目标总表达量。
+
+    scale_key
+        保存或读取归一化缩放因子的 ``obs`` 列名。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    base
+        对数或指数转换使用的底数；为 ``None`` 时使用自然底。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.normalize_and_log1p(...)
     """
 
     print("==== normalize_and_log1p (Scanpy-equivalent) ====")
@@ -895,17 +1148,40 @@ def highly_variable_genes(
                         add_key: str = "highly_variable_genes",
                         select_data: str = "data_log1p"
                     ) -> None:
-    """
-    类似 sc.pp.highly_variable_genes（全细胞含0统计版，最小化修改）
+    """识别高变基因。
 
-    - 不修改 X_HyS_data
-    - 在 var 表中新建布尔字段 add_key
-    - 使用“全细胞（含0）”定义的 mean / var / std
-    - 不会真的补 0，仍然保持稀疏、大数据安全
+    该函数在数据库中按基因计算均值、方差、标准差、非零数量和变异性得分，并按 ``n_top_genes`` 选择高变基因。
 
-    flavor:
-        - "var": 按方差排序
-        - "cv" : 按变异系数（std / mean）排序
+    结果写入 ``var`` 表中的 ``add_key`` 以及相关统计字段，可供 ``filter_build_index``、PCA 和 scale
+    步骤使用。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    flavor
+        高变基因筛选方法名称。
+
+    n_top_genes
+        需要选择的高变基因数量。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.highly_variable_genes(...)
     """
 
     print("==== highly_variable_genes (CSR + DuckDB, all-cells stats) ====")
@@ -1116,66 +1392,70 @@ def highly_variable_genes_seurat(
         var_filter_col: str = "filter_genes",
         inplace: bool = True,
 ):
-    """
-    数据库版 Scanpy flavor='seurat' HVG。
+    """使用 Seurat 风格方法识别高变基因。
 
-    尽量对齐 scanpy.pp.highly_variable_genes(flavor='seurat') 的核心逻辑：
+    该函数实现类似 Scanpy ``flavor="seurat"`` 的流程：计算基因均值和离散度，按均值分箱，在每个 bin 内标准化离散度，再选择
+    top HVGs。
 
-    1. 输入默认使用 log-normalized data，例如 data_log1p
-    2. 内部先 expm1 还原：
-           x = exp(data_log1p) - 1
-    3. 对每个 gene 计算全细胞含 0 的 mean / variance
-       注意：variance 使用 sample variance，近似 Scanpy correction=1
-    4. 计算 dispersion:
-           dispersion = variance / mean
-    5. Seurat flavor:
-           means = log1p(mean)
-           dispersions = log(dispersion)
-    6. 按 means 等宽分箱，默认 n_bins=20
-    7. 每个 bin 内：
-           dispersions_norm = (dispersions - bin_mean) / bin_std
-       如果某个 bin 只有一个 gene，则 dispersions_norm 设为 1
-    8. 如果 n_top_genes 不为 None：
-           按 dispersions_norm 选 top n_top_genes
-       否则按 min_mean / max_mean / min_disp / max_disp cutoffs 选
-    9. 写回 var:
-           add_key
-           means
-           dispersions
-           dispersions_norm
-           highly_variable_rank
+    函数支持只在过滤后的细胞/基因上计算，并把 ``means``、``dispersions``、``dispersions_norm``、rank
+    和布尔选择结果写回 ``var``。
 
     Parameters
     ----------
     atlas
-        scAtlasPy Atlas 对象，要求 atlas.connection 已连接。
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
     n_top_genes
-        选取前多少个 HVG。
-        如果不为 None，则 min_mean / max_mean / min_disp / max_disp 会被忽略，
-        这和 Scanpy 的行为一致。
+        需要选择的高变基因数量。
 
     add_key
-        写回 var 的 HVG 布尔列名。
+        写回 ``obs`` 或 ``var`` 的结果列名。
 
     select_data
-        X_HyS_data 中用于计算 HVG 的字段。
-        对 flavor='seurat'，推荐使用 data_log1p。
+        从 ``X_HyS_data`` 中读取的表达字段。
 
     n_bins
-        mean 分箱数量，Scanpy 默认 20。
+        Seurat 风格 HVG 分箱数量。
 
-    min_mean / max_mean / min_disp / max_disp
-        当 n_top_genes=None 时使用的筛选阈值。
-        当 n_top_genes 不为 None 时忽略。
+    min_mean
+        参与 HVG 选择的基因均值下限。
+
+    max_mean
+        参与 HVG 选择的基因均值上限。
+
+    min_disp
+        参与 HVG 选择的离散度下限。
+
+    max_disp
+        参与 HVG 选择的离散度上限。
 
     use_filtered
-        如果 True，并且 obs.filter_cells / var.filter_genes 存在，
-        则只在过滤后的 cells / genes 上计算 HVG。
+        是否只使用通过过滤的细胞或基因。
+
+    obs_filter_col
+        ``obs`` 中表示细胞过滤状态的列名。
+
+    var_filter_col
+        ``var`` 中表示基因过滤状态的列名。
 
     inplace
-        True：写回 var。
-        False：返回 gene_df，不写回。
+        是否将结果写回 Atlas 数据库。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.highly_variable_genes_seurat(...)
     """
 
 
@@ -1196,6 +1476,28 @@ def highly_variable_genes_seurat(
     # 0. DuckDB 字段安全引用
     # -------------------------------------------------
     def _q(name: str) -> str:
+        """为 SQL 标识符添加安全引用。
+
+        该内部函数属于表达矩阵转换模块，用于支撑同一模块中的公共 API。
+
+        对 ``X_HyS_data`` 执行 normalize、log1p、sqrt、scale 和 HVG 筛选。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        Returns
+-------
+        quoted_name
+            加双引号后的 SQL 标识符。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return '"' + name.replace('"', '""') + '"'
 
     # -------------------------------------------------
@@ -1705,14 +2007,49 @@ def scale(
         hvg_key: str = "highly_variable_genes",
         id_chunk_size: int = 20_000_000,
         ):
-    """
-    Gene-wise z-score scale（超大数据安全版：保留原结构 + 按 id 分块回写）
+    """对表达矩阵进行基因级标准化缩放。
 
-    ✅ 含 0 版本：
-    - mean/std 按全细胞统计，包括隐式 0
-    - 不真的补 0
-    - 不增加 X_HyS_data 行数
-    - 只改变 gene_stat 的计算公式
+    该函数按基因计算均值和标准差，将每个非零表达值转换为 z-score，并把零值在标准化后的对应值保存到 ``var``。
+
+    功能上类似 ``scanpy.pp.scale``；当 ``use_hvg=True`` 时只缩放高变基因，``max_value``
+    可用于截断过大的 z-score。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    add_field_to_var
+        写入 ``var`` 表的辅助统计列名。
+
+    max_value
+        标准化后允许的最大绝对值；用于截断极端 z-score。
+
+    use_hvg
+        是否只处理高变基因。
+
+    hvg_key
+        ``var`` 中表示高变基因的布尔列名。
+
+    id_chunk_size
+        按 ``X_HyS_data.id`` 分块更新时每个 chunk 的行数。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.scale(...)
     """
 
     print("\n==== scale_ultra_safe_update_by_id_chunk_direct_zero_aware ====")
@@ -1966,14 +2303,45 @@ def scale_fast(
         max_value: float = 10.0,
         use_hvg: bool = True,
         hvg_key: str = "highly_variable_genes"):
-    """
-    工业级 Gene-wise z-score scale（含 0 统计版）
+    """快速对表达矩阵进行基因级标准化缩放。
 
-    特点：
-    - mean/std 按全细胞含 0 统计
-    - 不真的补 0
-    - X_HyS_data 只写显式非零值的 scale
-    - var.zero_scale_transform 存隐式 0 的 scale 值
+    该函数使用 DuckDB 聚合和批量 UPDATE 计算标准化表达，比逐 chunk 版本更直接。
+
+    它适合已经准备好 HVG 标记和表达字段的大数据预处理流程。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    add_field_to_var
+        写入 ``var`` 表的辅助统计列名。
+
+    max_value
+        标准化后允许的最大绝对值；用于截断极端 z-score。
+
+    use_hvg
+        是否只处理高变基因。
+
+    hvg_key
+        ``var`` 中表示高变基因的布尔列名。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.scale_fast(...)
     """
 
     print("\n==== scale_ultra (zero-aware industrial OLAP optimized) ====")
@@ -2140,12 +2508,33 @@ def sqrt_fast(
     atlas: "Atlas",
     add_field: str = "data_sqrt",
     select_data: str = "data") -> None:
-    """
-    对表达值进行 sqrt 转换
+    """快速执行平方根转换。
 
-    - 直接执行 sqrt(x)
-    - 不对 0 做任何处理
-    - 仅跳过 NULL
+    该函数对指定表达字段执行平方根转换，并把结果写入 ``X_HyS_data`` 的新字段。
+
+    平方根转换可作为 count 数据的轻量方差稳定化方法，用于探索性分析或特定模型输入。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.sqrt_fast(...)
     """
 
     logger.info("开始执行 sqrt(x) 转换...")
@@ -2222,12 +2611,36 @@ def sqrt(
     add_field: str = "data_sqrt",
     select_data: str = "data",
     chunk_size: int = 100_000_000) -> None:
-    """
-    1e8 级 CSR 安全的 sqrt 实现
-    - 不一次性 UPDATE 全表
-    - 按 id 分块
-    - 支持指定 X_HyS_data 中的任意字段作为输入
-    - 不对 0 做任何处理（sqrt(0)=0）
+    """执行平方根转换。
+
+    该函数以 chunk 方式对表达字段执行平方根转换，适合在较大 ``X_HyS_data`` 表上降低单次更新压力。
+
+    转换结果写入新字段，不会覆盖原始表达值。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    add_field
+        写入 ``X_HyS_data`` 的新表达字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.sqrt(...)
     """
 
     logger.info("开始执行 sqrt (chunked)...")

@@ -12,34 +12,22 @@ logger.addHandler(logging.NullHandler())
 
 
 def set_verbosity(level: str = "warning"):
-    """Set the verbosity level for Atlas logging.
+    """设置 Atlas 包的日志输出级别。
+
+    该函数调整名为 ``Atlas`` 的 logger，用于控制导入导出、预处理、工具函数和绘图流程中的日志详细程度。
+
+    它只影响 scAtlasPy 自己的 logger，不会修改 Python root logger 或第三方库的日志设置。
 
     Parameters
     ----------
     level
-        Verbosity level. Available options are `"error"`, `"warning"`,
-        `"info"`, and `"debug"`.
-
-        - `"error"` only shows error messages.
-        - `"warning"` shows warnings and errors.
-        - `"info"` shows general running information.
-        - `"debug"` shows detailed debugging information.
-
-    Returns
-    -------
-    None
-        The logging level is updated in place.
+        日志级别字符串，例如 ``"debug"``、``"info"``、``"warning"`` 或 ``"error"``。
 
     Examples
     --------
-    Show general running information::
+    调用该函数：::
 
-        set_verbosity("info")
-
-    Show detailed debugging information::
-
-        set_verbosity("debug")
-
+        sap.set_verbosity(...)
     """
 
     level_map = {
@@ -60,13 +48,44 @@ def set_verbosity(level: str = "warning"):
     logging.getLogger("Atlas").setLevel(level_map[level])
 
 class Atlas:
-    """
-    这是一个Atlas类，用来管理和待分析数据集的数据库的交互
+    """Atlas 数据库对象。
 
+    ``Atlas`` 封装一个持久化 DuckDB-backed ``.sasql`` 数据库文件，保存数据库名称、文件路径和当前连接。
+
+    该对象提供创建、打开、查询、查看表结构、构建过滤索引和按 minibatch 读取表达矩阵等入口，是 scAtlasPy 中多数
+    ``sap.pp``、``sap.tl`` 和 ``sap.pl`` 函数共同依赖的核心对象。
+
+    Parameters
+    ----------
+    name
+        对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+    path
+        目录路径或文件路径。
     """
 
     def __init__(self, name: str, path:str):
 
+        """初始化对象。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        path
+            目录路径或文件路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         logger.info(f"开始初始化 Atlas 实例，名称: {name}, 路径: {path}")
 
         self.__name = name  # 该数据库的名称（无后缀）
@@ -95,12 +114,30 @@ class Atlas:
             file_path: str,
             mode: Literal["r+", "r"] = "r+",
     ) -> "Atlas":
-        """
-        打开一个已经存在的 Atlas 数据库。
+        """打开已经存在的 Atlas 数据库。
 
-        推荐用法：
-            atlas = Atlas.open(r"F:\\data\\xxx.sasql")
-            atlas = Atlas.open(r"F:\\data\\xxx.sasql", mode="r")
+        该类方法接收一个 ``.sasql`` 文件路径，解析数据库名称和目录，创建 ``Atlas`` 对象，并按指定模式建立 DuckDB 连接。
+
+        适合在已有 Atlas 数据库上继续执行过滤、预处理、降维、聚类、绘图或导出。
+
+        Parameters
+        ----------
+        file_path
+            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+        mode
+            数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.open(...)
         """
 
         file_path = os.path.abspath(file_path)
@@ -145,11 +182,30 @@ class Atlas:
             name: str,
             path: str,
     ) -> "Atlas":
-        """
-        创建一个新的 Atlas 数据库。
+        """创建新的 Atlas 数据库。
 
-        推荐用法：
-            atlas = Atlas.create("my_atlas", r"F:\\data")
+        该类方法根据数据库名称和目录创建新的 ``.sasql`` 文件，并初始化 DuckDB 连接。
+
+        如果目标文件已经存在，函数会按当前实现的检查逻辑避免无意覆盖已有数据库。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        path
+            目录路径或文件路径。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.create(...)
         """
 
         path = os.path.abspath(path)
@@ -166,42 +222,213 @@ class Atlas:
 
     @property
     def file_path(self) -> str:
+        """执行 ``file_path`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.file_path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.file_path(...)
+        """
         return self.__file_path
 
     @file_path.setter
     def file_path(self, value: str) -> None:
+        """执行 ``file_path`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.file_path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        value
+            属性的新值。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.file_path(...)
+        """
         self.__file_path = value
 
     @property
     def name(self) -> str:
+        """执行 ``name`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.name`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.name(...)
+        """
         return self.__name
 
     @name.setter
     def name(self, value: str) -> None:
+        """执行 ``name`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.name`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        value
+            属性的新值。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.name(...)
+        """
         self.__name = value
 
     @property
     def path(self) -> str:
+        """执行 ``path`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.path(...)
+        """
         return self.__path
 
     @path.setter
     def path(self, value: str) -> None:
+        """执行 ``path`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        value
+            属性的新值。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.path(...)
+        """
         self.__path = value
 
     @property
     def connection(self) -> Optional[duckdb.DuckDBPyConnection]:
+        """执行 ``connection`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.connection`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.connection(...)
+        """
         return self.__connection
 
     @connection.setter
     def connection(self, value: str)-> None:
+        """执行 ``connection`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.connection`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        value
+            属性的新值。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.connection(...)
+        """
         self.__connection = value
 
     def _create(self, name: str, path: str) -> duckdb.DuckDBPyConnection:
-        """
-        在path路径下创建一个名称为<name.sasql>的数据库文件
-        :param name: 数据库名称
-        :param path: 数据库文件存储路径
-        :return: 数据库连接对象
+        """创建 Atlas 工作流所需的数据库表。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        path
+            目录路径或文件路径。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
         logger.debug(f"开始创建数据库，名称: {name}, 路径: {path}")
 
@@ -226,12 +453,27 @@ class Atlas:
             raise RuntimeError(f"创建数据库失败：{str(e)}")
 
     def connect(self, mode: Literal["r+", "r"] = "r+") -> duckdb.DuckDBPyConnection:
-        """
-        和self.name命名的数据库进行连接。
-        如果<name.sasql>不存在，则创建并连接；
-        如果<name.sasql>存在，则直接连接
-        :param mode: 指定模式，只读or读写，
-        :return: 数据库连接对象
+        """建立 DuckDB 数据库连接。
+
+        该方法打开当前 Atlas 对象指向的 ``.sasql`` 文件，并把连接保存到 ``atlas.connection``。
+
+        多数读写函数要求连接已存在；如果连接已关闭或对象刚被创建，可以调用该方法重新连接。
+
+        Parameters
+        ----------
+        mode
+            数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.connect(...)
         """
         logger.info(f"请求数据库连接，模式: {mode}")
 
@@ -276,9 +518,19 @@ class Atlas:
             raise RuntimeError(f"连接数据库失败: {str(e)}")
 
     def close(self):
-        """
-        关闭数据库连接
-        :return: None
+        """执行 ``close`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.close(...)
         """
         logger.info("关闭数据库连接")
         try:
@@ -298,10 +550,30 @@ class Atlas:
             raise RuntimeError(f"关闭数据库连接时出错: {str(e)}")
 
     def execute_sql(self, sql: str) -> DuckDBPyConnection | None:
-        """
-        提交执行sql语句
-        :param sql: 要执行的SQL语句
-        :return: 如果查询有结果则返回结果集，否则返回None
+        """执行 ``execute_sql`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.execute_sql`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        sql
+            需要执行的 SQL 语句。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.execute_sql(...)
         """
         logger.info(f"执行SQL语句: {sql}")
 
@@ -326,20 +598,53 @@ class Atlas:
             return None
 
     def exists(self) -> bool:
-        """
-        检查数据库文件是否存在
-        :return: 如果数据库文件存在返回True，否则返回False
+        """执行 ``exists`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.exists`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.exists(...)
         """
         exists = os.path.exists(self.file_path)
         logger.debug(f"检查数据库文件是否存在: {self.file_path} -> {exists}")
         return exists
 
     def query(self, query):
-        """
-        全量查询
-        用sql语句进行查询，返回pandas DataFrame格式的结果
-        :param query: SQL查询语句
-        :return: pandas DataFrame
+        """执行 ``query`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.query`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        query
+            需要执行的 SQL 查询语句。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.query(...)
         """
         logger.info("查询数据库，返回值类型为pandas")
         if self.__connection is None:
@@ -349,9 +654,29 @@ class Atlas:
         return df
 
     def query_raw(self, query):
-        """
-        用 SQL 查询，返回 DuckDB 原始结果对象。
-        不改变当前数据库连接模式。
+        """执行 ``query_raw`` 的核心功能。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.query_raw`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        query
+            需要执行的 SQL 查询语句。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.query_raw(...)
         """
         logger.info("查询数据库，返回值类型为duckDB")
 
@@ -362,9 +687,22 @@ class Atlas:
         return result
 
     def describe(self) -> str:
-        """
-        显示 Atlas 数据库的基本信息：
-        database / tables / table names / n_cells / n_genes
+        """查看 Atlas 数据库概要。
+
+        该方法读取数据库中的表列表、列信息和行数，并生成适合打印查看的文本摘要。
+
+        它用于快速确认数据库是否包含 ``obs``、``var``、``X_HyS_data``、embedding 和分析结果表。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.describe(...)
         """
 
         if self.__connection is None:
@@ -403,6 +741,30 @@ class Atlas:
 
         # 5. 格式化输出
         def fmt(x):
+            """执行 ``fmt`` 的核心功能。
+
+            负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+            函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+            整体用法和 Scanpy 中相近的 ``sap.fmt`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+            Parameters
+            ----------
+            x
+                需要排序、格式化或转换的单个输入值。
+
+            Returns
+-------
+            result
+                函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+            Examples
+            --------
+            调用该函数：::
+
+                sap.fmt(...)
+            """
             return "NA" if x is None else f"{int(x):,}"
 
         text = (
@@ -416,13 +778,30 @@ class Atlas:
         return text
 
     def show(self, table_name: str, n: int = 5):
-        """
-        显示指定表的字段名和前 n 行数据。
+        """查看指定数据库表的前几行。
 
-        用法：
-            atlas.show("obs")
-            atlas.show("var")
-            atlas.show("X_HyS_data", n=5)
+        该方法会检查目标表是否存在，读取表结构，并返回指定行数的数据。
+
+        适合调试导入结果、查看 ``obs``/``var`` 新增列，或检查分析结果表是否写入成功。
+
+        Parameters
+        ----------
+        table_name
+            数据库表名。
+
+        n
+            数量参数，例如返回行数、抽样数量或参与计算的元素个数。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.show(...)
         """
 
         if self.__connection is None:
@@ -469,15 +848,43 @@ class Atlas:
         return df
 
     def __repr__(self) -> str:
-        """
-        在交互环境中直接显示 Atlas 基本信息。
+        """执行 ``__repr__`` 的核心功能。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
         return self.describe()
 
 
     def __str__(self) -> str:
-        """
-        print(atlas) 时显示 Atlas 基本信息。
+        """执行 ``__str__`` 的核心功能。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
         return self.describe()
 
@@ -488,7 +895,34 @@ class Atlas:
             use_hvg: bool = True,
             select_data: str = "data_scale",
     ):
-        ''' 过滤 + 建新表 + 建tid分块索引 '''
+        """根据过滤条件重建 Atlas 过滤索引。
+
+        该方法调用 ``FilterBuildIndex``，根据 ``obs`` 和 ``var`` 中的过滤列生成连续
+        ``filter_cell_id`` 与 ``filter_gene_id``。
+
+        随后会重建 ``X_HyS_data_filtered`` 和 ``X_HyS_indptr_filtered``，供 PCA、KMeans 和
+        dense/CSR minibatch 读取使用。
+
+        Parameters
+        ----------
+        cell_condition
+            ``obs`` 中用于筛选细胞的布尔列名或条件。
+
+        gene_condition
+            ``var`` 中用于筛选基因的布尔列名或条件。
+
+        use_hvg
+            是否只处理高变基因。
+
+        select_data
+            从 ``X_HyS_data`` 中读取的表达字段。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.filter_build_index(...)
+        """
         builder = FilterBuildIndex(
             self.file_path,
             cell_condition=cell_condition,
@@ -500,7 +934,23 @@ class Atlas:
 
 
     def minibatch_CSR(self , X_type = "CSR" ):
-        ''' minibatch_CSR 格式读取 '''
+        """按 minibatch 读取 CSR 表达矩阵。
+
+        该方法构造 ``MinibatchFetchMultiThreads``，从过滤后的 HyS 表中逐批恢复 CSR 矩阵。
+
+        它适合需要稀疏矩阵输入的训练、调试或和 scipy sparse 工作流对接的场景。
+
+        Parameters
+        ----------
+        X_type
+            输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.minibatch_CSR(...)
+        """
 
         fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type =  X_type )
         for X_batch in fetcher.run():
@@ -515,7 +965,37 @@ class Atlas:
             max_batches: int | None = None,
             batch_size: int = 2048,
     ):
-        ''' minibatch_dense 格式读取 '''
+        """按 minibatch 读取 dense 表达矩阵。
+
+        该方法从过滤后的 HyS 表中逐批恢复 dense 矩阵，并支持 ``single-pass`` 和 ``multi-pass`` 两种遍历模式。
+
+        ``multi-pass`` 会使用 shuffle buffer 提高训练数据随机性，常用于流式 PCA 和 MiniBatchKMeans。
+
+        Parameters
+        ----------
+        pass_mode
+            minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
+
+        buffer_batch_num
+            shuffle buffer 中缓存的 minibatch 数量。
+
+        max_batches
+            最多输出的 minibatch 数量；为 ``None`` 时不限制。
+
+        batch_size
+            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+        Yields
+-------
+        batch
+            逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.minibatch_dense(...)
+        """
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
 

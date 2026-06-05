@@ -5,6 +5,23 @@ from datetime import datetime
 # 示例： 内置 PBMC marker reference（Phase 1）
 def _get_builtin_pbmc_marker_reference():
 
+    """获取数据库或对象中的内部信息。
+
+    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
+
+    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     return {
         "CD4 T cells": ["IL7R"],
         "CD14+ Monocytes": ["CD14", "LYZ"],
@@ -20,6 +37,28 @@ def _get_builtin_pbmc_marker_reference():
 # 工具函数：0~1 归一化
 def _minmax_scale(series: pd.Series) -> pd.Series:
 
+    """执行 ``_minmax_scale`` 的核心功能。
+
+    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
+
+    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    series
+        需要缩放或统计的 pandas Series。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     x = series.astype(float).copy()
     if len(x) == 0:
         return x
@@ -38,6 +77,39 @@ def _score_one_celltype_v2(
         single_marker_penalty: float = 0.6
 ) -> tuple[float, list[str], int, float, float]:
 
+    """执行 ``_score_one_celltype_v2`` 的核心功能。
+
+    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
+
+    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``rank_genes_groups``。
+
+    Parameters
+    ----------
+    marker_df
+        某个 cluster 的 marker 基因统计表。
+
+    marker_genes
+        某个参考细胞类型对应的 marker 基因集合。
+
+    top_n
+        保留、标注或评分时使用的 top 项数量。
+
+    single_marker_penalty
+        候选细胞类型只命中少量 marker 时使用的惩罚系数。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     if marker_df is None or len(marker_df) == 0:
         return 0.0, [], 0, 0.0, 0.0
 
@@ -130,6 +202,63 @@ def annotate_clusters(
         ambiguity_threshold_medium: float = 0.03
 ):
 
+    """根据 marker 基因对聚类进行细胞类型注释。
+
+    该函数读取差异表达结果，将每个 cluster 的 marker gene 与内置或指定参考 marker 集合进行匹配，并计算候选细胞类型得分。
+
+    根据得分差距和置信度阈值，函数会为每个 cluster 分配细胞类型标签、置信度等级和注释原因，并可写回 ``obs``。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    rank_result
+        差异表达结果 DataFrame 或结果表名称。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    reference_name
+        marker 参考库名称。
+
+    write_to_obs
+        是否将结果同步写入 ``obs`` 表。
+
+    obs_col
+        ``obs`` 中用于写入或读取结果的列名。
+
+    obs_conf_col
+        写入注释置信度时使用的 ``obs`` 列名。
+
+    top_n
+        保留、标注或评分时使用的 top 项数量。
+
+    unknown_label
+        无法可靠注释时使用的标签。
+
+    ambiguity_threshold_high
+        判断高置信注释时使用的分数差阈值。
+
+    ambiguity_threshold_medium
+        判断中等置信注释时使用的分数差阈值。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.tl.annotate_clusters(...)
+    """
     print("\n==== annotate_clusters (Phase 1, revised) ====")
     start = datetime.now()
     conn = atlas.connection
@@ -183,6 +312,28 @@ def annotate_clusters(
 
     # 尽量按数字排序
     def _sort_key(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
+
+        基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except:

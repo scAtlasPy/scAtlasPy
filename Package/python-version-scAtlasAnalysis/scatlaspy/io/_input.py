@@ -26,57 +26,48 @@ def load_h5ad_list_random(
     pool_block_num: int = 5,    # 每次从全局随机 block 池读取多少个 block 后 flush
     store_type: str = "count",  # 目标存储类型，"count" 或 "log"
 ):
-    """
-    多个 h5ad 文件读取，global-block 级随机导入 DuckDB。
+    """随机导入多个 h5ad 文件到 Atlas 数据库。
 
-    核心随机逻辑：
-    ------------------------------------------------------------
-    1. 每个文件内部：
-       按 batch_size * read_batch_factor 切成连续 block。
-       注意：不再对单个文件内部 block 单独 shuffle。
+    该函数先把每个 h5ad 文件按 ``batch_size`` 切成连续 block，再把所有文件的 block 合并到全局 block pool
+    中随机打乱。
 
-    2. 全局 block 索引池：
-       把所有文件的 block 都放入 all_block_refs。
-       例如：
-           A: A1,A2,A3
-           B: B1,B2,B3,B4
-           C: C1,C2,C3,C4,C5
+    每次读取 ``pool_block_num`` 个 block 后，会合并为 cell pool，对 pool 内细胞整体随机一次，然后写入
+    ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data``。
 
-       合并为：
-           [A1,A2,A3,B1,B2,B3,B4,C1,C2,C3,C4,C5]
+    该策略适合多个文件大小不一致的场景，既避免 round-robin 后期只剩大文件，也减少 h5ad cell-level 随机 IO。
 
-       然后整体随机打乱。
+    Parameters
+    ----------
+    h5ad_paths
+        一个或多个 h5ad 文件路径。
 
-    3. 每次读取 pool_block_num 个 block：
-       默认 pool_block_num=5。
-       例如随机后：
-           [C3,A1,B4,C1,B2, A3,C5,B1,C2,A2, B3,C4]
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
-       则每次读取：
-           第1组：C3,A1,B4,C1,B2
-           第2组：A3,C5,B1,C2,A2
-           第3组：B3,C4
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    4. cell_pool：
-       每组 block 读取后，直接放入 cell_pool。
-       不再做 block 内部 cell 随机。
-       只在 _flush_cell_pool() 里对整个 cell_pool 的所有 cell 整体随机一次。
+    pool_block_num
+        多文件随机导入时每次合并并 flush 的 block 数量。
 
-    5. 写入数据库：
-       将随机后的 cell_pool 写入 obs / X_HyS_indptr / X_HyS_data。
+    store_type
+        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
 
-    适合：
-    ------------------------------------------------------------
-    - n 个 h5ad 文件
-    - 每个文件大小不一致
-    - 希望避免 round-robin 在后期只剩大文件的问题
-    - 希望保持连续 block 读取，避免 h5ad cell 级随机 IO
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
 
-    注意：
-    ------------------------------------------------------------
-    - 不导入 obsm：因为 cell 已经随机重排，原始 obsm 顺序会错位。
-    - varm 是 gene 维度，可以只从第一个文件导入。
-    - 所有文件必须 gene 数量和 gene 顺序一致。
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_h5ad_list_random(...)
     """
 
 
@@ -233,6 +224,34 @@ def load_h5ad_list_random(
         # 多个 block 读到的 batch 合并后，整体随机，然后写入数据库
         def _flush_cell_pool(cell_pool, flush_i: int):
 
+            """执行 ``_flush_cell_pool`` 的核心功能。
+
+            该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+            把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+            ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+            它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+            当前实现中会访问或生成的关键表包括：``obs``、``var``。
+
+            Parameters
+            ----------
+            cell_pool
+                当前 flush 中收集到的 AnnData block 列表。
+
+            flush_i
+                当前 flush 的编号，用于日志输出。
+
+            Returns
+-------
+            result
+                函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+            Notes
+            -----
+            这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+            """
             nonlocal global_cell_id
             nonlocal global_indptr_id
             nonlocal global_indptr_offset
@@ -522,21 +541,42 @@ def load_h5ad_random(
     shuffle_window_batches: int = 5,   # 固定窗口级随机，默认 5 个 batch
     store_type: str = "count",  # 目标存储类型，"count" 或 "log"
 ):
-    """
-    大文件读取，cell 按 shuffle-window 随机导入，只支持 h5ad 格式。
+    """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
-    核心逻辑：
-    1. 按 batch_size 切成 block
-    2. block_starts 全局随机
-    3. 每次读取 shuffle_window_batches 个 batch 到内存
-    4. 合并成一个 adata_window
-    5. 对 window 内所有 cell 做统一随机打乱
-    6. 再整体写入 DuckDB
+    该函数把 backed h5ad 文件切成连续 block，随机打乱 block 顺序，并把多个 block 合并成一个 shuffle
+    window。
 
-    参数简化：
-    - 删除 read_batch_factor
-    - commit_every = shuffle_window_batches * 2
-    - gc_every     = shuffle_window_batches * 4
+    每个 window 内的细胞会整体随机打乱，再批量写入 Atlas 数据库，从而在控制内存占用的同时获得随机导入顺序。
+
+    由于细胞顺序被重排，函数默认不导入 ``obsm``；``varm`` 与基因对齐，可以正常导入。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    shuffle_window_batches
+        单文件随机导入时每个 shuffle window 包含的 block 数量。
+
+    store_type
+        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_h5ad_random(...)
     """
 
     t_start= time.time()
@@ -817,16 +857,63 @@ def load_h5ad_fast(
     h5ad_read_workers: int = 2,
     keep_staging: bool = False,
 ):
-    """
-    大文件 shuffle-window 随机导入 DuckDB，X 使用 Parquet staging 加速。
+    """使用 Parquet staging 加速导入单个 h5ad 文件。
 
-    保持 X_HyS_data 的业务列不变:
-        id, atlas_cell_id, atlas_gene_id, data
+    该函数采用与 ``load_h5ad_random`` 相同的 shuffle-window 策略，但将 ``X_HyS_indptr`` 和
+    ``X_HyS_data`` 先写入 Parquet 分片。
 
-    优化点:
-    1. obs/var 仍直接写 DuckDB。
-    2. X_HyS_indptr / X_HyS_data 先按 window 写入临时 Parquet parts。
-    3. 最后用 DuckDB read_parquet 一次性建表，减少逐 window INSERT 开销。
+    所有 window 处理完成后，再由 DuckDB 使用 ``read_parquet`` 一次性物化表达矩阵表，以减少大量逐 window
+    INSERT 的开销。
+
+    当 h5ad 的 ``X`` 是受支持的 gzip-compressed CSR 布局时，还可以用并行 raw chunk reader 加速读取。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    shuffle_window_batches
+        单文件随机导入时每个 shuffle window 包含的 block 数量。
+
+    store_type
+        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
+
+    staging_dir
+        Parquet staging 临时目录。
+
+    parquet_compression
+        Parquet 文件压缩方式。
+
+    parquet_workers
+        并行写 Parquet 分片的 worker 数量。
+
+    h5ad_read_workers
+        并行读取 h5ad raw gzip chunk 的 worker 数量。
+
+    keep_staging
+        导入完成后是否保留 Parquet staging 临时文件。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_h5ad_fast(...)
     """
 
     t_start=time.time()
@@ -932,6 +1019,41 @@ def load_h5ad_fast(
     parquet_futures = []
 
     def read_h5ad_block(block_start: int, block_end: int):
+        """执行 ``read_h5ad_block`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.read_h5ad_block`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        当前实现中会访问或生成的关键表包括：``obs``、``var``。
+
+        Parameters
+        ----------
+        block_start
+            ``block_start`` 参数。用于控制该函数对应步骤的输入、输出或运行方式。
+
+        block_end
+            ``block_end`` 参数。用于控制该函数对应步骤的输入、输出或运行方式。
+
+        Returns
+-------
+        result
+            导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.read_h5ad_block(...)
+        """
         if x_reader is None:
             return adata_backed[block_start:block_end].to_memory()
         X = x_reader.read_rows(block_start, block_end)
@@ -942,6 +1064,26 @@ def load_h5ad_fast(
         )
 
     def close_parquet_writers() -> None:
+        """执行 ``close_parquet_writers`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.close_parquet_writers`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.close_parquet_writers(...)
+        """
         nonlocal indptr_writer, data_writer
         if indptr_writer is not None:
             indptr_writer.close()
@@ -951,6 +1093,34 @@ def load_h5ad_fast(
             data_writer = None
 
     def append_parquet_tables(indptr_table, data_table) -> None:
+        """执行 ``append_parquet_tables`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.append_parquet_tables`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        indptr_table
+            表示 ``X_HyS_indptr`` 的 Arrow Table。
+
+        data_table
+            表示 ``X_HyS_data`` 的 Arrow Table。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.append_parquet_tables(...)
+        """
         nonlocal indptr_writer, data_writer, parquet_part_counter
         # In parallel mode each worker owns one Parquet shard. Windows are
         # distributed round-robin, so every shard appends row groups in order
@@ -1157,7 +1327,33 @@ def load_h5ad_fast(
 
 
 class _XHySParquetShardWriter:
-    """Own one pair of Parquet files and append windows as row groups."""
+    """X_HyS Parquet 分片写入器。
+
+    该类属于数据导入模块，用于封装该模块中的参数、数据库连接和中间状态。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+
+    Parameters
+    ----------
+    indptr_dir
+        ``X_HyS_indptr`` Parquet 分片目录。
+
+    data_dir
+        ``X_HyS_data`` Parquet 分片目录。
+
+    part_id
+        Parquet 分片编号。
+
+    parquet_compression
+        Parquet 文件压缩方式。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
 
     def __init__(
         self,
@@ -1167,6 +1363,33 @@ class _XHySParquetShardWriter:
         part_id: int,
         parquet_compression: str,
     ):
+        """初始化对象。
+
+        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        indptr_dir
+            ``X_HyS_indptr`` Parquet 分片目录。
+
+        data_dir
+            ``X_HyS_data`` Parquet 分片目录。
+
+        part_id
+            Parquet 分片编号。
+
+        parquet_compression
+            Parquet 文件压缩方式。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         self._indptr_path = os.path.join(indptr_dir, f"part_{part_id:06d}.parquet")
         self._data_path = os.path.join(data_dir, f"part_{part_id:06d}.parquet")
         self._parquet_compression = parquet_compression
@@ -1175,9 +1398,67 @@ class _XHySParquetShardWriter:
         self._pool = futures.ThreadPoolExecutor(max_workers=1)
 
     def submit(self, indptr_table, data_table):
+        """执行 ``submit`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.submit`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        indptr_table
+            表示 ``X_HyS_indptr`` 的 Arrow Table。
+
+        data_table
+            表示 ``X_HyS_data`` 的 Arrow Table。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.submit(...)
+        """
         return self._pool.submit(self._write, indptr_table, data_table)
 
     def _write(self, indptr_table, data_table):
+        """将计算结果写入数据库表。
+
+        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        indptr_table
+            表示 ``X_HyS_indptr`` 的 Arrow Table。
+
+        data_table
+            表示 ``X_HyS_data`` 的 Arrow Table。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         if self._indptr_writer is None:
             self._indptr_writer = pq.ParquetWriter(
                 self._indptr_path,
@@ -1195,6 +1476,30 @@ class _XHySParquetShardWriter:
         return data_table.num_rows
 
     def close(self, *, cancel_futures: bool = False) -> None:
+        """执行 ``close`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        cancel_futures
+            关闭 writer 时是否取消尚未执行的异步写入任务。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.close(...)
+        """
         self._pool.shutdown(wait=True, cancel_futures=cancel_futures)
         if self._indptr_writer is not None:
             self._indptr_writer.close()
@@ -1205,9 +1510,56 @@ class _XHySParquetShardWriter:
 
 
 class _ParallelH5adCSRReader:
-    """Read gzip-compressed CSR X blocks by decompressing HDF5 chunks in parallel."""
+    """并行读取 h5ad CSR 矩阵的内部读取器。
+
+    该类属于数据导入模块，用于封装该模块中的参数、数据库连接和中间状态。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    n_vars
+        表达矩阵中的基因数量。
+
+    workers
+        并行 worker 数量。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
 
     def __init__(self, h5ad_path: str, n_vars: int, workers: int):
+        """初始化对象。
+
+        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        h5ad_path
+            h5ad 文件路径。
+
+        n_vars
+            表达矩阵中的基因数量。
+
+        workers
+            并行 worker 数量。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         self._file = h5py.File(h5ad_path, "r")
         self._x = self._file["X"]
         self._data = self._x["data"]
@@ -1218,6 +1570,42 @@ class _ParallelH5adCSRReader:
 
     @classmethod
     def open_if_supported(cls, h5ad_path: str, n_vars: int, workers: int):
+        """执行 ``open_if_supported`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.open_if_supported`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Parameters
+        ----------
+        h5ad_path
+            h5ad 文件路径。
+
+        n_vars
+            表达矩阵中的基因数量。
+
+        workers
+            并行 worker 数量。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.open_if_supported(...)
+        """
         if workers <= 1:
             return None
         try:
@@ -1246,6 +1634,29 @@ class _ParallelH5adCSRReader:
 
     @staticmethod
     def _dataset_supported(ds) -> bool:
+        """执行 ``_dataset_supported`` 的核心功能。
+
+        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        ds
+            HDF5 dataset 对象。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return (
             ds.ndim == 1
             and ds.chunks is not None
@@ -1254,10 +1665,55 @@ class _ParallelH5adCSRReader:
         )
 
     def close(self) -> None:
+        """执行 ``close`` 的核心功能。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.io.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Notes
+        -----
+        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.io.close(...)
+        """
         self._pool.shutdown(wait=True)
         self._file.close()
 
     def read_rows(self, row_start: int, row_stop: int):
+        """按细胞行范围读取 h5ad CSR 矩阵片段。
+
+        该方法根据 ``indptr`` 将请求的细胞行区间转换为 ``data`` 和 ``indices`` 中连续的非零值范围，
+        并并行读取 gzip 压缩 chunk，最后构造独立的 ``scipy.sparse.csr_matrix``。
+
+        它用于大规模 h5ad 导入过程中的按块读取，避免一次性把完整表达矩阵载入内存。
+
+        Parameters
+        ----------
+        row_start
+            读取细胞行区间的起始位置，包含该行。
+
+        row_stop
+            读取细胞行区间的结束位置，不包含该行。
+
+        Returns
+        -------
+        X
+            指定细胞行范围对应的 CSR 稀疏矩阵。
+
+            行数为 ``row_stop - row_start``，列数为 h5ad 中的基因数量。
+
+        Notes
+        -----
+        返回矩阵的 ``indptr`` 会重新以 0 为起点，因此可以作为独立 CSR block 继续写入 Atlas 数据库。
+        """
         # Convert the requested cell row range into a contiguous nnz range in
         # the CSR data/indices arrays. The returned indptr is rebased to zero
         # so scipy can construct a standalone CSR matrix for this block.
@@ -1274,6 +1730,35 @@ class _ParallelH5adCSRReader:
         )
 
     def _read_1d_range(self, ds, start: int, stop: int):
+        """执行 ``_read_1d_range`` 的核心功能。
+
+        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        ds
+            HDF5 dataset 对象。
+
+        start
+            读取或处理范围的起始位置。
+
+        stop
+            读取或处理范围的结束位置。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         if stop <= start:
             return np.empty(0, dtype=ds.dtype)
 
@@ -1320,6 +1805,44 @@ def _decompress_h5ad_1d_chunk_slice(
     slice_start: int,
     slice_stop: int,
 ):
+    """解压并截取 h5ad 中的一维 gzip chunk。
+
+    该内部函数处理 ``data`` 或 ``indices`` 这类一维 HDF5 dataset 的原始压缩 chunk。
+
+    函数先使用 ``zlib.decompress`` 解压完整 chunk，再根据当前请求范围截取其中需要的片段，并返回拷贝后的
+    NumPy 数组。它通常由线程池并行调用，用于加速大规模 h5ad CSR 数据读取。
+
+    Parameters
+    ----------
+    raw_chunk
+        从 HDF5 文件中读取到的原始压缩 chunk 字节。
+
+    dtype
+        解压后数组的数据类型。
+
+    chunk_size
+        HDF5 dataset 的标准 chunk 长度。
+
+    valid_items
+        当前 chunk 中实际有效的元素数量。
+
+        最后一个 chunk 可能小于 ``chunk_size``，因此需要用该参数截断填充区域。
+
+    slice_start
+        当前 chunk 内需要返回片段的起始位置。
+
+    slice_stop
+        当前 chunk 内需要返回片段的结束位置。
+
+    Returns
+    -------
+    values
+        解压并切片后的 NumPy 一维数组。
+
+    Notes
+    -----
+    该函数是 h5ad 快速导入流程的内部 helper；用户通常不需要直接调用。
+    """
     # zlib.decompress releases the GIL, so ThreadPoolExecutor can parallelize
     # gzip chunk decompression without copying through h5py's filter pipeline.
     array = np.frombuffer(zlib.decompress(raw_chunk), dtype=dtype)
@@ -1339,6 +1862,53 @@ def _build_shuffle_window_for_parquet_staging(
     source_store_type: str,
     target_store_type: str,
 ):
+    """构建内部中间数据结构。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    window_adatas
+        一个 shuffle window 中收集到的 AnnData block 列表。
+
+    conn
+        DuckDB 数据库连接。
+
+    global_cell_id
+        下一个待写入的全局 ``atlas_cell_id``。
+
+    global_indptr_id
+        下一个待写入的 indptr 行 ID。
+
+    global_indptr_offset
+        当前已经累计写入的非零值数量，用于重定位 indptr。
+
+    global_data_id
+        下一个待写入的 ``X_HyS_data.id``。
+
+    var_written
+        是否已经写入 ``var`` 表。
+
+    source_store_type
+        输入表达矩阵当前的尺度。
+
+    target_store_type
+        希望写入 Atlas 的表达矩阵尺度。
+
+    Returns
+    -------
+    result
+        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     adata_window = sc.concat(
         window_adatas,
         axis=0,
@@ -1407,6 +1977,41 @@ def _build_X_HyS_arrow_tables(
     global_indptr_offset: int,
     global_data_id: int,
 ):
+    """构建内部中间数据结构。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    base_cell_id
+        当前 AnnData block 第一行对应的 Atlas 细胞 ID。
+
+    global_indptr_id
+        下一个待写入的 indptr 行 ID。
+
+    global_indptr_offset
+        当前已经累计写入的非零值数量，用于重定位 indptr。
+
+    global_data_id
+        下一个待写入的 ``X_HyS_data.id``。
+
+    Returns
+    -------
+    result
+        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     X = adata.X
 
     if not sparse.issparse(X):
@@ -1471,10 +2076,52 @@ def _write_shuffle_window_to_duckdb(
     source_store_type: str,  
     target_store_type: str, 
 ):
-    """
-    将多个 batch 的 AnnData 合并成一个 window，
-    对 window 内所有 cell 统一随机打乱，
-    然后整体写入 DuckDB。
+    """将计算结果写入数据库表。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    window_adatas
+        一个 shuffle window 中收集到的 AnnData block 列表。
+
+    conn
+        DuckDB 数据库连接。
+
+    global_cell_id
+        下一个待写入的全局 ``atlas_cell_id``。
+
+    global_indptr_id
+        下一个待写入的 indptr 行 ID。
+
+    global_indptr_offset
+        当前已经累计写入的非零值数量，用于重定位 indptr。
+
+    global_data_id
+        下一个待写入的 ``X_HyS_data.id``。
+
+    var_written
+        是否已经写入 ``var`` 表。
+
+    source_store_type
+        输入表达矩阵当前的尺度。
+
+    target_store_type
+        希望写入 Atlas 的表达矩阵尺度。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     # 1. 合并 window 内的多个 batch
@@ -1554,12 +2201,31 @@ def _detect_X_store_type_from_backed(
     adata_backed,
     sample_n: int = 1000,
 ) -> str:
-    """
-    预读取 sample_n 个细胞，自动判断 X 是 count scale 还是 log scale。
+    """检测输入表达矩阵的存储尺度。
 
-    判断逻辑：
-    - log scale：非零值通常大量集中在 0~10
-    - count scale：非零值可能出现几十、几百、几千甚至更大
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    adata_backed
+        以 backed 模式打开的 AnnData 对象。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    Returns
+    -------
+    store_type
+        检测得到的表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     n = min(sample_n, adata_backed.n_obs)
@@ -1610,16 +2276,34 @@ def _convert_X_store_type_inplace(
     source_store_type: str,
     target_store_type: str,
 ):
-    """
-    根据 source_store_type 和 target_store_type 原地转换 adata.X。
+    """转换表达矩阵的存储尺度。
 
-    source_store_type:
-        - "count"
-        - "log"
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
 
-    target_store_type:
-        - "count"
-        - "log"
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    source_store_type
+        输入表达矩阵当前的尺度。
+
+    target_store_type
+        希望写入 Atlas 的表达矩阵尺度。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     if source_store_type == target_store_type:
@@ -1681,6 +2365,40 @@ def load_h5ad_order(
     store_type: str = "count",    # 目标存储类型，"count" 或 "log"
 ):
 
+    """按原始细胞顺序导入单个 h5ad 文件。
+
+    该函数以 backed 模式顺序读取 h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
+
+    与随机导入不同，它不会打乱细胞顺序，因此可以安全导入 ``obsm`` 和 ``varm``，适合需要保留原始 AnnData 行顺序的场景。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    mega_batch_factor
+        顺序导入时用于计算 mega-batch 大小的倍数。
+
+    store_type
+        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_h5ad_order(...)
+    """
     commit_every = 5      
     gc_every = 5  
 
@@ -1853,12 +2571,28 @@ def load_h5ad_order(
 
 # 简单判断 h5ad.X 的底层稀疏格式
 def _print_h5ad_X_format(h5ad_path: str):
-    """
-    简单判断 h5ad.X 的底层稀疏格式：
-    - csr_matrix -> 输出 CSR
-    - csc_matrix -> 输出 CSC
-    - coo_matrix -> 输出 COO
-    - dense      -> 输出 dense
+    """执行 ``_print_h5ad_X_format`` 的核心功能。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     with h5py.File(h5ad_path, "r") as f:
@@ -1902,6 +2636,29 @@ def _print_h5ad_X_format(h5ad_path: str):
 # 推断数据类型
 def _infer_duckdb_type_from_series(s: pd.Series) -> str:
 
+    """执行 ``_infer_duckdb_type_from_series`` 的核心功能。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    s
+        需要推断 DuckDB 类型的 pandas Series。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     if pd.api.types.is_integer_dtype(s):
         return "BIGINT"
     if pd.api.types.is_float_dtype(s):
@@ -1912,6 +2669,28 @@ def _infer_duckdb_type_from_series(s: pd.Series) -> str:
 
 # 建立obs表
 def _create_obs_table_from_adata(conn, adata):
+    """根据 AnnData 的 obs 元数据创建 Atlas ``obs`` 表。
+
+    该内部函数读取 ``adata.obs`` 的列名和 pandas dtype，推断对应的 DuckDB 字段类型，并创建包含
+    ``atlas_cell_id`` 与 ``atlas_cell_name`` 的标准 ``obs`` 表。
+
+    与 Scanpy 中把细胞注释保存在 ``adata.obs`` 的约定类似，Atlas 会把细胞级元数据持久化到数据库表中，
+    供后续 QC、过滤、聚类、差异分析和绘图函数复用。
+
+    Parameters
+    ----------
+    conn
+        DuckDB 连接对象。
+
+    adata
+        输入 AnnData 对象。
+
+        要求包含 ``obs`` 和 ``obs_names``；来源数据中若已经存在 Atlas 系统字段，会在建表时跳过。
+
+    Notes
+    -----
+    该函数只创建表结构，不负责写入具体细胞元数据。写入过程由上游导入函数继续完成。
+    """
 
     # 系统保留字段：由 scAtlasPy 统一创建
     reserved_cols = {"atlas_cell_id", "atlas_cell_name"}
@@ -1940,6 +2719,28 @@ def _create_obs_table_from_adata(conn, adata):
 
 # 建立var表
 def _create_var_table_from_adata(conn, adata):
+    """根据 AnnData 的 var 元数据创建 Atlas ``var`` 表。
+
+    该内部函数读取 ``adata.var`` 的列名和 pandas dtype，推断对应的 DuckDB 字段类型，并创建包含
+    ``atlas_gene_id`` 与 ``atlas_gene_name`` 的标准 ``var`` 表。
+
+    与 Scanpy 中把基因注释保存在 ``adata.var`` 的约定类似，Atlas 会把基因级元数据持久化到数据库表中，
+    供 HVG、PCA loadings、marker gene 和 feature plot 等步骤使用。
+
+    Parameters
+    ----------
+    conn
+        DuckDB 连接对象。
+
+    adata
+        输入 AnnData 对象。
+
+        要求包含 ``var`` 和 ``var_names``；来源数据中若已经存在 Atlas 系统字段，会在建表时跳过。
+
+    Notes
+    -----
+    该函数只创建表结构，不负责写入具体基因元数据。写入过程由上游导入函数继续完成。
+    """
 
     # 系统保留字段：由 scAtlasPy 统一创建
     reserved_cols = {"atlas_gene_id", "atlas_gene_name"}
@@ -1969,6 +2770,26 @@ def _create_var_table_from_adata(conn, adata):
 # 建立 HyS 存储结构 
 def _create_HyS_tables(conn):
 
+    """创建 Atlas 工作流所需的数据库表。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+
+    Parameters
+    ----------
+    conn
+        DuckDB 数据库连接。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     conn.execute(
         """ -- 不存第一个0值
         CREATE OR REPLACE TABLE X_HyS_indptr ( 
@@ -1991,6 +2812,37 @@ def _create_HyS_tables(conn):
 # 导入 obs 表 
 def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obs``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    conn
+        DuckDB 数据库连接。
+
+    start_cell_id
+        当前 obs block 写入时使用的起始 ``atlas_cell_id``。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     n = adata.n_obs
 
     obs_df = adata.obs.copy()
@@ -2027,6 +2879,29 @@ def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
 # 导入 var 表 
 def _append_var(adata, conn):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``var``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    conn
+        DuckDB 数据库连接。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     var_df = adata.var.copy()
 
     # 删除来源 h5ad 中已有的旧系统字段
@@ -2066,6 +2941,46 @@ def _append_X_HyS(
     global_data_id: int,
 ):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    conn
+        DuckDB 数据库连接。
+
+    base_cell_id
+        当前 AnnData block 第一行对应的 Atlas 细胞 ID。
+
+    global_indptr_id
+        下一个待写入的 indptr 行 ID。
+
+    global_indptr_offset
+        当前已经累计写入的非零值数量，用于重定位 indptr。
+
+    global_data_id
+        下一个待写入的 ``X_HyS_data.id``。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     X = adata.X
 
     if not sparse.issparse(X):
@@ -2176,6 +3091,33 @@ def _append_X_HyS(
 # 导入 obsm 
 def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obsm_df``、``obsm_grp``。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入 obsm")
     conn = atlas.connection
 
@@ -2222,6 +3164,30 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
 # 导入 varm 
 def _add_varm_from_h5ad(h5ad_path: str, atlas):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``varm_df``、``varm_grp``。
+
+    Parameters
+    ----------
+    h5ad_path
+        h5ad 文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入 varm")
 
     conn = atlas.connection
@@ -2260,6 +3226,32 @@ def _add_varm_from_h5ad(h5ad_path: str, atlas):
 ''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
 def load_small_data( file_path , atlas:Atlas):
 
+    """导入小型单细胞数据文件。
+
+    该函数先调用 ``read_smart`` 根据文件后缀自动读取数据，再把得到的 AnnData 对象写入 Atlas。
+
+    它适合可以一次性载入内存的小数据集；大 h5ad 文件建议使用 ``load_h5ad_random``、``load_h5ad_fast`` 或
+    ``load_h5ad_order``。
+
+    Parameters
+    ----------
+    file_path
+        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_small_data(...)
+    """
     print("小文件读取 , 开始导入数据...")
     adata = read_smart(file_path)
     load_AnnData(adata,atlas)
@@ -2268,6 +3260,39 @@ def load_small_data( file_path , atlas:Atlas):
 
 # 多种数据格式的导入
 def read_smart(file_path, **kwargs):
+    """根据文件后缀自动选择 Scanpy 读取函数。
+
+    该函数检查输入文件路径的扩展名，并调用对应的 ``scanpy.read_*`` 函数读取为 AnnData。
+
+    它适合小型数据或临时转换场景，能够统一处理 h5ad、loom、Matrix Market、csv、文本表格、Excel、
+    10x h5 和 UMI-tools 等常见输入格式。
+
+    Parameters
+    ----------
+    file_path
+        输入单细胞数据文件路径。
+
+    **kwargs
+        传递给具体 ``scanpy.read_*`` 函数的额外参数。
+
+        不同格式支持的参数不同，例如是否指定分隔符、缓存行为或基因变量名处理方式。
+
+    Returns
+    -------
+    adata
+        读取完成的 AnnData 对象。
+
+    Notes
+    -----
+    该函数只负责读取文件，不会直接写入 Atlas 数据库。若要导入数据库，可继续调用 ``load_AnnData`` 或
+    ``load_small_data``。
+
+    Examples
+    --------
+    读取 h5ad 文件：::
+
+        adata = read_smart("example.h5ad")
+    """
 
     # 获取文件后缀名（小写形式）
     file_ext = os.path.splitext(file_path)[1].lower()
@@ -2305,6 +3330,31 @@ def read_smart(file_path, **kwargs):
 ''' 方法5： 顺序读取，anndata数据导入 '''
 def load_AnnData(adata:AnnData, atlas:Atlas):
 
+    """将 AnnData 对象导入 Atlas 数据库。
+
+    该函数按 AnnData 的 ``obs``、``var``、``X``、``obsm`` 和 ``varm`` 分层写入 Atlas 数据库。
+
+    表达矩阵会写成 HyS 稀疏存储结构，元数据和 embedding 会写成对应的 DuckDB 表。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_AnnData(...)
+    """
     try:
         logger.info("准备数据表...")
 
@@ -2353,6 +3403,30 @@ def load_AnnData(adata:AnnData, atlas:Atlas):
 # 导入 obs
 def _add_obs(adata:AnnData, atlas:Atlas):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obs``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入obs数据")
 
     obs_df = adata.obs.copy()
@@ -2372,6 +3446,30 @@ def _add_obs(adata:AnnData, atlas:Atlas):
 # 导入 var
 def _add_var(adata:AnnData, atlas:Atlas):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``var``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入var数据")
     var_df = adata.var.reset_index().rename(columns={'index': 'atlas_gene_name'})
     var_df['atlas_gene_id'] = range(len(var_df))
@@ -2387,6 +3485,30 @@ def _add_var(adata:AnnData, atlas:Atlas):
 # 导入 obsm
 def _add_obsm(adata: AnnData, atlas: Atlas):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obsm_df``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入 obsm ")
 
     conn = atlas.connection
@@ -2421,6 +3543,30 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
 # 导入 varm
 def _add_varm(adata: AnnData, atlas: Atlas):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``varm_df``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("导入 varm（统一 schema）")
 
     conn = atlas.connection
@@ -2454,6 +3600,38 @@ def _add_varm(adata: AnnData, atlas: Atlas):
 # 导入 X_CSRO
 def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
 
+    """将数据写入 Atlas 数据库。
+
+    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+
+    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
+    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
+
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    chunk_size
+        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     logger.info("开始导入 X_HyS ")
 
     conn = atlas.connect("r+")
@@ -2568,15 +3746,35 @@ def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
 def clean_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
-    """
-    在数据库层面清洗基因名，直接操作数据库表
-    参数:
+    """在数据库中清洗并去重基因名。
+
+    该函数直接在 ``var`` 表中检查重复基因名，并为第二次及以后出现的重复项添加 ``_1``、``_2`` 等后缀。
+
+    该步骤适合在导入后执行，以保证基因名在后续绘图、差异表达和 AnnData 导出中更容易唯一定位。
+
+    Parameters
     ----------
-    atlas : Atlas
-        Atlas数据库对象
-        gene_name_column : str  基因名，默认为'atlas_gene_name'
-        在数据库中添加后缀模式：为重复基因添加 _1, _2, _3 等后缀
-        仅处理 var 表
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    gene_name_column
+        ``var`` 表中保存基因名的列名。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.clean_genes(...)
     """
     logger.info(f" 开始在数据库 var表 中清洗基因名 ")
 

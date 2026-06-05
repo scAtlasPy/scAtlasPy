@@ -27,24 +27,30 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 def _build_discrete_color_map(labels, palette=None):
-    """
-    根据 labels 构建离散颜色映射。
+    """构建内部中间数据结构。
+
+    该内部函数属于PCA 可视化模块，用于支撑同一模块中的公共 API。
+
+    读取 PCA embedding 和方差解释率表，绘制 PCA 散点图和 variance ratio 图。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
     Parameters
     ----------
     labels
-        分类标签列表，例如 cats。
+        分类标签列表。
 
     palette
-        可以是：
-        - None：使用 DEFAULT_DISCRETE_PALETTES
-        - str：例如 "tab20"
-        - list/tuple：例如 ["tab20", "tab20b", "Set3"]
+        离散分类变量使用的颜色方案。
 
     Returns
     -------
-    color_map
-        dict: label -> color
+    result
+        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     labels = list(labels)
@@ -112,6 +118,77 @@ def pca(
         return_df: bool = False,
 ):
 
+    """绘制 PCA embedding。
+
+    该函数从 ``obsm_X_pca`` 读取指定两个主成分坐标，并根据 ``color`` 自动判断使用 obs 元数据还是 gene
+    expression 着色。
+
+    当 ``annotate_var_explained=True`` 且存在 ``uns_pca_stats``
+    时，坐标轴会标注对应主成分的解释方差比例。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    color
+        用于着色的 ``obs`` 列名、基因名或它们的列表。
+
+    x_pc
+        PCA 散点图横轴使用的主成分索引。
+
+    y_pc
+        PCA 散点图纵轴使用的主成分索引。
+
+    annotate_var_explained
+        是否在 PCA 坐标轴标签中标注解释方差比例。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    cmap
+        连续变量使用的 colormap。
+
+    palette
+        离散分类变量使用的颜色方案。
+
+    legend_loc
+        图例位置。
+
+    frameon
+        是否显示图框。
+
+    return_df
+        是否返回用于绘图或分析的 DataFrame。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.pca(...)
+    """
     print("\n==== pca plot ====")
     start = datetime.now()
     conn = atlas.connection
@@ -121,6 +198,28 @@ def pca(
 
     # DuckDB 字段安全引用
     def _q(name: str) -> str:
+        """为 SQL 标识符添加安全引用。
+
+        该内部函数属于PCA 可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 PCA embedding 和方差解释率表，绘制 PCA 散点图和 variance ratio 图。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        Returns
+-------
+        quoted_name
+            加双引号后的 SQL 标识符。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return '"' + name.replace('"', '""') + '"'
 
     pcx = f"pc{x_pc}"
@@ -526,44 +625,50 @@ def pca_variance_ratio(
         figsize=(16, 8),
         return_fig: bool = False,
 ):
-    """
-    从 Atlas 数据库中绘制 PCA 主成分方差解释率图。
+    """绘制 PCA 单个主成分解释方差比例。
+
+    该函数读取 ``uns_pca_stats`` 中的 ``variance_ratio``，绘制前 ``n_pcs`` 个主成分各自解释方差的柱状图。
+
+    它用于判断 PCA 维度选择是否合理，以及前几个主成分是否解释了主要结构。
 
     Parameters
     ----------
     atlas
-        Atlas 对象，内部需要包含 DuckDB 数据库连接 atlas.connection。
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
     n_pcs
-        要展示的主成分数量。例如 n_pcs=30 表示展示前 30 个 PC。
+        需要展示的主成分数量。
 
     log
-        是否使用对数坐标显示 y 轴。
-        如果 log=True，则 y 轴使用 log scale。
+        是否使用 log scale。
 
     show
-        是否显示图像。
-        如果 show=True，则直接显示图像。
-        如果 show=False，则不显示图像。
-        如果 show=None，则默认显示图像。
+        是否立即显示图像。
 
     save
-        是否保存图像。
-        如果 save=True，则保存为默认文件名 'pca_variance_ratio.png'。
-        如果 save 是字符串，则根据字符串保存文件。
-
-        示例：
-            save=True              -> 保存为 pca_variance_ratio.png
-            save=".pdf"            -> 保存为 pca_variance_ratio.pdf
-            save="_test.png"       -> 保存为 pca_variance_ratio_test.png
-            save="my_pca.png"      -> 保存为 my_pca.png
+        图像保存设置，可为布尔值、扩展名或文件名。
 
     figsize
-        图像大小，默认是 (16, 8)。
+        matplotlib 图像大小。
 
     return_fig
-        是否返回 matplotlib 的 fig 和 ax 对象。
-        如果 return_fig=True，则返回 fig, ax，方便后续继续修改图像。
+        是否返回 matplotlib Figure 对象。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.pca_variance_ratio(...)
     """
 
     # 获取数据库连接
@@ -686,44 +791,50 @@ def pca_variance_ratio_cumsum(
         figsize=(16, 8),
         return_fig: bool = False,
 ):
-    """
-    从 Atlas 数据库中绘制 PCA 累计方差解释率图。
+    """绘制 PCA 累计解释方差比例。
+
+    该函数读取 ``uns_pca_stats``，对 ``variance_ratio`` 做累计求和并绘制曲线。
+
+    它适合辅助选择 PCA 主成分数量，例如观察累计解释方差到达平台期的位置。
 
     Parameters
     ----------
     atlas
-        Atlas 对象，内部需要包含 DuckDB 数据库连接 atlas.connection。
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
     n_pcs
-        要展示的主成分数量。例如 n_pcs=30 表示展示前 30 个 PC。
+        需要展示的主成分数量。
 
     log
-        是否使用对数坐标显示 y 轴。
-        一般累计方差解释率不建议使用 log=True，但这里保留接口，方便统一风格。
+        是否使用 log scale。
 
     show
-        是否显示图像。
-        如果 show=True，则直接显示图像。
-        如果 show=False，则不显示图像。
-        如果 show=None，则默认显示图像。
+        是否立即显示图像。
 
     save
-        是否保存图像。
-        如果 save=True，则保存为默认文件名 'pca_variance_ratio_cumsum.png'。
-        如果 save 是字符串，则根据字符串保存文件。
-
-        示例：
-            save=True              -> 保存为 pca_variance_ratio_cumsum.png
-            save=".pdf"            -> 保存为 pca_variance_ratio_cumsum.pdf
-            save="_test.png"       -> 保存为 pca_variance_ratio_cumsum_test.png
-            save="my_pca_cum.png"  -> 保存为 my_pca_cum.png
+        图像保存设置，可为布尔值、扩展名或文件名。
 
     figsize
-        图像大小，默认是 (16, 8)。
+        matplotlib 图像大小。
 
     return_fig
-        是否返回 matplotlib 的 fig 和 ax 对象。
-        如果 return_fig=True，则返回 fig, ax，方便后续继续修改图像。
+        是否返回 matplotlib Figure 对象。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.pca_variance_ratio_cumsum(...)
     """
 
     # 1. 获取数据库连接

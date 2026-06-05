@@ -12,11 +12,31 @@ def _cleanup_qc_after_step(
         checkpoint: bool = False,
         collect: bool = True,
 ):
-    """
-    QC / 统计函数内部轻量清理：
-    - 删除临时表
-    - 可选 CHECKPOINT
-    - gc.collect()
+    """清理当前步骤产生的临时资源。
+
+    该内部函数属于质量控制模块，用于支撑同一模块中的公共 API。
+
+    在数据库层面计算细胞/基因 QC 指标，并写回过滤标记。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    conn
+        DuckDB 数据库连接。
+
+    temp_tables
+        需要清理的临时表名称列表。
+
+    checkpoint
+        清理后是否执行 DuckDB ``CHECKPOINT``。
+
+    collect
+        清理后是否触发 Python 垃圾回收。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
     if temp_tables is None:
         temp_tables = []
@@ -50,16 +70,43 @@ def filter_cells_fast(atlas: 'Atlas',
                        max_counts: Optional[int] = None,
                        max_genes: Optional[int] = None,
                        add_key="filter_cells"):
-    """
-    根据参数过滤细胞的离群点，并将过滤条件的布尔向量写入obs表
-    该细胞所有基因的表达值之和小于min_counts或大于max_counts
-    Args:
-        atlas: Atlas对象
-            min_counts: 最小总表达值 该细胞所有基因的表达值之和 sum_expr <  min_counts
-            min_genes: 最小非零基因数 该细胞的非零表达的基因个数 nonzero_expr < min_genes
-            max_counts: 最大总表达值 该细胞所有基因的表达值之和 sum_expr > max_counts
-            max_genes: 最大非零基因数 该细胞的非零表达的基因个数 nonzero_expr > max_genes
-        add_key: 写入obs表的字段名
+    """快速根据 QC 阈值过滤细胞。
+
+    该函数直接使用 ``obs`` 中已经存在的 ``total_counts``、``n_genes_by_counts`` 等 QC
+    指标，根据上下限阈值生成布尔过滤列。
+
+    功能上类似 ``scanpy.pp.filter_cells``，但不会删除细胞，而是把结果写回 ``obs.add_key`` 供后续索引重建使用。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    min_counts
+        总表达量下限；为 ``None`` 时不使用该下限。
+
+    min_genes
+        检测基因数下限；为 ``None`` 时不使用该下限。
+
+    max_counts
+        总表达量上限；为 ``None`` 时不使用该上限。
+
+    max_genes
+        检测基因数上限；为 ``None`` 时不使用该上限。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.filter_cells_fast(...)
     """
 
     print("开始过滤细胞...")
@@ -147,14 +194,45 @@ def filter_cells(
         add_key: str = "filter_cells",
         cell_chunk_size: int = 500_000,   # 分块大小
 ):
-    """
-    根据参数过滤细胞，并将过滤条件的布尔向量写入 obs 表。
+    """根据表达量和检测基因数过滤细胞。
 
-    ✅ 大数据安全版：
-    - 不创建全量 keep_cells 大临时表
-    - 按 atlas_cell_id 分块聚合
-    - 每次只产生一个小的 keep_cells_chunk
-    - 支持小内存 + 大数据
+    该函数从 ``X_HyS_data`` 分块统计每个细胞的总表达量和检测基因数，再根据指定阈值写入细胞过滤标记。
+
+    适合尚未预先计算 QC 指标的数据库；运行后可调用 ``atlas.filter_build_index`` 生成过滤后的表达矩阵索引。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    min_counts
+        总表达量下限；为 ``None`` 时不使用该下限。
+
+    min_genes
+        检测基因数下限；为 ``None`` 时不使用该下限。
+
+    max_counts
+        总表达量上限；为 ``None`` 时不使用该上限。
+
+    max_genes
+        检测基因数上限；为 ``None`` 时不使用该上限。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    cell_chunk_size
+        按细胞分块处理时每个 chunk 的细胞数量。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.filter_cells(...)
     """
 
     print("开始过滤细胞...（CHUNKED / BIG-DATA SAFE）")
@@ -297,15 +375,43 @@ def filter_genes(
         max_cells: Optional[int] = None,
         add_key: str = "filter_genes"
 ) -> None:
-    """
-    基因过滤：大数据安全 + 更快版本
+    """根据表达细胞数和总表达量过滤基因。
 
-    ✅ 修改点：
-    1. 不再 fetchall 到 Python
-    2. 不再 Python for 循环判断
-    3. 不再 executemany 写 tmp_stats
-    4. 不再用 atlas_gene_name 文本 join
-    5. 直接用 atlas_gene_id 纯 SQL 写回 var
+    该函数在数据库中聚合每个基因的总 counts 和表达细胞数，并根据
+    ``min_counts``、``min_cells``、``max_counts``、``max_cells`` 写入 ``var`` 过滤列。
+
+    过滤列可与细胞过滤列一起用于重建 ``filter_gene_id`` 和过滤后的 HyS 表。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    min_counts
+        总表达量下限；为 ``None`` 时不使用该下限。
+
+    min_cells
+        表达该基因的细胞数下限。
+
+    max_counts
+        总表达量上限；为 ``None`` 时不使用该上限。
+
+    max_cells
+        表达该基因的细胞数上限。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.filter_genes(...)
     """
 
     print("==== 开始基因过滤（SQL FAST）====")
@@ -421,15 +527,33 @@ def calculate_cell_total_counts(
         add_key: str = "cell_total_counts",
         cell_chunk_size: int = 1_000_000,
 ) -> None:
-    """
-    使用 DuckDB 原生 CSR 表计算每个细胞的总 UMI 计数。
+    """计算每个细胞的总表达量。
 
-    ✅ 大数据安全版：
-    - 不创建全量 cell_total_counts_tmp
-    - 按 atlas_cell_id 分块聚合
-    - 每个 chunk 只生成小临时表
-    - 写回 obs 后立即清理
-    - 支持小内存 + 大数据
+    该函数按细胞聚合 ``X_HyS_data`` 中的表达字段，将总 counts 写入 ``obs`` 表。
+
+    该结果常用于细胞过滤、QC violin/scatter 绘图和 normalize_total 缩放因子计算。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    add_key
+        写回 ``obs`` 或 ``var`` 的结果列名。
+
+    cell_chunk_size
+        按细胞分块处理时每个 chunk 的细胞数量。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.calculate_cell_total_counts(...)
     """
 
     print("==== DuckDB CSR 原生计算每个细胞的总 UMI（CHUNKED）====")
@@ -538,15 +662,33 @@ def calculate_gene_total_counts(
                     add_key1: str = "gene_total_counts",
                     add_key2: str = "gene_mean_counts",
                     ) -> None:
-    """
-    使用 X_HyS_data 计算：
-        - 每个基因的总表达值（SUM）
-        - 每个基因的平均表达值（SUM / 总细胞数）
-    结果写入 var 表
+    """计算每个基因的表达统计量。
 
-    ✔ 低内存
-    ✔ 单次扫描 CSR
-    ✔ 适配超大数据
+    该函数按基因聚合表达矩阵，写入总 counts 和表达细胞数等基因级 QC 指标。
+
+    这些指标可用于基因过滤、高变基因诊断和 QC 可视化。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    add_key1
+        写入第一个基因级统计结果的列名。
+
+    add_key2
+        写入第二个基因级统计结果的列名。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.calculate_gene_total_counts(...)
     """
     logger.info("开始使用 CSR 计算每个基因的总表达值和平均表达值")
     start = datetime.now()
@@ -632,6 +774,32 @@ def calculate_gene_total_counts(
 ''' qc 控制指标 方法 1 ：小数据快速版，全量进内存；线粒体基因 + 核糖体基因 比例计算 '''
 def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
 
+    """快速计算细胞和基因 QC 指标。
+
+    该函数在 DuckDB 中聚合 HyS 表，为细胞计算 total counts、检测基因数，并可按 ``qc_vars``
+    指定的基因集合计算比例指标。
+
+    结果写入 ``obs`` 和 ``var``，用于过滤、绘图和后续质量控制判断。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    qc_vars
+        QC 基因集合配置，例如线粒体或核糖体基因集合。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.calculate_qc_metrics_fast(...)
+    """
     print("==== calculate_qc_metrics (SINGLE PASS) ====")
     start = datetime.now()
 
@@ -784,6 +952,34 @@ def calculate_qc_metrics(
     cell_chunk_size=100_000
 ):
 
+    """计算细胞和基因 QC 指标。
+
+    该函数以分块方式计算细胞级和基因级 QC 统计，适合在内存受限时处理较大的 Atlas 数据库。
+
+    与 fast 版本相比，它更强调稳健的分块执行和中间资源清理。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    qc_vars
+        QC 基因集合配置，例如线粒体或核糖体基因集合。
+
+    cell_chunk_size
+        按细胞分块处理时每个 chunk 的细胞数量。
+
+    Notes
+    -----
+    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pp.calculate_qc_metrics(...)
+    """
     print("==== calculate_qc_metrics (CHUNK CELL + ONE-PASS GENE) ====")
     start = datetime.now()
     conn = atlas.connection

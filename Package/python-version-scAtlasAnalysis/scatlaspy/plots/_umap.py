@@ -33,24 +33,30 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 def _build_discrete_color_map(labels, palette=None):
-    """
-    根据 labels 构建离散颜色映射。
+    """构建内部中间数据结构。
+
+    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
     Parameters
     ----------
     labels
-        分类标签列表，例如 cats。
+        分类标签列表。
 
     palette
-        可以是：
-        - None：使用 DEFAULT_DISCRETE_PALETTES
-        - str：例如 "tab20"
-        - list/tuple：例如 ["tab20", "tab20b", "Set3"]
+        离散分类变量使用的颜色方案。
 
     Returns
     -------
-    color_map
-        dict: label -> color
+    result
+        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     labels = list(labels)
@@ -119,6 +125,80 @@ def umap(
         return_df: bool = False,
 ):
 
+    """绘制 UMAP embedding。
+
+    该函数从 ``obsm_X_umap`` 中读取 UMAP 坐标，并根据 ``color`` 参数自动判断是 obs 分类/连续变量还是 gene
+    expression feature。
+
+    当 ``color`` 为 obs 列时绘制分类或连续 UMAP；当 ``color`` 为基因名时，从 ``X_HyS_data``
+    中读取表达值并绘制 feature plot；混合输入会分别生成结果。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    color
+        用于着色的 ``obs`` 列名、基因名或它们的列表。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    ncols
+        多面板绘图时每行的子图数量。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    cmap
+        连续变量使用的 colormap。
+
+    palette
+        离散分类变量使用的颜色方案。
+
+    legend_loc
+        图例位置。
+
+    frameon
+        是否显示图框。
+
+    save_path
+        图像或结果保存路径。
+
+    plot_batch_size
+        绘图时分批读取数据库的细胞数量。
+
+    return_df
+        是否返回用于绘图或分析的 DataFrame。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.umap(...)
+    """
     print("\n==== sap.pl.umap ====")
 
     conn = atlas.connection
@@ -271,6 +351,76 @@ def _plot_umap_obs(
         return_df: bool = False,
 ):
 
+    """绘制中间分析结果。
+
+    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obs``、``obsm_X_umap``。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    color
+        用于着色的 ``obs`` 列名、基因名或它们的列表。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    groups
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    legend_loc
+        图例位置。
+
+    title
+        图标题。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    cmap
+        连续变量使用的 colormap。
+
+    palette
+        离散分类变量使用的颜色方案。
+
+    frameon
+        是否显示图框。
+
+    save_path
+        图像或结果保存路径。
+
+    plot_batch_size
+        绘图时分批读取数据库的细胞数量。
+
+    return_df
+        是否返回用于绘图或分析的 DataFrame。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     print(f"\n==== _plot_umap_obs (color={color}) ====")
     conn = atlas.connection
 
@@ -365,6 +515,28 @@ def _plot_umap_obs(
 
     # 调色板;尽量按数字排序；如果不是纯数字，再按字符串排序
     def _sort_label(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except:
@@ -522,6 +694,64 @@ def _draw_umap_obs_streaming(
         plot_batch_size: int = 200000
 ):
 
+    """执行 ``_draw_umap_obs_streaming`` 的核心功能。
+
+    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``obs``、``obsm_X_umap``。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    color
+        用于着色的 ``obs`` 列名、基因名或它们的列表。
+
+    where_sql
+        已经拼接好的 SQL WHERE 条件。
+
+    legend_loc
+        图例位置。
+
+    title
+        图标题。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    palette
+        离散分类变量使用的颜色方案。
+
+    frameon
+        是否显示图框。
+
+    save_path
+        图像或结果保存路径。
+
+    plot_batch_size
+        绘图时分批读取数据库的细胞数量。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     print("\n==== plot_umap_obs_streaming_full ====")
 
     conn = atlas.connection
@@ -541,6 +771,28 @@ def _draw_umap_obs_streaming(
 
     # 按数字顺序排序；如果不是纯数字，再按字符串排序
     def _sort_label(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except:
@@ -746,6 +998,55 @@ def _plot_umap_features(
         alpha: float = 0.9
 ):
 
+    """绘制中间分析结果。
+
+    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``obs``、``obsm_X_umap``、``var``。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    genes
+        需要绘制或分析的基因名称列表。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    ncols
+        多面板绘图时每行的子图数量。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    """
     print("\n==== _plot_umap_features ====")
     start = datetime.now()
     conn = atlas.connection
@@ -1016,6 +1317,57 @@ def violin(
         save_path: str | None = None
 ):
 
+    """按分组绘制基因表达小提琴图。
+
+    该函数从 ``obs`` 中读取分组信息，并从 ``X_HyS_data`` 中读取指定基因的表达值，按 group 绘制表达分布。
+
+    功能上类似 Scanpy 的 ``sc.pl.violin``，但数据直接来自 Atlas 数据库，并支持每组抽样以控制绘图规模。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    genes
+        需要绘制或分析的基因名称列表。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    sample_n_per_group
+        每个分组最多抽样的细胞数量。
+
+    groups
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    order
+        分组显示顺序；为 ``None`` 时按自然排序生成。
+
+    save_path
+        图像或结果保存路径。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.violin(...)
+    """
     print(f"\n==== violin (groupby={groupby}) ====")
     conn = atlas.connection
 
@@ -1092,6 +1444,28 @@ def violin(
 
     # 数字型 group 按数值排序，避免 0,1,10,11,2
     def _group_sort_key(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except Exception:
@@ -1287,6 +1661,72 @@ def dotplot(
         save_path: str | None = None
 ):
 
+    """按分组绘制基因表达 dotplot。
+
+    该函数计算每个 group 中每个基因的平均表达量和表达细胞比例，并用颜色表示表达强度、点大小表示表达比例。
+
+    功能上类似 Scanpy 的 ``sc.pl.dotplot``，适合比较 marker 基因在多个细胞类型或 cluster 中的表达模式。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    genes
+        需要绘制或分析的基因名称列表。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    sample_n_per_group
+        每个分组最多抽样的细胞数量。
+
+    groups
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    order
+        分组显示顺序；为 ``None`` 时按自然排序生成。
+
+    expression_cutoff
+        dotplot 中判断细胞是否表达某基因的阈值。
+
+    standard_scale
+        dotplot 中是否按 gene 或 group 标准化平均表达。
+
+    colorbar_vmin
+        颜色条下限。
+
+    colorbar_vmax
+        颜色条上限。
+
+    font_size
+        绘图中文字大小。
+
+    save_path
+        图像或结果保存路径。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.dotplot(...)
+    """
     conn = atlas.connection
 
     # 参数标准化
@@ -1362,6 +1802,28 @@ def dotplot(
 
     # 数字型 group 按数值排序，避免 0,1,10,11,2
     def _group_sort_key(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except Exception:
@@ -1655,6 +2117,66 @@ def stacked_violin(
         save_path: str | None = None
 ):
 
+    """按分组绘制堆叠小提琴图。
+
+    该函数为多个基因和多个分组构建紧凑的 stacked violin 图，用于展示 marker 基因在不同 cluster 或细胞类型中的表达分布。
+
+    表达值从 Atlas 的 ``X_HyS_data`` 表中按需读取，并可通过每组抽样控制绘图数据量。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    genes
+        需要绘制或分析的基因名称列表。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    sample_n_per_group
+        每个分组最多抽样的细胞数量。
+
+    groups
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+
+    where
+        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+
+    order
+        分组显示顺序；为 ``None`` 时按自然排序生成。
+
+    color_vmin
+        颜色映射下限。
+
+    color_vmax
+        颜色映射上限。
+
+    font_size
+        绘图中文字大小。
+
+    save_path
+        图像或结果保存路径。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.stacked_violin(...)
+    """
     conn = atlas.connection
 
     if isinstance(genes, str):
@@ -1729,6 +2251,28 @@ def stacked_violin(
 
     # 数字型 group 按数值排序，避免 0,1,10,11,2
     def _group_sort_key(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except Exception:

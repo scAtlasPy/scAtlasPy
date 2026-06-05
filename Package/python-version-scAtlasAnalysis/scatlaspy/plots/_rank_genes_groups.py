@@ -17,54 +17,62 @@ def rank_genes_groups(
         show: bool = True,
         return_fig: bool = False,
 ):
-    """
-    画 rank_genes_groups 排名图。
+    """绘制差异表达基因排名图。
 
-    只负责画图，不重新计算差异基因。
-    要求数据库中已经存在计算结果表，例如：
-        rank_genes_groups
+    该函数读取 ``sap.tl.rank_genes_groups`` 生成的结果表，按 group 展示 top marker genes 及其得分。
 
-    该表通常由 sap.tl.rank_genes_groups(...) 生成。
+    它用于快速浏览每个 cluster 或细胞类型最具代表性的 marker。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
     key
-        差异基因结果表名，默认 "rank_genes_groups"。
+        结果键名、表名前缀或 HDF5 group 名称。
 
     groups
-        要绘制的 group 列表。
-        None 表示绘制结果表中的全部 group。
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
 
     n_genes
-        每个 group 显示前多少个基因。
+        每个分组保留或绘制的基因数量。
 
     score_key
-        y 轴使用的分数字段。
-        默认 "scores"。
-        也可以用 "logfoldchanges"、"pvals_adj" 等字段，
-        但如果用 pvals_adj，建议自己先转换成 -log10。
+        ``var`` 中保存得分的列名。
 
     gene_label
-        标注基因名的字段，默认 "names"。
+        绘图时用于显示基因名的列名。
 
     ncols
-        每行显示几个 panel。
+        多面板绘图时每行的子图数量。
 
     figsize
-        图像大小。
-        None 时自动根据 nrows / ncols 生成。
+        matplotlib 图像大小。
 
     save_path
-        图片保存路径。
+        图像或结果保存路径。
 
     show
-        是否 plt.show()。
+        是否立即显示图像。
 
     return_fig
-        是否返回 fig。
+        是否返回 matplotlib Figure 对象。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.rank_genes_groups(...)
     """
 
 
@@ -116,6 +124,28 @@ def rank_genes_groups(
 
     # ✅ 修改：group 排序函数，能转成数字的按数字排，不能转数字的按字符串排
     def _group_sort_key(x):
+        """生成分组或标签的自然排序键。
+
+        该内部函数属于差异表达可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 marker 结果表，绘制排名图、火山图和 marker 表达小提琴图。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        x
+            需要排序、格式化或转换的单个输入值。
+
+        Returns
+-------
+        sort_key
+            可用于自然排序的键。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             return (0, int(x))
         except Exception:
@@ -279,11 +309,80 @@ def rank_genes_groups_volcano(
         label_fontsize: int = 7,
         label_offset_step: int = 12,
 ):
-    """
-    根据 sap.tl.rank_genes_groups 结果表绘制火山图。
+    """绘制差异表达基因火山图。
 
-    x轴：logfoldchanges
-    y轴：-log10(pvals_adj)
+    该函数读取某个 group 的差异表达结果，用 log fold change 作为横轴，用 p 值显著性作为纵轴，并标注 top genes。
+
+    它适合检查单个 cluster 与参考组之间的显著上调/下调 marker。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    key
+        结果键名、表名前缀或 HDF5 group 名称。
+
+    group
+        需要绘制或分析的单个分组名称。
+
+    lfc_key
+        火山图中使用的 log fold change 列名。
+
+    pval_key
+        火山图中使用的 p 值列名。
+
+    gene_label
+        绘图时用于显示基因名的列名。
+
+    pval_cutoff
+        显著性 p 值阈值。
+
+    logfc_cutoff
+        log fold change 阈值。
+
+    top_n
+        保留、标注或评分时使用的 top 项数量。
+
+    figsize
+        matplotlib 图像大小。
+
+    y_cap
+        火山图 y 轴上限。
+
+    xlim_abs
+        火山图 x 轴绝对范围。
+
+    save_path
+        图像或结果保存路径。
+
+    show
+        是否立即显示图像。
+
+    return_fig
+        是否返回 matplotlib Figure 对象。
+
+    label_fontsize
+        基因标签字体大小。
+
+    label_offset_step
+        多个基因标签之间的偏移步长。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.rank_genes_groups_volcano(...)
     """
 
     print(f"\n==== pl.rank_genes_groups_volcano (group={group}) ====")
@@ -527,6 +626,60 @@ def rank_genes_groups_violin(
         save_path: str | None = None
 ):
 
+    """绘制差异表达基因小提琴图。
+
+    该函数选择某个 group 的 top marker genes，并从表达矩阵中读取这些基因在不同分组中的表达分布。
+
+    它用于验证 marker gene 是否真正集中表达于目标 cluster 或细胞类型。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    group
+        需要绘制或分析的单个分组名称。
+
+    key
+        结果键名、表名前缀或 HDF5 group 名称。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    reference
+        差异表达分析中的参考组，可以是 ``"rest"`` 或某个具体分组。
+
+    genes
+        需要绘制或分析的基因名称列表。
+
+    n_genes
+        每个分组保留或绘制的基因数量。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    sample_n_per_group
+        每个分组最多抽样的细胞数量。
+
+    save_path
+        图像或结果保存路径。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.rank_genes_groups_violin(...)
+    """
     print(f"\n==== rank_genes_groups_violin (group={group}, key={key}, reference={reference}) ====")
     conn = atlas.connection
 

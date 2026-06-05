@@ -10,8 +10,50 @@ import scipy.sparse as sp
 
 class ShuffleBuffer:
 
+    """dense minibatch 随机缓冲区。
+
+    该类属于minibatch 流式读取模块，用于封装该模块中的参数、数据库连接和中间状态。
+
+    从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+
+    Parameters
+    ----------
+    gene_num
+        dense minibatch 中的基因数量。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    buffer_batch_num
+        shuffle buffer 中缓存的 minibatch 数量。
+    """
     def __init__(self, gene_num, batch_size, buffer_batch_num):
 
+        """初始化对象。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        gene_num
+            dense minibatch 中的基因数量。
+
+        batch_size
+            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+        buffer_batch_num
+            shuffle buffer 中缓存的 minibatch 数量。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         self.batch_size = batch_size
         self.gene_num = gene_num
         self.buffer_batch_num = buffer_batch_num
@@ -33,6 +75,26 @@ class ShuffleBuffer:
 
     # 写入一个 batch 到 缓冲区
     def add_batch(self, X_batch):
+        """向 shuffle buffer 写入一个 dense minibatch。
+
+        该方法接收已经从 Atlas 表中恢复出的 dense 表达矩阵，并把它追加到当前 buffer 的写入位置。
+
+        当 buffer 中累计的细胞数达到 ``buffer_batch_num * batch_size`` 后，函数会对 buffer 内细胞顺序做一次
+        随机打乱，并切换到输出阶段，后续由 ``sample_batch`` 按批取出。
+
+        Parameters
+        ----------
+        X_batch
+            单个 dense minibatch。
+
+            行表示细胞，列表示基因；列数需要与初始化时的 ``gene_num`` 一致，行数通常为 ``batch_size``，
+            最后一个 batch 也可以小于 ``batch_size``。
+
+        Notes
+        -----
+        该方法用于 ``multi-pass`` minibatch 读取流程。它只负责写入和触发 shuffle，不直接返回训练数据。
+        如果 buffer 已经进入输出阶段，再调用该方法会直接返回，避免覆盖尚未消费的数据。
+        """
 
         # 如果 buffer 已经满并进入输出阶段，不再写入
         if self.shuffled:
@@ -61,6 +123,26 @@ class ShuffleBuffer:
     # 输出一个 batch 
     def sample_batch(self):
 
+        """执行 ``sample_batch`` 的核心功能。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.sample_batch`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.sample_batch(...)
+        """
         if not self.shuffled:  # 如果还没凑够 buffer
             return None
 
@@ -83,6 +165,26 @@ class ShuffleBuffer:
     # 输出未凑满 buffer 的剩余 batch， 防止数据集 batch 数 < buffer_batch_num 时，一个 batch 都不输出
     def flush_remaining(self):
 
+        """执行 ``flush_remaining`` 的核心功能。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.flush_remaining`` 风格 API 类似，但结果保存在 Atlas
+        数据库表中，便于后续步骤复用。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.flush_remaining(...)
+        """
         if self.write_ptr == 0:
             return []
 
@@ -113,6 +215,36 @@ class ShuffleBuffer:
 
 class MinibatchFetchMultiThreads:
 
+    """多线程 minibatch 读取器。
+
+    该类属于minibatch 流式读取模块，用于封装该模块中的参数、数据库连接和中间状态。
+
+    从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``、``X_HyS_indptr_filtered``、``var``。
+
+    Parameters
+    ----------
+    file_path
+        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+    batch_size
+        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+    X_type
+        输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
+
+    pass_mode
+        minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
+
+    buffer_batch_num
+        shuffle buffer 中缓存的 minibatch 数量。
+
+    max_batches
+        最多输出的 minibatch 数量；为 ``None`` 时不限制。
+    """
     def __init__(self, file_path,
                  batch_size=2048,
                  X_type="CSR",
@@ -121,6 +253,38 @@ class MinibatchFetchMultiThreads:
                  max_batches=None,  # 最多输出多少个 batch
                  ):
 
+        """初始化对象。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        file_path
+            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+        batch_size
+            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+
+        X_type
+            输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
+
+        pass_mode
+            minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
+
+        buffer_batch_num
+            shuffle buffer 中缓存的 minibatch 数量。
+
+        max_batches
+            最多输出的 minibatch 数量；为 ``None`` 时不限制。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         self.X_type = X_type  # 输出的X表格式 "CSR" "dense"(宽表)
         self.file_path = file_path  # sasql 文件的绝对路径
         self.batch_size = batch_size
@@ -165,10 +329,24 @@ class MinibatchFetchMultiThreads:
         self.speed_log_every = 5  # 每输出多少个 batch 打印一次速度；想每个batch都打印就改成1
 
     def _get_zero_scale_transform(self):
-        """
-            获取基因( 0 - g.mean) / g.std
-            获取每个基因的 zero_scale_transform
-            返回：np.ndarray（index == filter_gene_id）
+        """获取数据库或对象中的内部信息。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``var``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
         conn = duckdb.connect(self.file_path)
 
@@ -183,7 +361,25 @@ class MinibatchFetchMultiThreads:
         return arr.astype("float32")
 
     def _get_gene_num(self):
-        """ 获取基因数量 """
+        """获取数据库或对象中的内部信息。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``var``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
 
         conn = duckdb.connect(self.file_path)
         gene_num = conn.execute(
@@ -194,7 +390,25 @@ class MinibatchFetchMultiThreads:
         return gene_num
 
     def _prepare_indptr(self):
-        """ 获取 indptr 的 rb 读取数据流 """
+        """执行 ``_prepare_indptr`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
 
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
@@ -215,12 +429,24 @@ class MinibatchFetchMultiThreads:
         return q
 
     def _prepare_batch_info_sql(self):
-        """
-        获取每个 batch 的:
-        1. n_cells: 当前 batch 细胞数，最后一个 batch 可以小于 batch_size
-        2. batch_nnz: 当前 batch 的 nnz 数
+        """执行 ``_prepare_batch_info_sql`` 的核心功能。
 
-        支持最后 partial batch。
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
 
         conn = duckdb.connect(self.file_path)
@@ -262,8 +488,19 @@ class MinibatchFetchMultiThreads:
         return batch_cell_counts, batch_nnz
 
     def _check_batch_info(self):
-        """
-        检查 batch 信息是否覆盖所有 filtered cells。
+        """执行 ``_check_batch_info`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
 
         conn = duckdb.connect(self.file_path)
@@ -291,7 +528,25 @@ class MinibatchFetchMultiThreads:
             )
 
     def _producer(self, tid):
-        """ producer: 多线程 切分data ，写入queue中  """
+        """执行 ``_producer`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``。
+
+        Parameters
+        ----------
+        tid
+            producer 线程或数据分片编号。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
 
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
@@ -364,7 +619,18 @@ class MinibatchFetchMultiThreads:
                 pass
 
     def _consumer(self):
-        ''' Consumer: 单线程，负责从queue中获取数据流，并切分成batch数据 '''
+        """执行 ``_consumer`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
 
         reorder_buffer = {}  # 乱序数据 缓存区 : reorder_buffer[seq_id] = (gene_id, data) ； 大小是动态的
 
@@ -579,7 +845,25 @@ class MinibatchFetchMultiThreads:
         self.out_queue.put(None)
 
     def run(self):
-        ''' 外部函数入口  '''
+        """执行 ``run`` 的核心功能。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.run`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        Yields
+-------
+        batch
+            逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.run(...)
+        """
 
         # producers 多线程
         producers = []
@@ -607,6 +891,23 @@ class MinibatchFetchMultiThreads:
     # 辅助函数 1：是否已经达到输出上限
     def _output_limit_reached(self):
 
+        """执行 ``_output_limit_reached`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return (
                 self.max_batches is not None
                 and self.total_batches >= self.max_batches
@@ -615,6 +916,28 @@ class MinibatchFetchMultiThreads:
     # 辅助函数 2：是否应该停止继续读取新 batch
     def _read_limit_reached(self, prepared_batches: int):
 
+        """执行 ``_read_limit_reached`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        prepared_batches
+            已经准备并放入 shuffle buffer 的 batch 数量。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         if self.max_batches is None:
             return False
 
@@ -629,6 +952,28 @@ class MinibatchFetchMultiThreads:
     # 辅助函数 3：统一输出 batch
     def _put_output(self, X_batch):
 
+        """执行 ``_put_output`` 的核心功能。
+
+        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+
+        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        X_batch
+            当前 batch 的表达矩阵或 embedding 矩阵。
+
+        Returns
+-------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         if self._output_limit_reached():
             self.stop_event.set()
             return False

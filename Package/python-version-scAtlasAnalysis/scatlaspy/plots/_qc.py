@@ -18,6 +18,49 @@ def highest_expr_genes(
         sample_cells: int | None = None # 大数据绘图时可抽样细胞，适合 1e8 cells 小内存场景
 ):
 
+    """绘制最高表达基因统计图。
+
+    该函数从表达矩阵中统计每个基因的表达贡献，展示 top genes 的表达量或比例。
+
+    它常用于导入后 QC，帮助识别线粒体、核糖体或其他可能主导总表达量的基因。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    n_top
+        需要展示的 top 项数量。
+
+    use_all_cells
+        是否使用所有细胞计算统计量。
+
+    show_outliers
+        是否显示离群点。
+
+    max_outliers
+        最多显示的离群点数量。
+
+    figsize
+        matplotlib 图像大小。
+
+    approx_quantile
+        用于识别离群表达的近似分位数。
+
+    sample_cells
+        用于估计统计量的抽样细胞数量。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.highest_expr_genes(...)
+    """
     print("\n==== plot_highest_expr_genes_sql (final aligned to scanpy) ====")
     start = datetime.now()
     conn = atlas.connection
@@ -513,6 +556,23 @@ def highest_expr_genes(
     # 清理
     # DuckDB 中同名对象可能是 VIEW，也可能是 TABLE，直接 DROP VIEW 可能因类型不匹配报错
     def _safe_drop_temp(name):
+        """清理当前步骤产生的临时资源。
+
+        该内部函数属于QC 可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 QC 指标和表达矩阵，绘制最高表达基因、violin、scatter 和 HVG 诊断图。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         try:
             conn.execute(f"DROP VIEW IF EXISTS {name}")
         except Exception:
@@ -547,6 +607,52 @@ def violin_qc_metrics(
         random_state: int = 0
 ):
 
+    """绘制 QC 指标小提琴图。
+
+    该函数从 ``obs`` 中读取一个或多个 QC 指标，并绘制分布图，可选择抽样、过滤细胞和多面板布局。
+
+    常用于检查 ``total_counts``、``n_genes_by_counts``、线粒体比例等指标的分布。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    keys
+        需要绘制的 QC 指标列名。
+
+    jitter
+        小提琴图中散点抖动强度。
+
+    multi_panel
+        是否为多个指标使用多面板布局。
+
+    figsize
+        matplotlib 图像大小。
+
+    use_filtered
+        是否只使用通过过滤的细胞或基因。
+
+    filter_key
+        表示过滤状态的列名。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    random_state
+        随机种子；固定整数可以提高结果复现性。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.violin_qc_metrics(...)
+    """
     print("\n==== violin_qc_metrics (SQL first sampling) ====")
     start = datetime.now()
     conn = atlas.connection
@@ -708,6 +814,52 @@ def scatter_qc_metrics(
         alpha: float = 0.7
 ):
 
+    """绘制 QC 指标散点图。
+
+    该函数读取 ``obs`` 中的 QC 指标对，例如 total counts 与检测基因数，并用散点图展示关系。
+
+    它适合辅助决定细胞过滤阈值，发现低质量细胞、双细胞或异常测序深度。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    pairs
+        scatter QC 图中需要绘制的指标对。
+
+    figsize
+        matplotlib 图像大小。
+
+    use_filtered
+        是否只使用通过过滤的细胞或基因。
+
+    filter_key
+        表示过滤状态的列名。
+
+    sample_n
+        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+
+    random_state
+        随机种子；固定整数可以提高结果复现性。
+
+    point_size
+        散点大小。
+
+    alpha
+        绘图透明度。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.scatter_qc_metrics(...)
+    """
     print("\n==== scatter_qc_metrics (SQL first sampling) ====")
     start = datetime.now()
     conn = atlas.connection
@@ -833,6 +985,61 @@ def highly_variable_genes_plot(
         alpha_other: float = 0.6
 ):
 
+    """绘制高变基因筛选结果。
+
+    该函数读取 ``var`` 中的均值、方差、标准差、高变得分和 HVG 标记，绘制高变基因诊断散点图。
+
+    它用于检查 HVG 选择是否合理，以及高变基因是否覆盖预期的表达均值范围。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    hvg_key
+        ``var`` 中表示高变基因的布尔列名。
+
+    mean_key
+        ``var`` 中保存基因均值的列名。
+
+    var_key
+        ``var`` 中保存基因方差的列名。
+
+    std_key
+        ``var`` 中保存基因标准差的列名。
+
+    score_key
+        ``var`` 中保存得分的列名。
+
+    sample_other
+        从非目标点中抽样用于绘图的数量。
+
+    figsize
+        matplotlib 图像大小。
+
+    point_size_hvg
+        高变基因点大小。
+
+    point_size_other
+        非高变基因点大小。
+
+    alpha_hvg
+        高变基因点透明度。
+
+    alpha_other
+        非高变基因点透明度。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.highly_variable_genes_plot(...)
+    """
     print("\n==== highly_variable_genes_plot ====")
     start = datetime.now()
     conn = atlas.connection
@@ -976,6 +1183,42 @@ def highly_variable_genes_plot_seurat(
         save: str | None = None,
 ):
 
+    """绘制 Seurat 风格高变基因筛选结果。
+
+    该函数读取 Seurat 风格 HVG 统计字段，展示 normalized dispersion 与 mean 的关系。
+
+    它适合检查 ``highly_variable_genes_seurat`` 的分箱和筛选结果。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    hvg_key
+        ``var`` 中表示高变基因的布尔列名。
+
+    sample_other
+        从非目标点中抽样用于绘图的数量。
+
+    save
+        图像保存设置，可为布尔值、扩展名或文件名。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.highly_variable_genes_plot_seurat(...)
+    """
     print("\n==== highly_variable_genes_plot_like_seurat ====")
     start = datetime.now()
 
@@ -986,6 +1229,28 @@ def highly_variable_genes_plot_seurat(
 
     # DuckDB 字段安全引用
     def _q(name: str) -> str:
+        """为 SQL 标识符添加安全引用。
+
+        该内部函数属于QC 可视化模块，用于支撑同一模块中的公共 API。
+
+        读取 QC 指标和表达矩阵，绘制最高表达基因、violin、scatter 和 HVG 诊断图。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        name
+            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+        Returns
+-------
+        quoted_name
+            加双引号后的 SQL 标识符。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         return '"' + name.replace('"', '""') + '"'
 
     # 检查 var 中列是否存在

@@ -4,6 +4,33 @@ from datetime import datetime
 
 class FilterBuildIndex:
 
+    """过滤索引构建器。
+
+    该类属于过滤索引模块，用于封装该模块中的参数、数据库连接和中间状态。
+
+    根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+
+    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_data_filtered``、``X_HyS_indptr_filtered``、``obs``、``var``。
+
+    Parameters
+    ----------
+    file_path
+        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+    cell_condition
+        ``obs`` 中用于筛选细胞的布尔列名或条件。
+
+    gene_condition
+        ``var`` 中用于筛选基因的布尔列名或条件。
+
+    use_hvg
+        是否只处理高变基因。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+    """
     def __init__(
         self,
         file_path: str,
@@ -13,6 +40,35 @@ class FilterBuildIndex:
         use_hvg: bool = True,
         select_data: str = "data_scale",
     ):
+        """初始化对象。
+
+        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Parameters
+        ----------
+        file_path
+            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+
+        cell_condition
+            ``obs`` 中用于筛选细胞的布尔列名或条件。
+
+        gene_condition
+            ``var`` 中用于筛选基因的布尔列名或条件。
+
+        use_hvg
+            是否只处理高变基因。
+
+        select_data
+            从 ``X_HyS_data`` 中读取的表达字段。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         self.file_path = file_path       # sasql 文件绝对路径
         self.producer_num = 10           # minibatch 流式读取的线程数
         self.fetch_size = 1_0000_0000    # minibatch 流式读取的size
@@ -32,6 +88,22 @@ class FilterBuildIndex:
     # 外部入口
     def run(self):
 
+        """执行 ``run`` 的核心功能。
+
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+
+        整体用法和 Scanpy 中相近的 ``sap.run`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+
+        当前实现中会访问或生成的关键表包括：``obs``、``var``。
+
+        Examples
+        --------
+        调用该函数：::
+
+            sap.run(...)
+        """
         print("开始流程")
 
         start = datetime.now()
@@ -55,6 +127,20 @@ class FilterBuildIndex:
     # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
     def _rebuild_obs_filter_id(self):
 
+        """执行 ``_rebuild_obs_filter_id`` 的核心功能。
+
+        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``obs``。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         print("Step 1. 重排 obs： 过滤细胞 + 生成 filter_cell_id ")
 
         # 删除旧列
@@ -91,6 +177,20 @@ class FilterBuildIndex:
     # 2.重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
     def _rebuild_var_filter_id(self):
 
+        """执行 ``_rebuild_var_filter_id`` 的核心功能。
+
+        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``var``。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         print("Step 2. 重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id")
 
         # 删除旧列 + 新增列
@@ -136,6 +236,20 @@ class FilterBuildIndex:
     # 3.重建新表：X_HyS_data_filtered
     def _rebuild_X_HyS_data_filtered(self):
 
+        """执行 ``_rebuild_X_HyS_data_filtered`` 的核心功能。
+
+        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_data_filtered``、``obs``、``var``。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
         print("Step 3. 重建新表：X_HyS_data_filtered")
 
         conn = self.conn
@@ -253,25 +367,19 @@ class FilterBuildIndex:
 
     # 4.重建新表：X_HyS_indptr_filtered
     def _rebuild_X_HyS_indptr_filtered(self):
-        """
-        重建 CSR indptr
+        """执行 ``_rebuild_X_HyS_indptr_filtered`` 的核心功能。
 
-        关键点：
-        1. X_HyS_data_filtered 只存非零值，不写入 0
-        2. indptr 从 obs.filter_cell_id 出发补齐所有保留下来的 cell
-        3. 没有非零值的 cell，cnt = 0
-        4. indptr 仍然表示每个 cell 的结束位置 end_ptr
+        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
 
-        修复bug X_HyS_indptr_filtered 不能只记录 X 中出现过的 cell，
+        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
 
-          而要以 obs.filter_cell_id 为准，把所有保留下来的 cell 都记录进去；
-          没有非零值的 cell，cnt = 0，所以它的 indptr 和上一个 cell 一样。
-          filter_cell_id    indptr
-           0                 2
-           1                 2
-           2                 4
-          cell1: start == end , 说明这个 cell 没有任何非零值。 但依旧要保留
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
+        当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``、``X_HyS_indptr_filtered``、``obs``。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
 
         print(" 4.重建新表：X_HyS_indptr_filtered ")

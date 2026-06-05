@@ -12,6 +12,45 @@ def kmeans_cluster_size(
         title: str | None = None
 ):
 
+    """绘制 KMeans 聚类大小统计图。
+
+    该函数从 ``obs`` 中读取聚类列，统计每个 cluster 的细胞数量和比例，并绘制柱状图。
+
+    它适合在运行 ``sap.tl.kmeans`` 后快速检查聚类规模是否均衡、是否存在过小 cluster 或异常大 cluster。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    obs_col
+        ``obs`` 中用于写入或读取结果的列名。
+
+    figsize
+        matplotlib 图像大小。
+
+    show_percent
+        是否在图中显示百分比。
+
+    title
+        图标题。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.pl.kmeans_cluster_size(...)
+    """
     print("\n==== plot_kmeans ====")
     start = datetime.now()
     conn = atlas.connection

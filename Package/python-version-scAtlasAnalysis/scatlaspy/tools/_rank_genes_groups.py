@@ -7,15 +7,53 @@ from scipy import stats
 
 
 def _q(name: str) -> str:
-    """
-    DuckDB 字段 / 表名安全引用。
+    """为 SQL 标识符添加安全引用。
+
+    该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
+
+    按分组聚合表达统计量，计算 t-test、log fold change、校正 p 值和 marker 排名。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    name
+        对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+
+    Returns
+    -------
+    quoted_name
+        加双引号后的 SQL 标识符。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
     return '"' + str(name).replace('"', '""') + '"'
 
 
 def _p_adjust_bh(pvals: np.ndarray) -> np.ndarray:
-    """
-    Benjamini-Hochberg FDR 校正。
+    """校正多重检验 p 值。
+
+    该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
+
+    按分组聚合表达统计量，计算 t-test、log fold change、校正 p 值和 marker 排名。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    pvals
+        待校正或处理的 p 值数组。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
     pvals = np.asarray(pvals, dtype=np.float64)
 
@@ -43,8 +81,27 @@ def _p_adjust_bh(pvals: np.ndarray) -> np.ndarray:
 
 
 def _p_adjust_bonferroni(pvals: np.ndarray) -> np.ndarray:
-    """
-    Bonferroni 校正。
+    """校正多重检验 p 值。
+
+    该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
+
+    按分组聚合表达统计量，计算 t-test、log fold change、校正 p 值和 marker 排名。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    pvals
+        待校正或处理的 p 值数组。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
     pvals = np.asarray(pvals, dtype=np.float64)
 
@@ -59,20 +116,27 @@ def _p_adjust_bonferroni(pvals: np.ndarray) -> np.ndarray:
 
 
 def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    根据 group/ref 的 summary statistics 计算 Welch t-test。
+    """根据汇总统计量计算检验结果。
 
-    输入 df 需要包含：
-        sum_in, sumsq_in, n_in
-        sum_ref, sumsq_ref, n_ref
+    该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
 
-    输出新增：
-        mean_in
-        mean_ref
-        var_in
-        var_ref
-        scores
-        pvals
+    按分组聚合表达统计量，计算 t-test、log fold change、校正 p 值和 marker 排名。
+
+    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+    Parameters
+    ----------
+    df
+        包含中间统计量或绘图数据的 pandas DataFrame。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
     n_in = df["n_in"].to_numpy(dtype=np.float64)
@@ -209,46 +273,73 @@ def rank_genes_groups(
         inplace: bool = True,
         return_df: bool = True,
 ) -> pd.DataFrame | None:
-    """
-    DuckDB / scAtlasPy 版 rank_genes_groups 计算函数。
+    """按分组计算差异表达基因。
 
-    只实现 t-test，对齐：
-        sc.tl.rank_genes_groups(
-            adata,
-            groupby=groupby,
-            groups=groups,
-            reference=reference,
-            method="t-test",
-        )
+    该函数从 ``obs`` 和 ``X_HyS_data`` 中按 ``groupby`` 聚合表达统计量，计算目标组与参考组之间的
+    t-test、log fold change、表达比例和校正 p 值。
 
-    输出 long-format 结果：
-        group
-        reference
-        rank
-        atlas_gene_id
-        names
-        scores
-        logfoldchanges
-        pvals
-        pvals_adj
-        mean_in
-        mean_ref
-        pct_nz_in
-        pct_nz_ref
-        n_in
-        n_ref
-        method
+    结果按组写入以 ``key_added`` 为前缀的数据库表，功能上对应 Scanpy 的
+    ``sc.tl.rank_genes_groups``，但适配 Atlas 的 DuckDB 存储结构。
 
     Parameters
     ----------
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
+
+    groupby
+        ``obs`` 中用于分组的列名。
+
+    use_expr_field
+        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+
+    groups
+        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+
+    reference
+        差异表达分析中的参考组，可以是 ``"rest"`` 或某个具体分组。
+
+    n_genes
+        每个分组保留或绘制的基因数量。
+
+    mask_var
+        可选的基因过滤列名，例如 ``"highly_variable_genes"``；为 ``None`` 时使用全部基因。
+
+    corr_method
+        多重检验校正方法，例如 ``"benjamini-hochberg"`` 或 ``"bonferroni"``。
+
+    rankby_abs
+        是否按统计量绝对值排序。
+
+    key_added
+        保存差异表达结果时使用的结果名前缀。
+
     input_is_log
-        如果 use_expr_field 是 data_log1p，设为 True。
-        如果 use_expr_field 是 data 或 data_normalize，设为 False。
+        输入表达字段是否已经是 log scale。
 
     lfc_eps
-        计算 logfoldchanges 时的伪计数。
-        不建议使用 1e-9，否则 mean_in=0 时容易出现 ±20 以上极端 logFC。
-        推荐 1e-3 或 1e-2。
+        计算 log fold change 时使用的微小偏移量，用于避免除零。
+
+    inplace
+        是否将结果写回 Atlas 数据库。
+
+    return_df
+        是否返回用于绘图或分析的 DataFrame。
+
+    Returns
+    -------
+    result
+        函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+    Notes
+    -----
+    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.tl.rank_genes_groups(...)
     """
 
     method = "t-test"
@@ -350,6 +441,28 @@ def rank_genes_groups(
         all_groups = group_df["group_name"].astype(str).tolist()
 
         def _group_sort_key(x):
+            """生成分组或标签的自然排序键。
+
+            该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
+
+            按分组聚合表达统计量，计算 t-test、log fold change、校正 p 值和 marker 排名。
+
+            它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+            Parameters
+            ----------
+            x
+                需要排序、格式化或转换的单个输入值。
+
+            Returns
+-------
+            sort_key
+                可用于自然排序的键。
+
+            Notes
+            -----
+            这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+            """
             try:
                 return (0, int(x))
             except Exception:
