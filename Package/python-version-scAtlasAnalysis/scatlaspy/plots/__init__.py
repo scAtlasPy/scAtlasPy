@@ -1,30 +1,39 @@
-from ._pca import (
-    pca,
-    pca_variance_ratio,
-    pca_variance_ratio_cumsum,
+from ._dotplot import (
+    dotplot
+)
+
+from ._hvg import (
+    highly_variable_genes_plot,
+    highly_variable_genes_plot_seurat,
 )
 
 from ._kmeans import (
     kmeans_cluster_size,
 )
 
+from ._pca import (
+    pca,
+    pca_variance_ratio,
+    pca_variance_ratio_cumsum,
+)
+
 from ._qc import (
     highest_expr_genes,
     violin_qc_metrics,
     scatter_qc_metrics,
-    highly_variable_genes_plot,
-    highly_variable_genes_plot_seurat,
-)
-
-from ._umap import (
-    umap,
-    violin,
-    dotplot,
-    stacked_violin,
 )
 
 from ._rank_genes_groups import (
     rank_genes_groups,
     rank_genes_groups_volcano,
     rank_genes_groups_violin
+)
+
+from ._umap import (
+    umap,
+)
+
+from ._violin import (
+    violin,
+    stacked_violin,
 )

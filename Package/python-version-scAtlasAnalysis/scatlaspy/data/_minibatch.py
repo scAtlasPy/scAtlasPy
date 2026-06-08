@@ -29,7 +29,7 @@ class ShuffleBuffer:
     buffer_batch_num
         shuffle buffer 中缓存的 minibatch 数量。
     """
-    def __init__(self, gene_num, batch_size, buffer_batch_num):
+    def __init__(self, gene_num: int, batch_size: int, buffer_batch_num: int):
 
         """初始化对象。
 
@@ -74,7 +74,7 @@ class ShuffleBuffer:
         self.shuffled = False
 
     # 写入一个 batch 到 缓冲区
-    def add_batch(self, X_batch):
+    def add_batch(self, X_batch: np.ndarray):
         """向 shuffle buffer 写入一个 dense minibatch。
 
         该方法接收已经从 Atlas 表中恢复出的 dense 表达矩阵，并把它追加到当前 buffer 的写入位置。
@@ -120,7 +120,7 @@ class ShuffleBuffer:
             self.output_batch_id = 0
             self.shuffled = True
 
-    # 输出一个 batch 
+    # 输出一个 batch
     def sample_batch(self):
 
         """执行 ``sample_batch`` 的核心功能。
@@ -213,7 +213,7 @@ class ShuffleBuffer:
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
 
 
-class MinibatchFetchMultiThreads:
+class MultiThreadedMinibatchFetcher:
 
     """多线程 minibatch 读取器。
 
@@ -233,7 +233,7 @@ class MinibatchFetchMultiThreads:
     batch_size
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    X_type
+    x_type
         输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
 
     pass_mode
@@ -245,12 +245,12 @@ class MinibatchFetchMultiThreads:
     max_batches
         最多输出的 minibatch 数量；为 ``None`` 时不限制。
     """
-    def __init__(self, file_path,
-                 batch_size=2048,
-                 X_type="CSR",
-                 pass_mode="multi-pass",
-                 buffer_batch_num=5,
-                 max_batches=None,  # 最多输出多少个 batch
+    def __init__(self, file_path: str,
+                 batch_size: int=2048,
+                 x_type: str= "CSR",
+                 pass_mode: str="multi-pass",
+                 buffer_batch_num: int=5,
+                 max_batches: int | None=None,  # 最多输出多少个 batch
                  ):
 
         """初始化对象。
@@ -269,7 +269,7 @@ class MinibatchFetchMultiThreads:
         batch_size
             每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-        X_type
+        x_type
             输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
 
         pass_mode
@@ -285,7 +285,7 @@ class MinibatchFetchMultiThreads:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-        self.X_type = X_type  # 输出的X表格式 "CSR" "dense"(宽表)
+        self.X_type = x_type  # 输出的X表格式 "CSR" "dense"(宽表)
         self.file_path = file_path  # sasql 文件的绝对路径
         self.batch_size = batch_size
         self.producer_num = 10  # 线程数量
@@ -527,7 +527,7 @@ class MinibatchFetchMultiThreads:
                 f"batches={total_from_batches}, indptr={total_cells}"
             )
 
-    def _producer(self, tid):
+    def _producer(self, tid: int):
         """执行 ``_producer`` 的核心功能。
 
         该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
@@ -950,7 +950,7 @@ class MinibatchFetchMultiThreads:
         return self.total_batches >= self.max_batches
 
     # 辅助函数 3：统一输出 batch
-    def _put_output(self, X_batch):
+    def _put_output(self, X_batch: np.ndarray):
 
         """执行 ``_put_output`` 的核心功能。
 

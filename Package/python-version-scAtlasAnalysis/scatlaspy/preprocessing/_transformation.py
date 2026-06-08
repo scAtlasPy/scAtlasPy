@@ -1,4 +1,6 @@
+from _duckdb import DuckDBPyConnection
 from ..data import Atlas
+from typing import Any
 from typing import Literal
 from typing import Optional
 import logging
@@ -14,9 +16,9 @@ import gc
 logger = logging.getLogger('Atlas')
 
 def _cleanup_transform_after_step(
-        conn,
-        temp_tables=None,
-        unregister_tables=None,
+        conn: DuckDBPyConnection,
+        temp_tables: list[str]=None,
+        unregister_tables: list[str]=None,
         checkpoint: bool = False,
         collect: bool = True,
 ):
@@ -86,9 +88,9 @@ def _cleanup_transform_after_step(
 
 '''normalize 法 1 ： 小内存 快速版 '''
 def normalize_total_fast(
-        atlas,
+        atlas: Atlas,
         target_sum: float = 10000,
-        chunk_size: int = 50_000_000,
+        chunk_ids: int = 50_000_000,
         add_field: str = "data_normalize",
         select_data: str = "data"
 ) -> None:
@@ -110,7 +112,7 @@ def normalize_total_fast(
     target_sum
         归一化后每个细胞的目标总表达量。
 
-    chunk_size
+    chunk_ids
         分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
 
     add_field
@@ -196,13 +198,13 @@ def normalize_total_fast(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"Step 3: {n_chunks} chunks")
 
     # 5. 分块 INSERT（保持 x.*）
     for i in range(n_chunks):
-        start_id = min_id + i * chunk_size
-        end_id = start_id + chunk_size - 1
+        start_id = min_id + i * chunk_ids
+        end_id = start_id + chunk_ids - 1
 
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
@@ -237,9 +239,9 @@ def normalize_total_fast(
 
 ''' normalize 法 2 ： 大数据 安全版 '''
 def normalize_total(
-        atlas,
+        atlas: Atlas,
         target_sum: float = 10000,
-        cell_chunk_size: int = 500_000,  
+        chunk_cells: int = 500_000,  
         add_field: str = "data_normalize",
         select_data: str = "data"
 ) -> None:
@@ -259,7 +261,7 @@ def normalize_total(
     target_sum
         归一化后每个细胞的目标总表达量。
 
-    cell_chunk_size
+    chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
     add_field
@@ -333,17 +335,17 @@ def normalize_total(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_cell - min_cell + 1) / cell_chunk_size)
+    n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     print(f"cell_id range = {min_cell:,} ~ {max_cell:,}")
-    print(f"cell_chunk_size = {cell_chunk_size:,}")
+    print(f"chunk_cells = {chunk_cells:,}")
     print(f"chunks = {n_chunks:,}")
 
     # 5. cell 分块：小 _cell_sum_chunk + 写入目标表
     for i in range(n_chunks):
 
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
+        c_start = min_cell + i * chunk_cells
+        c_end = min(c_start + chunk_cells - 1, max_cell)
 
         print(f"  -> chunk {i + 1}/{n_chunks}: cell [{c_start:,}, {c_end:,}]")
 
@@ -506,11 +508,11 @@ def normalize_total_scale_factor_fast(
 
 ''' normalize 法 4： 大数据 安全版，在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
 def normalize_total_scale_factor(
-        atlas,
+        atlas: Atlas,
         target_sum: float = 10000,
         add_key: str = "scale_factor",
         select_data: str = "data",
-        cell_chunk_size: int = 500_000,   # ✅ 修改1：新增 cell 分块
+        chunk_cells: int = 500_000,
 ) -> None:
     """计算 total-count 归一化缩放因子。
 
@@ -533,7 +535,7 @@ def normalize_total_scale_factor(
     select_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
-    cell_chunk_size
+    chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
     Notes
@@ -590,17 +592,17 @@ def normalize_total_scale_factor(
         print("obs 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_cell - min_cell + 1) / cell_chunk_size)
+    n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     print(f"cell_id range = {min_cell:,} ~ {max_cell:,}")
-    print(f"cell_chunk_size = {cell_chunk_size:,}")
+    print(f"chunk_cells = {chunk_cells:,}")
     print(f"chunks = {n_chunks:,}")
 
     # 3. 分块计算 total + 写回 obs
     for i in range(n_chunks):
 
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
+        c_start = min_cell + i * chunk_cells
+        c_end = min(c_start + chunk_cells - 1, max_cell)
 
         print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
@@ -754,7 +756,7 @@ def log1p(
                 base: Optional[Number] = None,
                 add_field: str = "data_log1p",
                 select_data: str = "data_normalize",
-                chunk_size: int = 100_000_000) -> None:
+                chunk_ids: int = 100_000_000) -> None:
     """执行 log1p 转换。
 
     该函数以 chunk 方式对表达字段执行 log1p 转换，适合在大表更新时控制单次 SQL 写入规模。
@@ -776,7 +778,7 @@ def log1p(
     select_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
-    chunk_size
+    chunk_ids
         分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
 
     Notes
@@ -836,13 +838,13 @@ def log1p(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
     for i in range(n_chunks):
-        start_id = min_id + i * chunk_size
-        end_id = start_id + chunk_size - 1
+        start_id = min_id + i * chunk_ids
+        end_id = start_id + chunk_ids - 1
 
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
@@ -877,7 +879,7 @@ def expm1(
         base: Optional[Number] = None,
         add_field: str = "data_exp1",
         select_data: str = "data_log1p",
-        chunk_size: int = 50_000_000 ) -> None:
+        chunk_ids: int = 50_000_000 ) -> None:
     """执行 expm1 逆转换。
 
     该函数对 log-scale 表达值执行 ``exp(x) - 1``，将表达恢复到近似 count/linear scale，并写入新字段。
@@ -899,7 +901,7 @@ def expm1(
     select_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
-    chunk_size
+    chunk_ids
         分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
 
     Notes
@@ -962,13 +964,13 @@ def expm1(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
     for i in range(n_chunks):
-        start_id = min_id + i * chunk_size
-        end_id = start_id + chunk_size - 1
+        start_id = min_id + i * chunk_ids
+        end_id = start_id + chunk_ids - 1
 
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
@@ -1005,7 +1007,7 @@ def normalize_and_log1p(
             add_field: str = "data_log1p",
             select_data: str = "data",
             base: Optional[Number] = None,
-            chunk_size: int = 50_000_000 ) -> None:
+            chunk_ids: int = 50_000_000 ) -> None:
     """依次执行归一化和 log1p 转换。
 
     该函数把 total-count 归一化和 log1p 转换合并在一个高层入口中，先根据 ``target_sum`` 缩放表达值，再写入
@@ -1035,7 +1037,7 @@ def normalize_and_log1p(
     base
         对数或指数转换使用的底数；为 ``None`` 时使用自然底。
 
-    chunk_size
+    chunk_ids
         分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
 
     Notes
@@ -1104,13 +1106,13 @@ def normalize_and_log1p(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"log1p 分 {n_chunks} 个 id chunk")
 
     # 5. 分块 UPDATE
     for i in range(n_chunks):
-        start_id = min_id + i * chunk_size
-        end_id   = start_id + chunk_size - 1
+        start_id = min_id + i * chunk_ids
+        end_id   = start_id + chunk_ids - 1
 
         print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
@@ -1142,6 +1144,113 @@ def normalize_and_log1p(
 
 ''' HVG '''
 def highly_variable_genes(
+        atlas: Atlas,
+        flavor: Literal["seurat", "cv", "var"] = "seurat",
+        n_top_genes: int = 2000,
+        add_key: str = "highly_variable_genes",
+        select_data: str = "data_log1p",
+        n_bins: int = 20,
+        min_mean: float = 0.0125,
+        max_mean: float = 3.0,
+        min_disp: float = 0.5,
+        max_disp: float = float("inf"),
+        use_filtered: bool = True,
+        obs_filter_col: str = "filter_cells",
+        var_filter_col: str = "filter_genes",
+        inplace: bool = True,
+):
+    """识别高变基因。
+
+    通过 ``flavor`` 参数选择不同的高变基因筛选方法。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。
+
+    flavor
+        高变基因筛选方法。
+
+        - ``"seurat"``：使用 Seurat / Scanpy-like 方法。
+        - ``"cv"``：按变异系数 ``std / mean`` 排序。
+        - ``"var"``：按方差排序。
+
+    n_top_genes
+        需要选择的高变基因数量。
+
+    add_key
+        写入 ``var`` 表的布尔标记字段名。
+
+    select_data
+        从 ``X_HyS_data`` 中读取的表达字段。
+
+    n_bins
+        Seurat 方法中用于 mean 分箱的数量，仅 ``flavor="seurat"`` 时使用。
+
+    min_mean
+        Seurat cutoff 模式下的均值下限，仅 ``flavor="seurat"`` 且 ``n_top_genes=None`` 时使用。
+
+    max_mean
+        Seurat cutoff 模式下的均值上限，仅 ``flavor="seurat"`` 且 ``n_top_genes=None`` 时使用。
+
+    min_disp
+        Seurat cutoff 模式下的离散度下限，仅 ``flavor="seurat"`` 且 ``n_top_genes=None`` 时使用。
+
+    max_disp
+        Seurat cutoff 模式下的离散度上限，仅 ``flavor="seurat"`` 且 ``n_top_genes=None`` 时使用。
+
+    use_filtered
+        是否只使用过滤后的细胞和基因，仅 ``flavor="seurat"`` 时使用。
+
+    obs_filter_col
+        ``obs`` 中表示细胞过滤状态的列名，仅 ``flavor="seurat"`` 时使用。
+
+    var_filter_col
+        ``var`` 中表示基因过滤状态的列名，仅 ``flavor="seurat"`` 时使用。
+
+    inplace
+        是否将结果写回 Atlas 数据库，仅 ``flavor="seurat"`` 时支持返回结果。
+
+    Returns
+    -------
+    result
+        当 ``flavor="seurat"`` 且 ``inplace=False`` 时，返回 gene-level 统计结果；
+        其他情况下返回 ``None``。
+    """
+
+    if flavor in ["cv", "var"]:
+        return _highly_variable_genes_basic(
+            atlas=atlas,
+            flavor=flavor,
+            n_top_genes=n_top_genes,
+            add_key=add_key,
+            select_data=select_data,
+        )
+
+    elif flavor == "seurat":
+        return _highly_variable_genes_seurat(
+            atlas=atlas,
+            n_top_genes=n_top_genes,
+            add_key=add_key,
+            select_data=select_data,
+            n_bins=n_bins,
+            min_mean=min_mean,
+            max_mean=max_mean,
+            min_disp=min_disp,
+            max_disp=max_disp,
+            use_filtered=use_filtered,
+            obs_filter_col=obs_filter_col,
+            var_filter_col=var_filter_col,
+            inplace=inplace,
+        )
+
+    else:
+        raise ValueError(
+            f"不支持的 flavor: {flavor}. "
+            "可选值为: 'seurat', 'cv', 'var'"
+        )
+
+def _highly_variable_genes_basic(
                         atlas: Atlas,
                         flavor: Literal["var", "cv"] = "cv",
                         n_top_genes: int = 2000,
@@ -1152,7 +1261,7 @@ def highly_variable_genes(
 
     该函数在数据库中按基因计算均值、方差、标准差、非零数量和变异性得分，并按 ``n_top_genes`` 选择高变基因。
 
-    结果写入 ``var`` 表中的 ``add_key`` 以及相关统计字段，可供 ``filter_build_index``、PCA 和 scale
+    结果写入 ``var`` 表中的 ``add_key`` 以及相关统计字段，可供 ``build_read_index``、PCA 和 scale
     步骤使用。
 
     Parameters
@@ -1377,8 +1486,8 @@ def highly_variable_genes(
 #   highly_variable_genes	     对 n_top_genes 标记为true
 
 ''' HVG - seurat '''
-def highly_variable_genes_seurat(
-        atlas,
+def _highly_variable_genes_seurat(
+        atlas: Atlas,
         n_top_genes: int = 2000,
         add_key: str = "highly_variable_genes",
         select_data: str = "data_log1p",
@@ -1455,11 +1564,11 @@ def highly_variable_genes_seurat(
     --------
     调用该函数：::
 
-        sap.pp.highly_variable_genes_seurat(...)
+        sap.pp._highly_variable_genes_seurat(...)
     """
 
 
-    print("==== highly_variable_genes_seurat (Scanpy-like) ====")
+    print("==== _highly_variable_genes_seurat (Scanpy-like) ====")
     start = datetime.now()
 
     conn = atlas.connection
@@ -1989,7 +2098,7 @@ def highly_variable_genes_seurat(
 
     gc.collect()
 
-    print("highly_variable_genes_seurat 完成")
+    print("_highly_variable_genes_seurat 完成")
     print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
     if not inplace:
@@ -1998,14 +2107,14 @@ def highly_variable_genes_seurat(
 
 ''' scale  法 1 ： 大数据，安全版 '''
 def scale(
-        atlas,
+        atlas: Atlas,
         select_data: str = "data_log1p",
         add_field: str = "data_scale",
         add_field_to_var: str = "zero_scale_transform",
         max_value: float = 10.0,
         use_hvg: bool = True,
         hvg_key: str = "highly_variable_genes",
-        id_chunk_size: int = 20_000_000,
+        chunk_ids: int = 20_000_000,
         ):
     """对表达矩阵进行基因级标准化缩放。
 
@@ -2038,7 +2147,7 @@ def scale(
     hvg_key
         ``var`` 中表示高变基因的布尔列名。
 
-    id_chunk_size
+    chunk_ids
         按 ``X_HyS_data.id`` 分块更新时每个 chunk 的行数。
 
     Notes
@@ -2211,9 +2320,9 @@ def scale(
 
     print(f"-> X_HyS_data rows: {total_rows}")
     print(f"-> id range: {min_id} ~ {max_id}")
-    print(f"-> id_chunk_size: {id_chunk_size}")
+    print(f"-> chunk_ids: {chunk_ids}")
 
-    n_chunks = math.ceil((max_id - min_id + 1) / id_chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"-> Total id chunks: {n_chunks}")
 
     # 7. 按 id 分块直接 UPDATE
@@ -2223,8 +2332,8 @@ def scale(
     update_start_all = datetime.now()
 
     for chunk_idx in range(n_chunks):
-        chunk_start = min_id + chunk_idx * id_chunk_size
-        chunk_end = min(chunk_start + id_chunk_size - 1, max_id)
+        chunk_start = min_id + chunk_idx * chunk_ids
+        chunk_end = min(chunk_start + chunk_ids - 1, max_id)
 
         t0 = datetime.now()
         print(
@@ -2296,7 +2405,7 @@ def scale(
 
 ''' scale_fast 法 2 ： 小内存 快速版   '''
 def scale_fast(
-        atlas,
+        atlas: Atlas,
         select_data: str = "data_log1p",
         add_field: str = "data_scale",
         add_field_to_var: str = "zero_scale_transform",
@@ -2610,7 +2719,7 @@ def sqrt(
     atlas: "Atlas",
     add_field: str = "data_sqrt",
     select_data: str = "data",
-    chunk_size: int = 100_000_000) -> None:
+    chunk_ids: int = 100_000_000) -> None:
     """执行平方根转换。
 
     该函数以 chunk 方式对表达字段执行平方根转换，适合在较大 ``X_HyS_data`` 表上降低单次更新压力。
@@ -2629,7 +2738,7 @@ def sqrt(
     select_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
-    chunk_size
+    chunk_ids
         分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
 
     Notes
@@ -2698,13 +2807,13 @@ def sqrt(
         print("X_HyS_data 为空，跳过")
         return
 
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_size)
+    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
     print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
     for i in range(n_chunks):
-        start_id = min_id + i * chunk_size
-        end_id = start_id + chunk_size - 1
+        start_id = min_id + i * chunk_ids
+        end_id = start_id + chunk_ids - 1
 
         print(f"  -> chunk {i + 1}/{n_chunks}: id [{start_id}, {end_id}]")
 

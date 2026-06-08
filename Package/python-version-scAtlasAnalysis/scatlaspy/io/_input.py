@@ -1,37 +1,220 @@
 from ..data import Atlas
-import concurrent.futures as futures
+from _duckdb import DuckDBPyConnection
 import os
 import logging
 import h5py
 import pyarrow as pa
-import pyarrow.parquet as pq
 import time
 import gc
-import zlib
 import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
 from scipy import sparse
 from tqdm import tqdm
+from typing import Any, Literal
+
+StoreType = Literal["count", "log"]
+
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
 
 
+# 统一的 h5ad 导入接口
+def load_h5ad(
+    h5ad_path: str | list[str],
+    atlas: Atlas,
+    *,
+    load_type: Literal["order", "random", "list_random"] = "random",
+    cells_per_block: int = 500,
+    blocks_per_pool: int = 10,
+    store_type: StoreType = "count",
+) -> Any:
+    """统一 h5ad 导入接口。
+
+    根据 ``load_type`` 选择不同的大 h5ad 导入策略。
+
+    Parameters
+    ----------
+    h5ad_path : str | list[str]
+        h5ad 文件路径。
+
+        - 当 ``load_type="order"``、``"random"``时：
+          传入单个 h5ad 文件路径，类型为 ``str``。
+
+        - 当 ``load_type="list_random"`` 时：
+          可以传入多个 h5ad 文件路径，类型为 ``list[str]``；
+          也可以只传入单个路径 ``str``，函数内部会自动转成单元素列表。
+
+    atlas : Atlas
+        Atlas 对象。
+
+        通常是通过 ``sap.Atlas(...)`` 创建的数据库对象。
+        函数会将 h5ad 中的 ``obs``、``var`` 和表达矩阵写入该 Atlas 对应的 DuckDB 数据库。
+
+    load_type : {"order", "random", "list_random"}, default: "random"
+        导入方式。
+
+        - ``"order"``：
+          顺序读取单个 h5ad，保留原始 cell 顺序。
+          适合需要保留 AnnData 行顺序、并安全导入 ``obsm`` / ``varm`` 的场景。
+
+        - ``"random"``：
+          单个 h5ad 的 shuffle-window 随机导入。
+          会随机重排 cell，因此默认不导入 ``obsm``，只导入 ``varm``。
+
+        - ``"list_random"``：
+          多个 h5ad 文件的全局 block 随机导入。
+          适合多个文件大小不一致、希望整体随机混合导入的场景。
+
+    cells_per_block : int, default: 500
+        每个连续读取 block 中包含的细胞数量。
+
+        函数会按 ``cells_per_block`` 将 h5ad 切成连续 block。
+        该值越大，连续读取效率通常越高，但单个 block 占用内存也越大。
+
+    blocks_per_pool : int, default: 5
+        每次合并多少个 block 形成一个 pool / window 后写入数据库。
+
+        实际每次写入或 flush 的细胞数量大约为：
+
+        ``cells_per_block × blocks_per_pool``
+
+        该值越大，随机混合程度通常越高，但单次内存占用也越大。
+
+    store_type : {"count", "log"}, default: "count"
+        目标表达矩阵尺度。
+
+        - ``"count"``：
+          将表达矩阵以 count 尺度写入数据库。
+          如果输入 h5ad 的 ``X`` 被检测为 log 尺度，会在导入时执行 ``expm1`` 转换。
+
+        - ``"log"``：
+          将表达矩阵以 log1p 尺度写入数据库。
+          如果输入 h5ad 的 ``X`` 被检测为 count 尺度，会在导入时执行 ``log1p`` 转换。
+
+    Returns
+    -------
+    Any
+        返回底层导入函数的返回结果。
+
+        不同 ``load_type`` 对应的底层函数返回值可能不同；
+        有些函数返回导入统计信息，有些函数只执行导入流程而不显式返回结果。
+    """
+
+    # =====================================================
+    # 1. 参数检查
+    # =====================================================
+    valid_load_types = {
+        "order",
+        "random",
+        "list_random",
+    }
+
+    if load_type not in valid_load_types:
+        raise ValueError(
+            "load_type 只能是 "
+            f"{sorted(valid_load_types)}，当前为: {load_type}"
+        )
+
+    if store_type not in {"count", "log"}:
+        raise ValueError(
+            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
+        )
+
+    if not isinstance(cells_per_block, int):
+        raise TypeError(
+            f"cells_per_block 必须是 int，当前类型为: {type(cells_per_block)}"
+        )
+
+    if cells_per_block <= 0:
+        raise ValueError("cells_per_block 必须 > 0")
+
+    if not isinstance(blocks_per_pool, int):
+        raise TypeError(
+            f"blocks_per_pool 必须是 int，当前类型为: {type(blocks_per_pool)}"
+        )
+
+    if blocks_per_pool <= 0:
+        raise ValueError("blocks_per_pool 必须 > 0")
+
+    # =====================================================
+    # 2. list_random：多文件随机导入
+    # =====================================================
+    if load_type == "list_random":
+
+        print("==== load_h5ad unified interface ====")
+        print("[INFO] load_type = list_random")
+
+        return _load_h5ad_list_random(
+            h5ad_paths=h5ad_path,
+            atlas=atlas,
+            cells_per_block=cells_per_block,
+            blocks_per_pool=blocks_per_pool,
+            store_type=store_type,
+        )
+
+    # =====================================================
+    # 3. 其他模式必须是单个 h5ad 路径
+    # =====================================================
+    if isinstance(h5ad_path, (list, tuple)):
+        raise ValueError(
+            f"load_type='{load_type}' 只支持单个 h5ad_path；"
+            "如果要导入多个 h5ad，请使用 load_type='list_random'"
+        )
+
+    if not isinstance(h5ad_path, str):
+        raise TypeError(
+            f"h5ad_path 必须是 str，当前类型为: {type(h5ad_path)}"
+        )
+
+    # =====================================================
+    # 4. order：顺序导入
+    # =====================================================
+    if load_type == "order":
+
+        print("==== load_h5ad unified interface ====")
+        print("[INFO] load_type = order")
+
+        return _load_h5ad_order(
+            h5ad_path=h5ad_path,
+            atlas=atlas,
+            cells_per_block=cells_per_block,
+            blocks_per_pool=blocks_per_pool,
+            store_type=store_type,
+        )
+
+    # =====================================================
+    # 5. random：普通随机导入
+    # =====================================================
+    if load_type == "random":
+
+        print("==== load_h5ad unified interface ====")
+        print("[INFO] load_type = random")
+
+        return _load_h5ad_random(
+            h5ad_path=h5ad_path,
+            atlas=atlas,
+            cells_per_block=cells_per_block,
+            blocks_per_pool=blocks_per_pool,
+            store_type=store_type,
+        )
+
+
 ''' 方法1 ： 随机读取 , 多个大文件, 只支持 h5ad格式 '''
-def load_h5ad_list_random(
+def _load_h5ad_list_random(
     h5ad_paths: list[str],
-    atlas,
-    batch_size: int = 4096,
-    pool_block_num: int = 5,    # 每次从全局随机 block 池读取多少个 block 后 flush
-    store_type: str = "count",  # 目标存储类型，"count" 或 "log"
+    atlas: Atlas,
+    cells_per_block: int = 500,
+    blocks_per_pool: int = 10,    # 每次从全局随机 block 池读取多少个 block 后 flush
+    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
-    该函数先把每个 h5ad 文件按 ``batch_size`` 切成连续 block，再把所有文件的 block 合并到全局 block pool
+    该函数先把每个 h5ad 文件按 ``cells_per_block`` 切成连续 block，再把所有文件的 block 合并到全局 block pool
     中随机打乱。
 
-    每次读取 ``pool_block_num`` 个 block 后，会合并为 cell pool，对 pool 内细胞整体随机一次，然后写入
+    每次读取 ``blocks_per_pool`` 个 block 后，会合并为 cell pool，对 pool 内细胞整体随机一次，然后写入
     ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data``。
 
     该策略适合多个文件大小不一致的场景，既避免 round-robin 后期只剩大文件，也减少 h5ad cell-level 随机 IO。
@@ -45,10 +228,10 @@ def load_h5ad_list_random(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    batch_size
+    cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    pool_block_num
+    blocks_per_pool
         多文件随机导入时每次合并并 flush 的 block 数量。
 
     store_type
@@ -67,7 +250,7 @@ def load_h5ad_list_random(
     --------
     调用该函数：::
 
-        sap.io.load_h5ad_list_random(...)
+        sap.io._load_h5ad_fast_random(...)
     """
 
 
@@ -78,8 +261,8 @@ def load_h5ad_list_random(
     if len(h5ad_paths) == 0:
         raise ValueError("h5ad_paths 不能为空")
 
-    if pool_block_num <= 0:
-        raise ValueError("pool_block_num 必须 > 0")
+    if blocks_per_pool <= 0:
+        raise ValueError("blocks_per_pool 必须 > 0")
 
     commit_every = 5  # 每多少次 pool flush 提交一次
     gc_every = 5    # 每多少次 pool flush 做一次 gc
@@ -106,12 +289,12 @@ def load_h5ad_list_random(
 
     var_written = False
 
-    print("\n==== load_h5ad_list_random ====")
+    print("\n==== _load_h5ad_fast_random ====")
     print(f"[INFO] 文件数量: {file_num:,}")
-    print(f"[INFO] batch_size: {batch_size:,}")
-    print(f"[INFO] pool_block_num: {pool_block_num:,}")
+    print(f"[INFO] cells_per_block: {cells_per_block:,}")
+    print(f"[INFO] blocks_per_pool: {blocks_per_pool:,}")
     print(f"[INFO] store_type: {store_type}")  # ✅ 新增
-    print("[INFO] 策略：全局 block 索引池随机打乱，每次读取 pool_block_num 个 block 后 cell_pool 整体随机写入")
+    print("[INFO] 策略：全局 block 索引池随机打乱，每次读取 blocks_per_pool 个 block 后 cell_pool 整体随机写入")
     print("[INFO] 注意：不再做单个 block 内部 cell 随机，只做 cell_pool 整体随机")
 
     # =====================================================
@@ -141,9 +324,9 @@ def load_h5ad_list_random(
             # =====================================================
             # ✅ 新增：每个文件单独检测 X 是 count 还是 log
             # =====================================================
-            source_store_type = _detect_X_store_type_from_backed(
+            source_store_type = _detect_x_store_type_from_backed(
                 adata_backed,
-                sample_n=1000,
+                sample_n=5000,
             )
 
             print(f"[INFO] 当前文件 X 判断为: {source_store_type}")
@@ -172,13 +355,13 @@ def load_h5ad_list_random(
                         f"不能直接合并导入。"
                     )
 
-            # ---------------- 每个文件内部按 batch_size 切 block ----------------
-            block_starts = np.arange(0, n_cells, batch_size, dtype=np.int64)
+            # ---------------- 每个文件内部按 cells_per_block 切 block ----------------
+            block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
 
             # 把所有文件的 block 放进 all_block_refs，最后统一全局 shuffle。
             for block_start in block_starts:
                 block_start = int(block_start)
-                block_end = min(block_start + batch_size, n_cells)
+                block_end = min(block_start + cells_per_block, n_cells)
 
                 all_block_refs.append(
                     {
@@ -211,18 +394,18 @@ def load_h5ad_list_random(
 
         print("\n" + "=" * 80)
         print(f"[INFO] 全局 block 总数: {total_blocks:,}")
-        print(f"[INFO] 每次 flush 读取 block 数: {pool_block_num:,}")
-        print(f"[INFO] 预计 flush 次数: {(total_blocks + pool_block_num - 1) // pool_block_num:,}")
+        print(f"[INFO] 每次 flush 读取 block 数: {blocks_per_pool:,}")
+        print(f"[INFO] 预计 flush 次数: {(total_blocks + blocks_per_pool - 1) // blocks_per_pool:,}")
 
         # 动态建表：只用第一个文件建表
         first_backed = file_states[0]["adata_backed"]
 
         _create_obs_table_from_adata(conn, first_backed[:1])
         _create_var_table_from_adata(conn, first_backed[:1])
-        _create_HyS_tables(conn)
+        _create_hys_tables(conn)
 
         # 多个 block 读到的 batch 合并后，整体随机，然后写入数据库
-        def _flush_cell_pool(cell_pool, flush_i: int):
+        def _flush_cell_pool(cell_pool: list[AnnData], flush_i: int):
 
             """执行 ``_flush_cell_pool`` 的核心功能。
 
@@ -322,7 +505,7 @@ def load_h5ad_list_random(
                 global_indptr_id,
                 global_indptr_offset,
                 global_data_id,
-            ) = _append_X_HyS(
+            ) = _append_x_hys(
                 pool_adata,
                 conn,
                 base_cell_id=global_cell_id - pool_adata.n_obs,
@@ -363,7 +546,7 @@ def load_h5ad_list_random(
 
             return total_pool_cells, total_pool_nnz
 
-        # 主循环：全局 block list 随机后，每次读取 pool_block_num 个 block
+        # 主循环：全局 block list 随机后，每次读取 blocks_per_pool 个 block
         processed_blocks = 0
         flush_counter = 0
 
@@ -377,8 +560,8 @@ def load_h5ad_list_random(
 
             while block_cursor < total_blocks:
 
-                # 每次从全局随机 block list 中取 pool_block_num 个 block
-                block_group = all_block_refs[block_cursor:block_cursor + pool_block_num]
+                # 每次从全局随机 block list 中取 blocks_per_pool 个 block
+                block_group = all_block_refs[block_cursor:block_cursor + blocks_per_pool]
                 block_cursor += len(block_group)
 
                 # 当前 flush 的 cell_pool
@@ -400,7 +583,7 @@ def load_h5ad_list_random(
                     t_read = time.time() - t_read0
 
                     # 根据该文件的 source_store_type 转换当前 block
-                    adata = _convert_X_store_type_inplace(
+                    adata = _convert_x_store_type_inplace(
                         adata,
                         source_store_type=state["source_store_type"],
                         target_store_type=store_type,
@@ -534,12 +717,12 @@ def load_h5ad_list_random(
 
 
 ''' 方法2 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
-def load_h5ad_random(
+def _load_h5ad_random(
     h5ad_path: str,
-    atlas,
-    batch_size: int = 4096,
-    shuffle_window_batches: int = 5,   # 固定窗口级随机，默认 5 个 batch
-    store_type: str = "count",  # 目标存储类型，"count" 或 "log"
+    atlas: Atlas,
+    cells_per_block: int = 500,
+    blocks_per_pool: int = 10,   # 固定窗口级随机，默认 5 个 batch
+    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
@@ -559,10 +742,10 @@ def load_h5ad_random(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    batch_size
+    cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    shuffle_window_batches
+    blocks_per_pool
         单文件随机导入时每个 shuffle window 包含的 block 数量。
 
     store_type
@@ -576,20 +759,15 @@ def load_h5ad_random(
     --------
     调用该函数：::
 
-        sap.io.load_h5ad_random(...)
+        sap.io._load_h5ad_random(...)
     """
 
     t_start= time.time()
 
-    # =====================================================
-    # ✅ 修改 2：内部自动派生 commit_every / gc_every
-    # =====================================================
     commit_every = 5
     gc_every = 10
-    # commit_every = shuffle_window_batches * 2
-    # gc_every = shuffle_window_batches * 4
 
-    # 1️⃣ 连接数据库
+    # 连接数据库
     conn = atlas.connect("r+")
     atlas.connection = conn
 
@@ -601,7 +779,7 @@ def load_h5ad_random(
 
     var_written = False
 
-    # 2️⃣ backed 打开
+    # backed 打开
     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
@@ -612,9 +790,9 @@ def load_h5ad_random(
         )
 
     # 预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
-    source_store_type = _detect_X_store_type_from_backed(
+    source_store_type = _detect_x_store_type_from_backed(
         adata_backed,
-        sample_n=1000,
+        sample_n=5000,
     )
 
     print(f"[INFO] 文件中 X 判断为: {source_store_type}")
@@ -626,23 +804,23 @@ def load_h5ad_random(
         print(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
 
     # 5 个 block 合并后再统一随机
-    block_starts = np.arange(0, n_cells, batch_size, dtype=np.int64)
+    block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
     np.random.shuffle(block_starts)
 
-    # 3️⃣ 动态建表
+    # 动态建表
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
-    _create_HyS_tables(conn)
+    _create_hys_tables(conn)
 
     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
     print("[INFO] 使用 scanpy backed + shuffle-window 随机读取")
-    print(f"[INFO] batch_size = {batch_size:,}")
-    print(f"[INFO] shuffle_window_batches = {shuffle_window_batches:,}")
+    print(f"[INFO] cells_per_block = {cells_per_block:,}")
+    print(f"[INFO] blocks_per_pool = {blocks_per_pool:,}")
     print(f"[INFO] batch block 数量 = {len(block_starts):,}")
     print(f"[INFO] commit_every = {commit_every:,} batches")
     print(f"[INFO] gc_every = {gc_every:,} batches")
 
-    # 窗口缓存: 每次攒够 shuffle_window_batches 个 batch 再统一随机写入
+    # 窗口缓存: 每次攒够 blocks_per_pool 个 batch 再统一随机写入
     window_adatas = []
     window_batch_count = 0
     total_batch_counter = 0
@@ -657,7 +835,7 @@ def load_h5ad_random(
                 desc="Shuffle-window 随机读取",
             )
         ):
-            block_end = min(int(block_start) + batch_size, n_cells)
+            block_end = min(int(block_start) + cells_per_block, n_cells)
 
             # 连续读取一个 batch block
             t0 = time.time()
@@ -680,11 +858,11 @@ def load_h5ad_random(
                     f"cells={adata.n_obs:,}, "
                     f"nnz={block_nnz:,}, "
                     f"read={t_read:.2f}s, "
-                    f"window_batches={window_batch_count}/{shuffle_window_batches}"
+                    f"window_batches={window_batch_count}/{blocks_per_pool}"
                 )
 
             # window 满了，统一随机 + 统一写入
-            if window_batch_count >= shuffle_window_batches:
+            if window_batch_count >= blocks_per_pool:
                 t1 = time.time()
 
                 (
@@ -728,7 +906,7 @@ def load_h5ad_random(
                 window_adatas.clear()
                 window_batch_count = 0
 
-                # 每 commit_every 个 batch 提交一次,等价于 shuffle_window_batches=5 时，每 2 个 window commit
+                # 每 commit_every 个 batch 提交一次,等价于 blocks_per_pool=5 时，每 2 个 window commit
                 if total_batch_counter % commit_every == 0:
                     conn.execute("COMMIT")
                     conn.execute("BEGIN TRANSACTION")
@@ -759,8 +937,8 @@ def load_h5ad_random(
                 global_indptr_offset=global_indptr_offset,
                 global_data_id=global_data_id,
                 var_written=var_written,
-                source_store_type=source_store_type,  # ✅ 修改
-                target_store_type=store_type,  # ✅ 修改
+                source_store_type=source_store_type,
+                target_store_type=store_type,
             )
 
             t_write = time.time() - t1
@@ -845,27 +1023,20 @@ def load_h5ad_random(
     print(f"  - nnz:   {global_data_id:,}")
 
 
-def load_h5ad_fast(
+''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
+def _load_h5ad_order(
     h5ad_path: str,
-    atlas,
-    batch_size: int = 4096,
-    shuffle_window_batches: int = 5,
-    store_type: str = "count",
-    staging_dir: str | None = None,
-    parquet_compression: str = "NONE",
-    parquet_workers: int = 2,
-    h5ad_read_workers: int = 2,
-    keep_staging: bool = False,
+    atlas: Atlas,
+    cells_per_block: int = 500,
+    blocks_per_pool: int = 10,
+    store_type: StoreType = "count",    # 目标存储类型，"count" 或 "log"
 ):
-    """使用 Parquet staging 加速导入单个 h5ad 文件。
 
-    该函数采用与 ``load_h5ad_random`` 相同的 shuffle-window 策略，但将 ``X_HyS_indptr`` 和
-    ``X_HyS_data`` 先写入 Parquet 分片。
+    """按原始细胞顺序导入单个 h5ad 文件。
 
-    所有 window 处理完成后，再由 DuckDB 使用 ``read_parquet`` 一次性物化表达矩阵表，以减少大量逐 window
-    INSERT 的开销。
+    该函数以 backed 模式顺序读取 h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
 
-    当 h5ad 的 ``X`` 是受支持的 gzip-compressed CSR 布局时，还可以用并行 raw chunk reader 加速读取。
+    与随机导入不同，它不会打乱细胞顺序，因此可以安全导入 ``obsm`` 和 ``varm``，适合需要保留原始 AnnData 行顺序的场景。
 
     Parameters
     ----------
@@ -876,34 +1047,14 @@ def load_h5ad_fast(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    batch_size
+    cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    shuffle_window_batches
-        单文件随机导入时每个 shuffle window 包含的 block 数量。
+    blocks_per_pool
+        顺序导入时用于计算 mega-batch 大小的倍数。
 
     store_type
         目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
-
-    staging_dir
-        Parquet staging 临时目录。
-
-    parquet_compression
-        Parquet 文件压缩方式。
-
-    parquet_workers
-        并行写 Parquet 分片的 worker 数量。
-
-    h5ad_read_workers
-        并行读取 h5ad raw gzip chunk 的 worker 数量。
-
-    keep_staging
-        导入完成后是否保留 Parquet staging 临时文件。
-
-    Returns
-    -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
 
     Notes
     -----
@@ -913,1168 +1064,225 @@ def load_h5ad_fast(
     --------
     调用该函数：::
 
-        sap.io.load_h5ad_fast(...)
+        sap.io._load_h5ad_order(...)
     """
+    commit_every = 5
+    gc_every = 5
 
-    t_start=time.time()
-
+    # 检查目标存储类型
     if store_type not in {"count", "log"}:
-        raise ValueError(f"store_type 只能是 'count' 或 'log'，当前为: {store_type}")
-    if parquet_workers <= 0:
-        raise ValueError("parquet_workers 必须 > 0")
-    if h5ad_read_workers <= 0:
-        raise ValueError("h5ad_read_workers 必须 > 0")
+        raise ValueError(
+            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
+        )
+
+    # mega_batch_size 改成可控
+    mega_batch_size = cells_per_block * blocks_per_pool
 
     conn = atlas.connect("r+")
     atlas.connection = conn
-    conn.execute("PRAGMA threads=10")
-    conn.execute("PRAGMA preserve_insertion_order=false")
-
-    # X_HyS is staged outside DuckDB first, then loaded with DuckDB's
-    # parallel Parquet scanner. Keeping indptr/data in separate folders
-    # mirrors the final table layout and keeps each read_parquet call simple.
-    if staging_dir is None:
-        staging_dir = f"{atlas.file_path}.hys_parquet_staging"
-    staging_dir = os.path.abspath(staging_dir)
-    indptr_dir = os.path.join(staging_dir, "X_HyS_indptr")
-    data_dir = os.path.join(staging_dir, "X_HyS_data")
-
-    if os.path.exists(staging_dir):
-        import shutil
-
-        shutil.rmtree(staging_dir)
-    os.makedirs(indptr_dir, exist_ok=True)
-    os.makedirs(data_dir, exist_ok=True)
-    conn.execute(f"PRAGMA temp_directory='{staging_dir}'")
 
     global_cell_id = 0
     global_indptr_id = 0
     global_indptr_offset = 0
     global_data_id = 0
+
     var_written = False
 
     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
-    # Optional fast path for gzip-compressed CSR h5ad files. If the file layout
-    # is not exactly supported, this returns None and the scanpy backed path is
-    # used without changing caller behavior.
-    x_reader = _ParallelH5adCSRReader.open_if_supported(
-        h5ad_path,
-        n_vars=adata_backed.n_vars,
-        workers=h5ad_read_workers,
+    # 简单判断 h5ad.X 底层格式
+    x_format = _print_h5ad_x_format(h5ad_path)
+
+    # 预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
+    source_store_type = _detect_x_store_type_from_backed(
+        adata_backed,
+        sample_n=5000,
     )
 
-    source_store_type = _detect_X_store_type_from_backed(adata_backed, sample_n=1000)
-    source_var = adata_backed.var.copy()
     print(f"[INFO] 文件中 X 判断为: {source_store_type}")
     print(f"[INFO] 目标存储类型 store_type = {store_type}")
+
     if source_store_type == store_type:
         print("[INFO] X 数据不需要转换，直接写入。")
     else:
-        print(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
-
-    # Randomize at block granularity: each block is read as a contiguous cell
-    # range, then several blocks are merged and shuffled within a window.
-    block_starts = np.arange(0, n_cells, batch_size, dtype=np.int64)
-    np.random.shuffle(block_starts)
+        print(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
 
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
+    _create_hys_tables(conn)
 
     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + shuffle-window + Parquet staging")
-    print(f"[INFO] batch_size = {batch_size:,}")
-    print(f"[INFO] shuffle_window_batches = {shuffle_window_batches:,}")
-    print(f"[INFO] batch block 数量 = {len(block_starts):,}")
-    print(f"[INFO] staging_dir = {staging_dir}")
-    print(f"[INFO] parquet_compression = {parquet_compression}")
-    print(f"[INFO] parquet_workers = {parquet_workers:,}")
-    print(f"[INFO] h5ad_read_workers = {h5ad_read_workers:,}")
-    if x_reader is not None:
-        print("[INFO] h5ad X 使用并行 raw gzip chunk reader")
-    elif h5ad_read_workers > 1:
-        print("[INFO] h5ad X 不满足并行 raw reader 条件，回退到 scanpy backed 读取")
+    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
+    print(f"[INFO] cells_per_block = {cells_per_block:,}")
+    print(f"[INFO] mega_batch_size = {mega_batch_size:,}")
+    print(f"[INFO] blocks_per_pool = {blocks_per_pool:,}")
+    print(f"[INFO] store_type = {store_type}")
 
-    window_adatas = []
-    window_batch_count = 0
-    window_counter = 0
-    parquet_part_counter = 0
-    total_batch_counter = 0
-    indptr_writer = None
-    data_writer = None
-    parquet_shards = (
-        [
-            _XHySParquetShardWriter(
-                indptr_dir=indptr_dir,
-                data_dir=data_dir,
-                part_id=part_id,
-                parquet_compression=parquet_compression,
-            )
-            for part_id in range(parquet_workers)
-        ]
-        if parquet_workers > 1
-        else None
-    )
-    parquet_futures = []
+    mini_batch_counter = 0
 
-    def read_h5ad_block(block_start: int, block_end: int):
-        """执行 ``read_h5ad_block`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.read_h5ad_block`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        当前实现中会访问或生成的关键表包括：``obs``、``var``。
-
-        Parameters
-        ----------
-        block_start
-            ``block_start`` 参数。用于控制该函数对应步骤的输入、输出或运行方式。
-
-        block_end
-            ``block_end`` 参数。用于控制该函数对应步骤的输入、输出或运行方式。
-
-        Returns
--------
-        result
-            导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.read_h5ad_block(...)
-        """
-        if x_reader is None:
-            return adata_backed[block_start:block_end].to_memory()
-        X = x_reader.read_rows(block_start, block_end)
-        return AnnData(
-            X=X,
-            obs=adata_backed.obs.iloc[block_start:block_end].copy(),
-            var=source_var.copy(deep=False),
-        )
-
-    def close_parquet_writers() -> None:
-        """执行 ``close_parquet_writers`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.close_parquet_writers`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.close_parquet_writers(...)
-        """
-        nonlocal indptr_writer, data_writer
-        if indptr_writer is not None:
-            indptr_writer.close()
-            indptr_writer = None
-        if data_writer is not None:
-            data_writer.close()
-            data_writer = None
-
-    def append_parquet_tables(indptr_table, data_table) -> None:
-        """执行 ``append_parquet_tables`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.append_parquet_tables`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        indptr_table
-            表示 ``X_HyS_indptr`` 的 Arrow Table。
-
-        data_table
-            表示 ``X_HyS_data`` 的 Arrow Table。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.append_parquet_tables(...)
-        """
-        nonlocal indptr_writer, data_writer, parquet_part_counter
-        # In parallel mode each worker owns one Parquet shard. Windows are
-        # distributed round-robin, so every shard appends row groups in order
-        # while different shards write concurrently.
-        if parquet_shards is not None:
-            shard = parquet_shards[parquet_part_counter % len(parquet_shards)]
-            parquet_part_counter += 1
-            parquet_futures.append(shard.submit(indptr_table, data_table))
-            return
-
-        # Single-writer mode appends all windows as row groups in one Parquet
-        # shard, avoiding a large in-memory staging buffer.
-        if indptr_writer is None:
-            indptr_path = os.path.join(indptr_dir, f"part_{parquet_part_counter:06d}.parquet")
-            data_path = os.path.join(data_dir, f"part_{parquet_part_counter:06d}.parquet")
-            indptr_writer = pq.ParquetWriter(
-                indptr_path,
-                indptr_table.schema,
-                compression=parquet_compression,
-            )
-            data_writer = pq.ParquetWriter(
-                data_path,
-                data_table.schema,
-                compression=parquet_compression,
-            )
-            parquet_part_counter += 1
-
-        indptr_writer.write_table(indptr_table)
-        data_writer.write_table(data_table)
-
+    # 事务放在大循环外
     conn.execute("BEGIN TRANSACTION")
 
     try:
-        for block_i, block_start in enumerate(
-            tqdm(block_starts, desc="Shuffle-window Parquet staging")
+        for mega_i, mega_start in enumerate(
+            tqdm(
+                range(0, n_cells, mega_batch_size),
+                desc="Mega-batch（磁盘顺序读取）",
+            )
         ):
-            block_end = min(int(block_start) + batch_size, n_cells)
+            mega_end = min(mega_start + mega_batch_size, n_cells)
 
-            adata = read_h5ad_block(int(block_start), block_end)
+            t0 = time.time()
 
-            block_nnz = adata.X.nnz if sparse.issparse(adata.X) else np.count_nonzero(adata.X)
-            window_adatas.append(adata)
-            window_batch_count += 1
+            # 真正触发磁盘读取
+            mega = adata_backed[mega_start:mega_end].to_memory()
 
-            if (block_i + 1) % 20 == 0 or block_i == 0:
-                print(
-                    f"\n[read block {block_i}] "
-                    f"cells={adata.n_obs:,}, nnz={block_nnz:,}, "
-                    f"window_batches={window_batch_count}/{shuffle_window_batches}"
-                )
+            t_read = time.time() - t0
 
-            if window_batch_count >= shuffle_window_batches:
-                # Build one shuffled business window, append obs/var to DuckDB,
-                # and hand off X_HyS Arrow tables to the Parquet staging layer.
-                (
-                    global_cell_id,
-                    global_indptr_id,
-                    global_indptr_offset,
-                    global_data_id,
-                    var_written,
-                    window_cells,
-                    window_nnz,
-                    indptr_table,
-                    data_table,
-                ) = _build_shuffle_window_for_parquet_staging(
-                    window_adatas=window_adatas,
-                    conn=conn,
-                    global_cell_id=global_cell_id,
-                    global_indptr_id=global_indptr_id,
-                    global_indptr_offset=global_indptr_offset,
-                    global_data_id=global_data_id,
-                    var_written=var_written,
-                    source_store_type=source_store_type,
-                    target_store_type=store_type,
-                )
-                append_parquet_tables(indptr_table, data_table)
-                window_counter += 1
-                total_batch_counter += window_batch_count
-
-                print(
-                    f"\n[stage window {window_counter}] "
-                    f"batches={window_batch_count}, cells={window_cells:,}, "
-                    f"nnz={window_nnz:,}, "
-                    f"total_cells={global_cell_id:,}, total_nnz={global_data_id:,}"
-                )
-
-                for x in window_adatas:
-                    del x
-                window_adatas.clear()
-                window_batch_count = 0
-
-                if total_batch_counter % 10 == 0:
-                    gc.collect()
-
-        if window_batch_count > 0:
-            # Flush the tail window when the number of blocks is not an exact
-            # multiple of shuffle_window_batches.
-            (
-                global_cell_id,
-                global_indptr_id,
-                global_indptr_offset,
-                global_data_id,
-                var_written,
-                window_cells,
-                window_nnz,
-                indptr_table,
-                data_table,
-            ) = _build_shuffle_window_for_parquet_staging(
-                window_adatas=window_adatas,
-                conn=conn,
-                global_cell_id=global_cell_id,
-                global_indptr_id=global_indptr_id,
-                global_indptr_offset=global_indptr_offset,
-                global_data_id=global_data_id,
-                var_written=var_written,
+            # mega-batch 读入后，统一转换 X 的存储尺度
+            mega = _convert_x_store_type_inplace(
+                mega,
                 source_store_type=source_store_type,
                 target_store_type=store_type,
             )
-            append_parquet_tables(indptr_table, data_table)
-            window_counter += 1
+
+            # 统计当前 mega 的 nnz
+            if sparse.issparse(mega.X):
+                mega_nnz = mega.X.nnz
+            else:
+                mega_nnz = np.count_nonzero(mega.X)
+
+            # 按 cells_per_block 分批导入
+            for start in range(0, mega.n_obs, cells_per_block):
+                end = min(start + cells_per_block, mega.n_obs)
+                adata = mega[start:end]
+
+                t1 = time.time()
+
+                # ---------------- batch 导入 obs ----------------
+                global_cell_id = _append_obs_rows(
+                    adata,
+                    conn,
+                    start_cell_id=global_cell_id,
+                )
+
+                # ---------------- 导入 var（一次） ----------------
+                if not var_written:
+                    _append_var(adata, conn)
+                    var_written = True
+
+                # ---------------- batch 导入 X（CSRO） ----------------
+                (
+                    global_indptr_id,
+                    global_indptr_offset,
+                    global_data_id,
+                ) = _append_x_hys(
+                    adata,
+                    conn,
+                    base_cell_id=global_cell_id - adata.n_obs,
+                    global_indptr_id=global_indptr_id,
+                    global_indptr_offset=global_indptr_offset,
+                    global_data_id=global_data_id,
+                )
+
+                t_write = time.time() - t1
+
+                mini_batch_counter += 1
+
+                # 每 commit_every 个 mini-batch 提交一次
+                if mini_batch_counter % commit_every == 0:
+                    conn.execute("COMMIT")
+                    conn.execute("BEGIN TRANSACTION")
+
+                del adata
 
             print(
-                f"\n[stage final window {window_counter}] "
-                f"batches={window_batch_count}, cells={window_cells:,}, "
-                f"nnz={window_nnz:,}, "
-                f"total_cells={global_cell_id:,}, total_nnz={global_data_id:,}"
+                f"\n[mega {mega_i}] "
+                f"cells={mega.n_obs:,}, "
+                f"nnz={mega_nnz:,}, "
+                f"read={t_read:.2f}s, "
+                f"total_cells={global_cell_id:,}, "
+                f"total_nnz={global_data_id:,}"
             )
 
-            for x in window_adatas:
-                del x
-            window_adatas.clear()
-            window_batch_count = 0
-            gc.collect()
+            del mega
 
+            if (mega_i + 1) % gc_every == 0:
+                gc.collect()
+
+        # 最后提交
         conn.execute("COMMIT")
-        close_parquet_writers()
-        if parquet_shards is not None:
-            for parquet_future in futures.as_completed(parquet_futures):
-                parquet_future.result()
-            for shard in parquet_shards:
-                shard.close()
-
-        # Materialize staged Parquet parts into DuckDB tables. This lets DuckDB
-        # use its native Parquet scanner instead of many incremental INSERTs.
-        conn.execute(f"""
-            CREATE OR REPLACE TABLE X_HyS_indptr AS
-            SELECT * FROM read_parquet('{indptr_dir}/*.parquet')
-        """)
-        conn.execute(f"""
-            CREATE OR REPLACE TABLE X_HyS_data AS
-            SELECT * FROM read_parquet('{data_dir}/*.parquet')
-        """)
 
     except Exception:
-        close_parquet_writers()
-        if parquet_shards is not None:
-            for shard in parquet_shards:
-                shard.close(cancel_futures=True)
         conn.execute("ROLLBACK")
-        try:
-            for x in window_adatas:
-                del x
-            window_adatas.clear()
-        except Exception:
-            pass
-        try:
-            adata_backed.file.close()
-        except Exception:
-            pass
-        if x_reader is not None:
-            x_reader.close()
-        gc.collect()
         raise
 
+    # 主键：必须在数据写完之后
     conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
     conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-    _add_varm_from_h5ad(h5ad_path, atlas)
 
-    try:
-        conn.execute("CHECKPOINT")
-    except Exception:
-        pass
+    # 顺序导入没有打乱 cell，所以 obsm 可以正常导入
+    _add_obsm_from_h5ad(h5ad_path, atlas)
+    _add_varm_from_h5ad(h5ad_path, atlas)
 
     try:
         adata_backed.file.close()
     except Exception:
         pass
-    if x_reader is not None:
-        x_reader.close()
 
-    if not keep_staging:
-        import shutil
-
-        shutil.rmtree(staging_dir, ignore_errors=True)
-
-    gc.collect()
-
-    t_end = time.time()
-    print( f"total time: {t_end-t_start:.2f} seconds ")
-
-    print("✔ 全部数据成功导入 DuckDB（shuffle-window + Parquet staging）")
+    print("✔ 全部数据成功导入 DuckDB（顺序导入，含 obsm / varm）")
     print(f"  - cells: {global_cell_id:,}")
     print(f"  - nnz:   {global_data_id:,}")
+    print(f"  - store_type: {store_type}")
 
 
-class _XHySParquetShardWriter:
-    """X_HyS Parquet 分片写入器。
+''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
+def load_multi_format(file_path: str, atlas: Atlas):
 
-    该类属于数据导入模块，用于封装该模块中的参数、数据库连接和中间状态。
+    """导入小型单细胞数据文件。
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+    该函数先调用 ``_read_smart`` 根据文件后缀自动读取数据，再把得到的 AnnData 对象写入 Atlas。
 
-    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
-
-    Parameters
-    ----------
-    indptr_dir
-        ``X_HyS_indptr`` Parquet 分片目录。
-
-    data_dir
-        ``X_HyS_data`` Parquet 分片目录。
-
-    part_id
-        Parquet 分片编号。
-
-    parquet_compression
-        Parquet 文件压缩方式。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-
-    def __init__(
-        self,
-        *,
-        indptr_dir: str,
-        data_dir: str,
-        part_id: int,
-        parquet_compression: str,
-    ):
-        """初始化对象。
-
-        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        indptr_dir
-            ``X_HyS_indptr`` Parquet 分片目录。
-
-        data_dir
-            ``X_HyS_data`` Parquet 分片目录。
-
-        part_id
-            Parquet 分片编号。
-
-        parquet_compression
-            Parquet 文件压缩方式。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        self._indptr_path = os.path.join(indptr_dir, f"part_{part_id:06d}.parquet")
-        self._data_path = os.path.join(data_dir, f"part_{part_id:06d}.parquet")
-        self._parquet_compression = parquet_compression
-        self._indptr_writer = None
-        self._data_writer = None
-        self._pool = futures.ThreadPoolExecutor(max_workers=1)
-
-    def submit(self, indptr_table, data_table):
-        """执行 ``submit`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.submit`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        indptr_table
-            表示 ``X_HyS_indptr`` 的 Arrow Table。
-
-        data_table
-            表示 ``X_HyS_data`` 的 Arrow Table。
-
-        Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.submit(...)
-        """
-        return self._pool.submit(self._write, indptr_table, data_table)
-
-    def _write(self, indptr_table, data_table):
-        """将计算结果写入数据库表。
-
-        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        indptr_table
-            表示 ``X_HyS_indptr`` 的 Arrow Table。
-
-        data_table
-            表示 ``X_HyS_data`` 的 Arrow Table。
-
-        Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        if self._indptr_writer is None:
-            self._indptr_writer = pq.ParquetWriter(
-                self._indptr_path,
-                indptr_table.schema,
-                compression=self._parquet_compression,
-            )
-            self._data_writer = pq.ParquetWriter(
-                self._data_path,
-                data_table.schema,
-                compression=self._parquet_compression,
-            )
-
-        self._indptr_writer.write_table(indptr_table)
-        self._data_writer.write_table(data_table)
-        return data_table.num_rows
-
-    def close(self, *, cancel_futures: bool = False) -> None:
-        """执行 ``close`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        cancel_futures
-            关闭 writer 时是否取消尚未执行的异步写入任务。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.close(...)
-        """
-        self._pool.shutdown(wait=True, cancel_futures=cancel_futures)
-        if self._indptr_writer is not None:
-            self._indptr_writer.close()
-            self._indptr_writer = None
-        if self._data_writer is not None:
-            self._data_writer.close()
-            self._data_writer = None
-
-
-class _ParallelH5adCSRReader:
-    """并行读取 h5ad CSR 矩阵的内部读取器。
-
-    该类属于数据导入模块，用于封装该模块中的参数、数据库连接和中间状态。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+    它适合可以一次性载入内存的小数据集；大 h5ad 文件建议使用 ``_load_h5ad_random``、``_load_h5ad_fast_random`` 或
+    ``_load_h5ad_order``。
 
     Parameters
     ----------
-    h5ad_path
-        h5ad 文件路径。
+    file_path
+        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
 
-    n_vars
-        表达矩阵中的基因数量。
-
-    workers
-        并行 worker 数量。
+    atlas
+        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
+        embedding 结果表。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+
+    Examples
+    --------
+    调用该函数：::
+
+        sap.io.load_multi_format(...)
     """
-
-    def __init__(self, h5ad_path: str, n_vars: int, workers: int):
-        """初始化对象。
-
-        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        h5ad_path
-            h5ad 文件路径。
-
-        n_vars
-            表达矩阵中的基因数量。
-
-        workers
-            并行 worker 数量。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        self._file = h5py.File(h5ad_path, "r")
-        self._x = self._file["X"]
-        self._data = self._x["data"]
-        self._indices = self._x["indices"]
-        self._indptr = self._x["indptr"]
-        self._n_vars = n_vars
-        self._pool = futures.ThreadPoolExecutor(max_workers=workers)
-
-    @classmethod
-    def open_if_supported(cls, h5ad_path: str, n_vars: int, workers: int):
-        """执行 ``open_if_supported`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.open_if_supported`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        h5ad_path
-            h5ad 文件路径。
-
-        n_vars
-            表达矩阵中的基因数量。
-
-        workers
-            并行 worker 数量。
-
-        Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.open_if_supported(...)
-        """
-        if workers <= 1:
-            return None
-        try:
-            with h5py.File(h5ad_path, "r") as f:
-                # This fast path is intentionally narrow: AnnData stores sparse
-                # X as a CSR group with data/indices/indptr datasets. Other
-                # encodings keep using scanpy's backed reader.
-                if "X" not in f or not isinstance(f["X"], h5py.Group):
-                    return None
-                x = f["X"]
-                if x.attrs.get("encoding-type") not in {b"csr_matrix", "csr_matrix"}:
-                    return None
-                for name in ("data", "indices", "indptr"):
-                    if name not in x:
-                        return None
-                data = x["data"]
-                indices = x["indices"]
-                # read_direct_chunk returns raw compressed bytes only for
-                # chunked datasets. We currently optimize the common Tahoe case:
-                # 1-D gzip chunks for both CSR data and indices.
-                if not cls._dataset_supported(data) or not cls._dataset_supported(indices):
-                    return None
-        except Exception:
-            return None
-        return cls(h5ad_path, n_vars=n_vars, workers=workers)
-
-    @staticmethod
-    def _dataset_supported(ds) -> bool:
-        """执行 ``_dataset_supported`` 的核心功能。
-
-        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        ds
-            HDF5 dataset 对象。
-
-        Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        return (
-            ds.ndim == 1
-            and ds.chunks is not None
-            and len(ds.chunks) == 1
-            and ds.compression == "gzip"
-        )
-
-    def close(self) -> None:
-        """执行 ``close`` 的核心功能。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.io.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Notes
-        -----
-        导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.io.close(...)
-        """
-        self._pool.shutdown(wait=True)
-        self._file.close()
-
-    def read_rows(self, row_start: int, row_stop: int):
-        """按细胞行范围读取 h5ad CSR 矩阵片段。
-
-        该方法根据 ``indptr`` 将请求的细胞行区间转换为 ``data`` 和 ``indices`` 中连续的非零值范围，
-        并并行读取 gzip 压缩 chunk，最后构造独立的 ``scipy.sparse.csr_matrix``。
-
-        它用于大规模 h5ad 导入过程中的按块读取，避免一次性把完整表达矩阵载入内存。
-
-        Parameters
-        ----------
-        row_start
-            读取细胞行区间的起始位置，包含该行。
-
-        row_stop
-            读取细胞行区间的结束位置，不包含该行。
-
-        Returns
-        -------
-        X
-            指定细胞行范围对应的 CSR 稀疏矩阵。
-
-            行数为 ``row_stop - row_start``，列数为 h5ad 中的基因数量。
-
-        Notes
-        -----
-        返回矩阵的 ``indptr`` 会重新以 0 为起点，因此可以作为独立 CSR block 继续写入 Atlas 数据库。
-        """
-        # Convert the requested cell row range into a contiguous nnz range in
-        # the CSR data/indices arrays. The returned indptr is rebased to zero
-        # so scipy can construct a standalone CSR matrix for this block.
-        indptr_abs = self._indptr[row_start : row_stop + 1].astype(np.int64, copy=False)
-        nnz_start = int(indptr_abs[0])
-        nnz_stop = int(indptr_abs[-1])
-        indptr = indptr_abs - nnz_start
-
-        data = self._read_1d_range(self._data, nnz_start, nnz_stop)
-        indices = self._read_1d_range(self._indices, nnz_start, nnz_stop)
-        return sparse.csr_matrix(
-            (data, indices, indptr),
-            shape=(row_stop - row_start, self._n_vars),
-        )
-
-    def _read_1d_range(self, ds, start: int, stop: int):
-        """执行 ``_read_1d_range`` 的核心功能。
-
-        该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-        把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-        ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        ds
-            HDF5 dataset 对象。
-
-        start
-            读取或处理范围的起始位置。
-
-        stop
-            读取或处理范围的结束位置。
-
-        Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        if stop <= start:
-            return np.empty(0, dtype=ds.dtype)
-
-        chunk_size = int(ds.chunks[0])
-        first_chunk = start // chunk_size
-        last_chunk = (stop - 1) // chunk_size
-        jobs = []
-
-        for chunk_id in range(first_chunk, last_chunk + 1):
-            chunk_start = chunk_id * chunk_size
-            chunk_stop = min(chunk_start + chunk_size, ds.shape[0])
-            raw_offset = (chunk_start,)
-
-            # HDF5 gzip chunks are independent compressed byte ranges. We read
-            # each full compressed chunk, then slice the decompressed array to
-            # the requested nnz interval; only the first/last chunks are partial.
-            filter_mask, raw_chunk = ds.id.read_direct_chunk(raw_offset)
-            if filter_mask != 0:
-                raise RuntimeError(
-                    f"Unsupported HDF5 filter mask {filter_mask} for {ds.name}"
-                )
-            jobs.append(
-                self._pool.submit(
-                    _decompress_h5ad_1d_chunk_slice,
-                    raw_chunk,
-                    ds.dtype,
-                    chunk_size,
-                    chunk_stop - chunk_start,
-                    max(start, chunk_start) - chunk_start,
-                    min(stop, chunk_stop) - chunk_start,
-                )
-            )
-
-        if len(jobs) == 1:
-            return jobs[0].result()
-        return np.concatenate([job.result() for job in jobs])
-
-
-def _decompress_h5ad_1d_chunk_slice(
-    raw_chunk: bytes,
-    dtype,
-    chunk_size: int,
-    valid_items: int,
-    slice_start: int,
-    slice_stop: int,
-):
-    """解压并截取 h5ad 中的一维 gzip chunk。
-
-    该内部函数处理 ``data`` 或 ``indices`` 这类一维 HDF5 dataset 的原始压缩 chunk。
-
-    函数先使用 ``zlib.decompress`` 解压完整 chunk，再根据当前请求范围截取其中需要的片段，并返回拷贝后的
-    NumPy 数组。它通常由线程池并行调用，用于加速大规模 h5ad CSR 数据读取。
-
-    Parameters
-    ----------
-    raw_chunk
-        从 HDF5 文件中读取到的原始压缩 chunk 字节。
-
-    dtype
-        解压后数组的数据类型。
-
-    chunk_size
-        HDF5 dataset 的标准 chunk 长度。
-
-    valid_items
-        当前 chunk 中实际有效的元素数量。
-
-        最后一个 chunk 可能小于 ``chunk_size``，因此需要用该参数截断填充区域。
-
-    slice_start
-        当前 chunk 内需要返回片段的起始位置。
-
-    slice_stop
-        当前 chunk 内需要返回片段的结束位置。
-
-    Returns
-    -------
-    values
-        解压并切片后的 NumPy 一维数组。
-
-    Notes
-    -----
-    该函数是 h5ad 快速导入流程的内部 helper；用户通常不需要直接调用。
-    """
-    # zlib.decompress releases the GIL, so ThreadPoolExecutor can parallelize
-    # gzip chunk decompression without copying through h5py's filter pipeline.
-    array = np.frombuffer(zlib.decompress(raw_chunk), dtype=dtype)
-    if valid_items != chunk_size:
-        array = array[:valid_items]
-    return array[slice_start:slice_stop].copy()
-
-
-def _build_shuffle_window_for_parquet_staging(
-    window_adatas,
-    conn,
+    print("小文件读取 , 开始导入数据...")
+    adata = _read_smart(file_path)
+    load_anndata(adata, atlas)
+    print("✔ 全部数据成功导入 DuckDB ")
+
+
+# 将计算结果写入数据库表
+def _write_shuffle_window_to_duckdb(
+    window_adatas: list[AnnData],
+    conn: DuckDBPyConnection,
     global_cell_id: int,
     global_indptr_id: int,
     global_indptr_offset: int,
     global_data_id: int,
     var_written: bool,
-    source_store_type: str,
-    target_store_type: str,
-):
-    """构建内部中间数据结构。
-
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    window_adatas
-        一个 shuffle window 中收集到的 AnnData block 列表。
-
-    conn
-        DuckDB 数据库连接。
-
-    global_cell_id
-        下一个待写入的全局 ``atlas_cell_id``。
-
-    global_indptr_id
-        下一个待写入的 indptr 行 ID。
-
-    global_indptr_offset
-        当前已经累计写入的非零值数量，用于重定位 indptr。
-
-    global_data_id
-        下一个待写入的 ``X_HyS_data.id``。
-
-    var_written
-        是否已经写入 ``var`` 表。
-
-    source_store_type
-        输入表达矩阵当前的尺度。
-
-    target_store_type
-        希望写入 Atlas 的表达矩阵尺度。
-
-    Returns
-    -------
-    result
-        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    adata_window = sc.concat(
-        window_adatas,
-        axis=0,
-        join="outer",
-        merge="first",
-        index_unique=None,
-    )
-
-    if adata_window.n_obs > 1:
-        perm = np.random.permutation(adata_window.n_obs)
-        adata_window = adata_window[perm].copy()
-
-    window_cells = adata_window.n_obs
-    window_nnz = adata_window.X.nnz if sparse.issparse(adata_window.X) else np.count_nonzero(adata_window.X)
-
-    global_cell_id = _append_obs_rows(
-        adata_window,
-        conn,
-        start_cell_id=global_cell_id,
-    )
-
-    if not var_written:
-        _append_var(adata_window, conn)
-        var_written = True
-
-    adata_window = _convert_X_store_type_inplace(
-        adata_window,
-        source_store_type=source_store_type,
-        target_store_type=target_store_type,
-    )
-
-    (
-        indptr_table,
-        data_table,
-        global_indptr_id,
-        global_indptr_offset,
-        global_data_id,
-    ) = _build_X_HyS_arrow_tables(
-        adata_window,
-        base_cell_id=global_cell_id - adata_window.n_obs,
-        global_indptr_id=global_indptr_id,
-        global_indptr_offset=global_indptr_offset,
-        global_data_id=global_data_id,
-    )
-
-    del adata_window
-
-    return (
-        global_cell_id,
-        global_indptr_id,
-        global_indptr_offset,
-        global_data_id,
-        var_written,
-        window_cells,
-        window_nnz,
-        indptr_table,
-        data_table,
-    )
-
-
-def _build_X_HyS_arrow_tables(
-    adata,
-    *,
-    base_cell_id: int,
-    global_indptr_id: int,
-    global_indptr_offset: int,
-    global_data_id: int,
-):
-    """构建内部中间数据结构。
-
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
-    base_cell_id
-        当前 AnnData block 第一行对应的 Atlas 细胞 ID。
-
-    global_indptr_id
-        下一个待写入的 indptr 行 ID。
-
-    global_indptr_offset
-        当前已经累计写入的非零值数量，用于重定位 indptr。
-
-    global_data_id
-        下一个待写入的 ``X_HyS_data.id``。
-
-    Returns
-    -------
-    result
-        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    X = adata.X
-
-    if not sparse.issparse(X):
-        X = sparse.csr_matrix(X)
-    elif not sparse.isspmatrix_csr(X):
-        X = X.tocsr()
-
-    indptr = X.indptr.astype(np.int64, copy=False)
-    indices = X.indices.astype(np.uint16, copy=False)
-    data = X.data.astype(np.float32, copy=False)
-    row_nnz = np.diff(indptr)
-    adj_indptr = indptr[1:] + np.int64(global_indptr_offset)
-
-    indptr_table = pa.table({
-        "atlas_cell_id": pa.array(
-            np.arange(
-                global_indptr_id,
-                global_indptr_id + len(adj_indptr),
-                dtype=np.int32,
-            ),
-            type=pa.int32(),
-        ),
-        "indptr": pa.array(adj_indptr, type=pa.int64()),
-    })
-
-    nnz = len(data)
-    cell_index = np.repeat(
-        np.arange(
-            base_cell_id,
-            base_cell_id + adata.n_obs,
-            dtype=np.int32,
-        ),
-        row_nnz,
-    )
-
-    data_table = pa.table({
-        "id": pa.array(
-            np.arange(global_data_id, global_data_id + nnz, dtype=np.int64),
-            type=pa.int64(),
-        ),
-        "atlas_cell_id": pa.array(cell_index, type=pa.int32()),
-        "atlas_gene_id": pa.array(indices, type=pa.uint16()),
-        "data": pa.array(data, type=pa.float32()),
-    })
-
-    return (
-        indptr_table,
-        data_table,
-        global_indptr_id + len(adj_indptr),
-        global_indptr_offset + nnz,
-        global_data_id + nnz,
-    )
-
-def _write_shuffle_window_to_duckdb(
-    window_adatas,
-    conn,
-    global_cell_id,
-    global_indptr_id,
-    global_indptr_offset,
-    global_data_id,
-    var_written,
-    source_store_type: str,  
-    target_store_type: str, 
+    source_store_type: StoreType,
+    target_store_type: StoreType,
 ):
     """将计算结果写入数据库表。
 
@@ -2161,7 +1369,7 @@ def _write_shuffle_window_to_duckdb(
     # 根据 store_type 转换 X 的存储尺度
     # count -> log: np.log1p
     # log   -> count: np.expm1
-    adata_window = _convert_X_store_type_inplace(
+    adata_window = _convert_x_store_type_inplace(
         adata_window,
         source_store_type=source_store_type,
         target_store_type=target_store_type,
@@ -2172,7 +1380,7 @@ def _write_shuffle_window_to_duckdb(
         global_indptr_id,
         global_indptr_offset,
         global_data_id,
-    ) = _append_X_HyS(
+    ) = _append_x_hys(
         adata_window,
         conn,
         base_cell_id=global_cell_id - adata_window.n_obs,
@@ -2197,10 +1405,10 @@ def _write_shuffle_window_to_duckdb(
 
 
 # 预读取 sample_n 个细胞，自动判断 X 是 count scale 还是 log scale。
-def _detect_X_store_type_from_backed(
-    adata_backed,
-    sample_n: int = 1000,
-) -> str:
+def _detect_x_store_type_from_backed(
+    adata_backed: AnnData,
+    sample_n: int = 5000,
+) -> StoreType:
     """检测输入表达矩阵的存储尺度。
 
     该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
@@ -2270,11 +1478,11 @@ def _detect_X_store_type_from_backed(
         return "log"
 
 
-# 根据 source_store_type 和 target_store_type 原地转换 adata.X。
-def _convert_X_store_type_inplace(
-    adata,
-    source_store_type: str,
-    target_store_type: str,
+# 根据 source_store_type 和 target_store_type 原地转换 adata.X。 log转换的 底数为 e
+def _convert_x_store_type_inplace(
+    adata: AnnData,
+    source_store_type: StoreType,
+    target_store_type: StoreType,
 ):
     """转换表达矩阵的存储尺度。
 
@@ -2356,222 +1564,9 @@ def _convert_X_store_type_inplace(
     return adata
 
 
-''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
-def load_h5ad_order(
-    h5ad_path: str,
-    atlas,
-    batch_size: int = 4096,
-    mega_batch_factor: int = 5, 
-    store_type: str = "count",    # 目标存储类型，"count" 或 "log"
-):
-
-    """按原始细胞顺序导入单个 h5ad 文件。
-
-    该函数以 backed 模式顺序读取 h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
-
-    与随机导入不同，它不会打乱细胞顺序，因此可以安全导入 ``obsm`` 和 ``varm``，适合需要保留原始 AnnData 行顺序的场景。
-
-    Parameters
-    ----------
-    h5ad_path
-        h5ad 文件路径。
-
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    batch_size
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    mega_batch_factor
-        顺序导入时用于计算 mega-batch 大小的倍数。
-
-    store_type
-        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.io.load_h5ad_order(...)
-    """
-    commit_every = 5      
-    gc_every = 5  
-
-    # 检查目标存储类型
-    if store_type not in {"count", "log"}:
-        raise ValueError(
-            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
-        )
-
-    # mega_batch_size 改成可控
-    mega_batch_size = batch_size * mega_batch_factor
-
-    conn = atlas.connect("r+")
-    atlas.connection = conn
-
-    global_cell_id = 0
-    global_indptr_id = 0
-    global_indptr_offset = 0
-    global_data_id = 0
-
-    var_written = False
-
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-    n_cells = adata_backed.n_obs
-
-    # 简单判断 h5ad.X 底层格式
-    x_format = _print_h5ad_X_format(h5ad_path)
-
-    # 预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
-    source_store_type = _detect_X_store_type_from_backed(
-        adata_backed,
-        sample_n=1000,
-    )
-
-    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
-    print(f"[INFO] 目标存储类型 store_type = {store_type}")
-
-    if source_store_type == store_type:
-        print("[INFO] X 数据不需要转换，直接写入。")
-    else:
-        print(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
-
-    _create_obs_table_from_adata(conn, adata_backed[:1])
-    _create_var_table_from_adata(conn, adata_backed[:1])
-    _create_HyS_tables(conn)
-
-    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
-    print(f"[INFO] batch_size = {batch_size:,}")
-    print(f"[INFO] mega_batch_size = {mega_batch_size:,}")
-    print(f"[INFO] mega_batch_factor = {mega_batch_factor:,}")
-    print(f"[INFO] store_type = {store_type}")
-
-    mini_batch_counter = 0
-
-    # 事务放在大循环外
-    conn.execute("BEGIN TRANSACTION")
-
-    try:
-        for mega_i, mega_start in enumerate(
-            tqdm(
-                range(0, n_cells, mega_batch_size),
-                desc="Mega-batch（磁盘顺序读取）",
-            )
-        ):
-            mega_end = min(mega_start + mega_batch_size, n_cells)
-
-            t0 = time.time()
-
-            # 真正触发磁盘读取
-            mega = adata_backed[mega_start:mega_end].to_memory()
-
-            t_read = time.time() - t0
-
-            # mega-batch 读入后，统一转换 X 的存储尺度
-            mega = _convert_X_store_type_inplace(
-                mega,
-                source_store_type=source_store_type,
-                target_store_type=store_type,
-            )
-
-            # 统计当前 mega 的 nnz
-            if sparse.issparse(mega.X):
-                mega_nnz = mega.X.nnz
-            else:
-                mega_nnz = np.count_nonzero(mega.X)
-
-            # 按 batch_size 分批导入
-            for start in range(0, mega.n_obs, batch_size):
-                end = min(start + batch_size, mega.n_obs)
-                adata = mega[start:end]
-
-                t1 = time.time()
-
-                # ---------------- batch 导入 obs ----------------
-                global_cell_id = _append_obs_rows(
-                    adata,
-                    conn,
-                    start_cell_id=global_cell_id,
-                )
-
-                # ---------------- 导入 var（一次） ----------------
-                if not var_written:
-                    _append_var(adata, conn)
-                    var_written = True
-
-                # ---------------- batch 导入 X（CSRO） ----------------
-                (
-                    global_indptr_id,
-                    global_indptr_offset,
-                    global_data_id,
-                ) = _append_X_HyS(
-                    adata,
-                    conn,
-                    base_cell_id=global_cell_id - adata.n_obs,
-                    global_indptr_id=global_indptr_id,
-                    global_indptr_offset=global_indptr_offset,
-                    global_data_id=global_data_id,
-                )
-
-                t_write = time.time() - t1
-
-                mini_batch_counter += 1
-
-                # 每 commit_every 个 mini-batch 提交一次
-                if mini_batch_counter % commit_every == 0:
-                    conn.execute("COMMIT")
-                    conn.execute("BEGIN TRANSACTION")
-
-                del adata
-
-            print(
-                f"\n[mega {mega_i}] "
-                f"cells={mega.n_obs:,}, "
-                f"nnz={mega_nnz:,}, "
-                f"read={t_read:.2f}s, "
-                f"total_cells={global_cell_id:,}, "
-                f"total_nnz={global_data_id:,}"
-            )
-
-            del mega
-
-            if (mega_i + 1) % gc_every == 0:
-                gc.collect()
-
-        # 最后提交
-        conn.execute("COMMIT")
-
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
-    # 主键：必须在数据写完之后
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-
-    # 顺序导入没有打乱 cell，所以 obsm 可以正常导入
-    _add_obsm_from_h5ad(h5ad_path, atlas)
-    _add_varm_from_h5ad(h5ad_path, atlas)
-
-    try:
-        adata_backed.file.close()
-    except Exception:
-        pass
-
-    print("✔ 全部数据成功导入 DuckDB（顺序导入，含 obsm / varm）")
-    print(f"  - cells: {global_cell_id:,}")
-    print(f"  - nnz:   {global_data_id:,}")
-    print(f"  - store_type: {store_type}")
-
 # 简单判断 h5ad.X 的底层稀疏格式
-def _print_h5ad_X_format(h5ad_path: str):
-    """执行 ``_print_h5ad_X_format`` 的核心功能。
+def _print_h5ad_x_format(h5ad_path: str):
+    """执行 ``_print_h5ad_x_format`` 的核心功能。
 
     该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
 
@@ -2633,8 +1628,9 @@ def _print_h5ad_X_format(h5ad_path: str):
         print("[INFO] h5ad.X format = unknown")
         return "unknown"
 
+
 # 推断数据类型
-def _infer_duckdb_type_from_series(s: pd.Series) -> str:
+def _infer_duckdb_type_from_series(series: pd.Series) -> str:
 
     """执行 ``_infer_duckdb_type_from_series`` 的核心功能。
 
@@ -2647,7 +1643,7 @@ def _infer_duckdb_type_from_series(s: pd.Series) -> str:
 
     Parameters
     ----------
-    s
+    series
         需要推断 DuckDB 类型的 pandas Series。
 
     Returns
@@ -2659,16 +1655,17 @@ def _infer_duckdb_type_from_series(s: pd.Series) -> str:
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
-    if pd.api.types.is_integer_dtype(s):
+    if pd.api.types.is_integer_dtype(series):
         return "BIGINT"
-    if pd.api.types.is_float_dtype(s):
+    if pd.api.types.is_float_dtype(series):
         return "DOUBLE"
-    if pd.api.types.is_bool_dtype(s):
+    if pd.api.types.is_bool_dtype(series):
         return "BOOLEAN"
     return "VARCHAR"
 
-# 建立obs表
-def _create_obs_table_from_adata(conn, adata):
+
+# 建立 obs表
+def _create_obs_table_from_adata(conn: DuckDBPyConnection, adata: AnnData):
     """根据 AnnData 的 obs 元数据创建 Atlas ``obs`` 表。
 
     该内部函数读取 ``adata.obs`` 的列名和 pandas dtype，推断对应的 DuckDB 字段类型，并创建包含
@@ -2717,8 +1714,9 @@ def _create_obs_table_from_adata(conn, adata):
 
     conn.execute(ddl)
 
-# 建立var表
-def _create_var_table_from_adata(conn, adata):
+
+# 建立 var表
+def _create_var_table_from_adata(conn: DuckDBPyConnection, adata: AnnData):
     """根据 AnnData 的 var 元数据创建 Atlas ``var`` 表。
 
     该内部函数读取 ``adata.var`` 的列名和 pandas dtype，推断对应的 DuckDB 字段类型，并创建包含
@@ -2767,8 +1765,9 @@ def _create_var_table_from_adata(conn, adata):
 
     conn.execute(ddl)
 
-# 建立 HyS 存储结构 
-def _create_HyS_tables(conn):
+
+# 建立 HyS 存储结构
+def _create_hys_tables(conn: DuckDBPyConnection):
 
     """创建 Atlas 工作流所需的数据库表。
 
@@ -2792,9 +1791,9 @@ def _create_HyS_tables(conn):
     """
     conn.execute(
         """ -- 不存第一个0值
-        CREATE OR REPLACE TABLE X_HyS_indptr ( 
-            atlas_cell_id  INTEGER,  --   int32  
-            indptr BIGINT,           --   int64  
+        CREATE OR REPLACE TABLE X_HyS_indptr (
+            atlas_cell_id  INTEGER,  --   int32
+            indptr BIGINT,           --   int64
         )
         """
     )
@@ -2802,15 +1801,16 @@ def _create_HyS_tables(conn):
         """
         CREATE OR REPLACE TABLE X_HyS_data (
             id BIGINT,                --   int64
-            atlas_cell_id  INTEGER,   --   int32 
+            atlas_cell_id  INTEGER,   --   int32
             atlas_gene_id  USMALLINT,  --  无符号 int16 0 ~ 65535 之间
             data REAL                  --  float 32 单精度浮点数（4字节）
         )
         """
     )
 
-# 导入 obs 表 
-def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
+
+# 导入 obs 表
+def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: int) -> int:
 
     """将数据写入 Atlas 数据库。
 
@@ -2876,8 +1876,9 @@ def _append_obs_rows(adata, conn, start_cell_id: int) -> int:
 
     return start_cell_id + n
 
-# 导入 var 表 
-def _append_var(adata, conn):
+
+# 导入 var 表
+def _append_var(adata: AnnData, conn: DuckDBPyConnection):
 
     """将数据写入 Atlas 数据库。
 
@@ -2930,10 +1931,11 @@ def _append_var(adata, conn):
     conn.execute("INSERT INTO var SELECT * FROM var_df")
     conn.unregister("var_df")
 
-# 导入 X_HyS 表 
-def _append_X_HyS(
-    adata,
-    conn,
+
+# 导入 X_HyS 表
+def _append_x_hys(
+    adata: AnnData,
+    conn: DuckDBPyConnection,
     *,
     base_cell_id: int,
     global_indptr_id: int,
@@ -3088,8 +2090,9 @@ def _append_X_HyS(
 
     return global_indptr_id, global_indptr_offset, global_data_id
 
-# 导入 obsm 
-def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
+
+# 导入 obsm
+def _add_obsm_from_h5ad(h5ad_path: str, atlas: Atlas, cells_per_block: int = 500):
 
     """将数据写入 Atlas 数据库。
 
@@ -3111,7 +2114,7 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    batch_size
+    cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
     Notes
@@ -3143,9 +2146,9 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
                 )
             """)
 
-            for start in range(0, n_cells, batch_size):
+            for start in range(0, n_cells, cells_per_block):
 
-                end = min(start + batch_size, n_cells)
+                end = min(start + cells_per_block, n_cells)
                 block = dset[start:end]
                 df = pd.DataFrame(
                     block,
@@ -3161,8 +2164,8 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas, batch_size=4096):
     logger.info("obsm 导入完成")
 
 
-# 导入 varm 
-def _add_varm_from_h5ad(h5ad_path: str, atlas):
+# 导入 varm
+def _add_varm_from_h5ad(h5ad_path: str, atlas: Atlas):
 
     """将数据写入 Atlas 数据库。
 
@@ -3223,43 +2226,8 @@ def _add_varm_from_h5ad(h5ad_path: str, atlas):
     logger.info("varm 导入完成")
 
 
-''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
-def load_small_data( file_path , atlas:Atlas):
-
-    """导入小型单细胞数据文件。
-
-    该函数先调用 ``read_smart`` 根据文件后缀自动读取数据，再把得到的 AnnData 对象写入 Atlas。
-
-    它适合可以一次性载入内存的小数据集；大 h5ad 文件建议使用 ``load_h5ad_random``、``load_h5ad_fast`` 或
-    ``load_h5ad_order``。
-
-    Parameters
-    ----------
-    file_path
-        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
-
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.io.load_small_data(...)
-    """
-    print("小文件读取 , 开始导入数据...")
-    adata = read_smart(file_path)
-    load_AnnData(adata,atlas)
-    print("✔ 全部数据成功导入 DuckDB ")
-
-
 # 多种数据格式的导入
-def read_smart(file_path, **kwargs):
+def _read_smart(file_path: str ):
     """根据文件后缀自动选择 Scanpy 读取函数。
 
     该函数检查输入文件路径的扩展名，并调用对应的 ``scanpy.read_*`` 函数读取为 AnnData。
@@ -3272,11 +2240,6 @@ def read_smart(file_path, **kwargs):
     file_path
         输入单细胞数据文件路径。
 
-    **kwargs
-        传递给具体 ``scanpy.read_*`` 函数的额外参数。
-
-        不同格式支持的参数不同，例如是否指定分隔符、缓存行为或基因变量名处理方式。
-
     Returns
     -------
     adata
@@ -3284,14 +2247,14 @@ def read_smart(file_path, **kwargs):
 
     Notes
     -----
-    该函数只负责读取文件，不会直接写入 Atlas 数据库。若要导入数据库，可继续调用 ``load_AnnData`` 或
-    ``load_small_data``。
+    该函数只负责读取文件，不会直接写入 Atlas 数据库。若要导入数据库，可继续调用 ``load_anndata`` 或
+    ``load_multi_format``。
 
     Examples
     --------
     读取 h5ad 文件：::
 
-        adata = read_smart("example.h5ad")
+        adata = _read_smart("example.h5ad")
     """
 
     # 获取文件后缀名（小写形式）
@@ -3300,35 +2263,35 @@ def read_smart(file_path, **kwargs):
     # 根据文件后缀选择对应的读取方法
     if file_ext == '.h5ad':
         # h5ad格式
-        return sc.read_h5ad(file_path, **kwargs)
+        return sc.read_h5ad(file_path)
     elif file_ext == '.loom':
         # loom格式
-        return sc.read_loom(file_path, **kwargs)
+        return sc.read_loom(file_path)
     elif file_ext in ['.mtx', '.mtx.gz']:
         # mtx格式 (Matrix Market格式)
-        return sc.read_mtx(file_path, **kwargs)
+        return sc.read_mtx(file_path)
     elif file_ext in ['.csv', '.csv.gz']:
         # csv格式
-        return sc.read_csv(file_path, **kwargs)
+        return sc.read_csv(file_path)
     elif file_ext in ['.txt', '.tsv', '.tab']:
         # 文本格式，默认制表符分隔
-        return sc.read_text(file_path, **kwargs)
+        return sc.read_text(file_path)
     elif file_ext in ['.xlsx', '.xls']:
         # Excel格式
-        return sc.read_excel(file_path, **kwargs)
+        return sc.read_excel(file_path)
     elif file_ext == '.h5':
         # 10x Genomics h5格式
-        return sc.read_10x_h5(file_path, **kwargs)
+        return sc.read_10x_h5(file_path)
     elif 'umi_tools' in file_path.lower():
         # UMI-tools格式
-        return sc.read_umi_tools(file_path, **kwargs)
+        return sc.read_umi_tools(file_path)
     else:
         # 如果不认识的后缀，尝试使用通用的read函数
-        return sc.read(file_path, **kwargs)
+        return sc.read(file_path)
 
 
 ''' 方法5： 顺序读取，anndata数据导入 '''
-def load_AnnData(adata:AnnData, atlas:Atlas):
+def load_anndata(adata:AnnData, atlas:Atlas):
 
     """将 AnnData 对象导入 Atlas 数据库。
 
@@ -3353,7 +2316,7 @@ def load_AnnData(adata:AnnData, atlas:Atlas):
     --------
     调用该函数：::
 
-        sap.io.load_AnnData(...)
+        sap.io.load_anndata(...)
     """
     try:
         logger.info("准备数据表...")
@@ -3370,7 +2333,7 @@ def load_AnnData(adata:AnnData, atlas:Atlas):
 
         if hasattr(adata, 'X'):
             start_time = time.time()
-            _add_X_HyS_chunked(adata,atlas,chunk_size=4096) # 分块导入X表数据
+            _add_x_hys_chunked(adata, atlas, chunk_size=500) # 分块导入X表数据
             end_time = time.time()
             logger.info(" X表的导入用时为： " + str(end_time - start_time))
         else:
@@ -3400,6 +2363,7 @@ def load_AnnData(adata:AnnData, atlas:Atlas):
         raise
 
 
+# 以下函数只在 load_anndata 中使用
 # 导入 obs
 def _add_obs(adata:AnnData, atlas:Atlas):
 
@@ -3443,6 +2407,7 @@ def _add_obs(adata:AnnData, atlas:Atlas):
     atlas.connection.unregister('obs_df')
     logger.info("导入obs数据成功")
 
+
 # 导入 var
 def _add_var(adata:AnnData, atlas:Atlas):
 
@@ -3481,6 +2446,7 @@ def _add_var(adata:AnnData, atlas:Atlas):
     atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")  # 设置ID字段为主码，保证唯一性
     atlas.connection.unregister('var_df')
     logger.info("导入var数据成功")
+
 
 # 导入 obsm
 def _add_obsm(adata: AnnData, atlas: Atlas):
@@ -3540,6 +2506,7 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
 
     logger.info("obsm 导入完成（统一 schema）")
 
+
 # 导入 varm
 def _add_varm(adata: AnnData, atlas: Atlas):
 
@@ -3597,8 +2564,9 @@ def _add_varm(adata: AnnData, atlas: Atlas):
 
     logger.info("varm 导入完成（统一 schema）")
 
-# 导入 X_CSRO
-def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
+
+# 导入 x_hys
+def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
     """将数据写入 Atlas 数据库。
 
@@ -3642,8 +2610,8 @@ def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
     # ===================== 建表 =====================
     conn.execute(
         """ -- 不存第一个0值
-        CREATE OR REPLACE TABLE X_HyS_indptr( 
-            atlas_cell_id  INTEGER, 
+        CREATE OR REPLACE TABLE X_HyS_indptr(
+            atlas_cell_id  INTEGER,
             indptr BIGINT
         )
         """
@@ -3652,7 +2620,7 @@ def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
         """
         CREATE OR REPLACE TABLE X_HyS_data (
             id BIGINT,
-            atlas_cell_id INTEGER,   
+            atlas_cell_id INTEGER,
             atlas_gene_id USMALLINT,  --  无符号 int16 0 ~ 65535 之间
             data REAL                 --  float 32 单精度浮点数（4字节）
         )
@@ -3745,7 +2713,7 @@ def _add_X_HyS_chunked( adata: AnnData, atlas: Atlas, chunk_size: int = 4096):
 
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
-def clean_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+def clean_gene_names(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """在数据库中清洗并去重基因名。
 
     该函数直接在 ``var`` 表中检查重复基因名，并为第二次及以后出现的重复项添加 ``_1``、``_2`` 等后缀。
@@ -3774,7 +2742,7 @@ def clean_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     --------
     调用该函数：::
 
-        sap.io.clean_genes(...)
+        sap.io.clean_gene_names(...)
     """
     logger.info(f" 开始在数据库 var表 中清洗基因名 ")
 
@@ -3800,7 +2768,7 @@ def clean_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
         SELECT
             atlas_gene_id,
             CASE
-                WHEN rn = 1 THEN {gene_name_column} -- 第一个出现的基因名保持不变         
+                WHEN rn = 1 THEN {gene_name_column} -- 第一个出现的基因名保持不变
                 ELSE {gene_name_column} || '_' || (rn - 1)::VARCHAR -- 后续重复基因添加后缀：gene_1, gene_2, ...
             END AS {gene_name_column}
         FROM ranked_genes

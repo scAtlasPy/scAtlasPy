@@ -6,7 +6,7 @@ import pandas as pd
 import time
 
 # MiniBatchKMeans
-class StreamingPCAMiniBatchKMeans:
+class StreamingKMeans:
 
     """基于 PCA embedding 的流式 MiniBatchKMeans 聚类器。
 
@@ -41,9 +41,9 @@ class StreamingPCAMiniBatchKMeans:
     """
     def __init__(
             self,
-            n_components=50,
-            n_clusters=2,
-            batch_size=2048,
+            n_components: int=50,
+            n_clusters: int=2,
+            batch_size: int=2048,
             fit_batches: int = 1000,        #  KMeans 训练阶段使用多少个 minibatch
             buffer_batch_num: int = 5,      #  multi-pass 时 ShuffleBuffer 的 batch 数，和 PCA 的设计保持一致
     ):
@@ -103,7 +103,7 @@ class StreamingPCAMiniBatchKMeans:
         # )
 
     # 写 obs_cluster
-    def _write_clusters(self, atlas, cell_ids, labels, table_name):
+    def _write_clusters(self, atlas: Atlas, cell_ids: np.ndarray, labels: np.ndarray, table_name: str):
 
         """将计算结果写入数据库表。
 
@@ -140,7 +140,7 @@ class StreamingPCAMiniBatchKMeans:
         atlas.connection.append(table_name, df)
 
     # 写 kmeans_centers
-    def _write_centers(self, atlas, table_name="kmeans_centers"):
+    def _write_centers(self, atlas: Atlas, table_name: str="kmeans_centers"):
 
         """将计算结果写入数据库表。
 
@@ -194,7 +194,7 @@ class StreamingPCAMiniBatchKMeans:
         print("[Pipeline] centers written")
 
     # 转换 pca + minibatch kmeans 聚类 训练
-    def fit_kmeans(self, atlas):
+    def fit_kmeans(self, atlas: Atlas):
 
         """执行 ``fit_kmeans`` 的核心功能。
 
@@ -250,7 +250,7 @@ class StreamingPCAMiniBatchKMeans:
 
         # minibatch kmeans 聚类 训练
         for X_batch in tqdm(
-                atlas.minibatch_dense(
+                atlas.get_minibatch_dense(
                     batch_size=self.batch_size,
                     pass_mode="multi-pass",
                     buffer_batch_num=self.buffer_batch_num,
@@ -295,8 +295,8 @@ class StreamingPCAMiniBatchKMeans:
     # 转换 pca + minibatch kmeans 聚类 预测
     def predict_kmeans(
             self,
-            atlas,
-            cluster_table="obs_cluster",
+            atlas: Atlas,
+            cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
             obs_col: str = "kmeans"
     ):
@@ -371,7 +371,7 @@ class StreamingPCAMiniBatchKMeans:
 
         # 转换阶段 使用 single-pass
         for X_batch in tqdm(
-                atlas.minibatch_dense(
+                atlas.get_minibatch_dense(
                     batch_size=self.batch_size,
                     pass_mode="single-pass",
                 ),
@@ -439,7 +439,7 @@ class StreamingPCAMiniBatchKMeans:
         return self
 
     # 从数据库读取 PCA components，并恢复到 self.components_
-    def load_components(self, atlas, table_name="varm_PCs"):
+    def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
 
         """执行 ``load_components`` 的核心功能。
 
@@ -497,14 +497,14 @@ class StreamingPCAMiniBatchKMeans:
     # 运行主函数
     def run(
             self,
-            atlas,
-            cluster_table="obs_cluster",
+            atlas: Atlas,
+            cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
             obs_col: str = "kmeans"
     ):
         """训练并写入流式 KMeans 聚类结果。
 
-        该方法是 ``StreamingPCAMiniBatchKMeans`` 的主流程入口，会先调用 ``fit_kmeans`` 训练模型，
+        该方法是 ``StreamingKMeans`` 的主流程入口，会先调用 ``fit_kmeans`` 训练模型，
         再调用 ``predict_kmeans`` 为全量细胞预测聚类标签。
 
         结果默认写入独立的聚类结果表，并可同步回 ``obs`` 表中的指定列，便于后续 UMAP 着色、差异基因分析和
@@ -529,7 +529,7 @@ class StreamingPCAMiniBatchKMeans:
         Returns
         -------
         self
-            当前 ``StreamingPCAMiniBatchKMeans`` 对象。
+            当前 ``StreamingKMeans`` 对象。
 
         Examples
         --------
@@ -637,7 +637,7 @@ def kmeans(
             "请先运行 sap.tl.pca(atlas)，再运行 sap.tl.kmeans(atlas)。"
         )
 
-    runner = StreamingPCAMiniBatchKMeans(
+    runner = StreamingKMeans(
         n_components=n_components,
         n_clusters=n_clusters,
         batch_size=batch_size,

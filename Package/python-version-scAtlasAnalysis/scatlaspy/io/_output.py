@@ -2,20 +2,21 @@ import numpy as np
 import pandas as pd
 import h5py
 from tqdm import tqdm
+from ..data import Atlas
 
 ''' 数据导出: 把数据直接变成文件'''
-def export_atlas_to_h5ad(
-    atlas,
+def save_as_h5ad(
+    atlas: Atlas,
     out_h5ad_path: str,
     *,
-    batch_size: int = 1_000_000, 
+    batch_cells: int = 1_000_000, 
 ):
     """将 Atlas 数据库导出为 h5ad 文件。
 
     该函数从 Atlas 的 ``obs``、``var``、``X_HyS_indptr``、``X_HyS_data``、``obsm_*`` 和
     ``varm_*`` 表中重建 AnnData/HDF5 结构。
 
-    表达矩阵会按 ``batch_size`` 分块写出，避免一次性将全量稀疏矩阵加载到内存。
+    表达矩阵会按 ``batch_cells`` 分块写出，避免一次性将全量稀疏矩阵加载到内存。
 
     Parameters
     ----------
@@ -26,7 +27,7 @@ def export_atlas_to_h5ad(
     out_h5ad_path
         导出的 h5ad 文件保存路径。
 
-    batch_size
+    batch_cells
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
     Notes
@@ -37,7 +38,7 @@ def export_atlas_to_h5ad(
     --------
     调用该函数：::
 
-        sap.io.export_atlas_to_h5ad(...)
+        sap.io.save_as_h5ad(...)
     """
 
     conn = atlas.connection
@@ -96,14 +97,14 @@ def export_atlas_to_h5ad(
             "data",
             shape=(nnz,),
             dtype="float32",
-            chunks=(min(batch_size, nnz),),
+            chunks=(min(batch_cells, nnz),),
         )
 
         d_indices = gX.create_dataset(
             "indices",
             shape=(nnz,),
             dtype="uint16",
-            chunks=(min(batch_size, nnz),),
+            chunks=(min(batch_cells, nnz),),
         )
 
         gX.create_dataset("indptr", data=indptr, dtype="int64")
@@ -111,10 +112,10 @@ def export_atlas_to_h5ad(
         offset = 0
 
         for start in tqdm(
-            range(0, nnz, batch_size),
+            range(0, nnz, batch_cells),
             desc="CSR data"
         ):
-            end = min(start + batch_size, nnz)
+            end = min(start + batch_cells, nnz)
 
             rows = conn.execute(
                 """
@@ -194,7 +195,7 @@ def export_atlas_to_h5ad(
 
 
 # 写 AnnData 到 h5ad
-def _write_dataframe(f, key, df):
+def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
 
     """将计算结果写入数据库表。
 
@@ -268,8 +269,8 @@ def _write_dataframe(f, key, df):
 
 
 # 将 DuckDB 中的 obs 表导出为 pandas DataFrame
-def export_obs_to_pandas(
-    atlas,
+def get_obs_df(
+    atlas: Atlas,
     columns: list[str] | str | None = None,
 ):
     """将 Atlas 的 ``obs`` 表导出为 pandas DataFrame。
@@ -300,7 +301,7 @@ def export_obs_to_pandas(
     --------
     调用该函数：::
 
-        sap.io.export_obs_to_pandas(...)
+        sap.io.get_obs_df(...)
     """
 
     conn = atlas.connection
@@ -367,7 +368,7 @@ def export_obs_to_pandas(
 
 
 # 示例函数； 从 obs_df 中筛选 filter_col == True 的细胞，
-def get_filtered_cell_ids(obs_df, filter_col: str = "filter_cells"):
+def get_filtered_cell_ids(obs_df: pd.DataFrame, filter_col: str = "filter_cells"):
     """获取数据库或对象中的内部信息。
 
     把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
@@ -404,7 +405,7 @@ def get_filtered_cell_ids(obs_df, filter_col: str = "filter_cells"):
     if obs_df.index.name != "atlas_cell_id":
         raise ValueError(
             "obs_df 的 index 不是 atlas_cell_id。"
-            "请确认 obs_df 是否来自 export_obs_to_pandas()。"
+            "请确认 obs_df 是否来自 get_obs_df()。"
         )
 
     if filter_col not in obs_df.columns:
@@ -416,9 +417,9 @@ def get_filtered_cell_ids(obs_df, filter_col: str = "filter_cells"):
 
 
 # 根据 atlas_cell_id list，从 DuckDB 中导出子集 AnnData 到内存
-def export_atlas_to_anndata(
-    atlas,
-    atlas_cell_ids,
+def get_anndata(
+    atlas: Atlas,
+    atlas_cell_ids: list[int] | np.ndarray | None,
     x_field: str = "data",
     include_obsm: bool = True,
     include_varm: bool = True,
@@ -460,7 +461,7 @@ def export_atlas_to_anndata(
     --------
     调用该函数：::
 
-        sap.io.export_atlas_to_anndata(...)
+        sap.io.get_anndata(...)
     """
 
     import numpy as np
@@ -523,7 +524,7 @@ def export_atlas_to_anndata(
     if x_field_exists == 0:
         raise ValueError(f"X_HyS_data 中不存在字段: {x_field}")
 
-    print("==== export_atlas_to_anndata ====")
+    print("==== get_anndata ====")
     print(f"[INFO] selected cells = {len(atlas_cell_ids):,}")
     print(f"[INFO] x_field = {x_field}")
 

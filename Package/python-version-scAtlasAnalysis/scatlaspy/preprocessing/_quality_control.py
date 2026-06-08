@@ -1,14 +1,16 @@
 import os
 from datetime import datetime
+from _duckdb import DuckDBPyConnection
 from ..data import Atlas
+from typing import Any
 from typing import Optional
 import logging
 import math
 import gc
 
 def _cleanup_qc_after_step(
-        conn,
-        temp_tables=None,
+        conn: DuckDBPyConnection,
+        temp_tables: list[str]=None,
         checkpoint: bool = False,
         collect: bool = True,
 ):
@@ -69,7 +71,7 @@ def filter_cells_fast(atlas: 'Atlas',
                        min_genes: Optional[int] = None,
                        max_counts: Optional[int] = None,
                        max_genes: Optional[int] = None,
-                       add_key="filter_cells"):
+                       add_key: str | None="filter_cells"):
     """快速根据 QC 阈值过滤细胞。
 
     该函数直接使用 ``obs`` 中已经存在的 ``total_counts``、``n_genes_by_counts`` 等 QC
@@ -186,19 +188,19 @@ def filter_cells_fast(atlas: 'Atlas',
 
 ''' 过滤细胞 方法2 ：大数据安全版 '''
 def filter_cells(
-        atlas,
+        atlas: Atlas,
         min_counts: Optional[int] = None,
         min_genes: Optional[int] = None,
         max_counts: Optional[int] = None,
         max_genes: Optional[int] = None,
         add_key: str = "filter_cells",
-        cell_chunk_size: int = 500_000,   # 分块大小
+        chunk_cells: int = 500_000,   # 分块大小
 ):
     """根据表达量和检测基因数过滤细胞。
 
     该函数从 ``X_HyS_data`` 分块统计每个细胞的总表达量和检测基因数，再根据指定阈值写入细胞过滤标记。
 
-    适合尚未预先计算 QC 指标的数据库；运行后可调用 ``atlas.filter_build_index`` 生成过滤后的表达矩阵索引。
+    适合尚未预先计算 QC 指标的数据库；运行后可调用 ``atlas.build_read_index`` 生成过滤后的表达矩阵索引。
 
     Parameters
     ----------
@@ -221,7 +223,7 @@ def filter_cells(
     add_key
         写回 ``obs`` 或 ``var`` 的结果列名。
 
-    cell_chunk_size
+    chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
     Notes
@@ -290,10 +292,10 @@ def filter_cells(
         print("obs 为空，跳过。")
         return
 
-    n_chunks = (max_cell - min_cell + cell_chunk_size) // cell_chunk_size
+    n_chunks = (max_cell - min_cell + chunk_cells) // chunk_cells
 
     print(f"cell_id 范围: {min_cell:,} ~ {max_cell:,}")
-    print(f"cell_chunk_size = {cell_chunk_size:,}")
+    print(f"chunk_cells = {chunk_cells:,}")
     print(f"预计分块数 = {n_chunks:,}")
 
     keep_total = 0
@@ -303,8 +305,8 @@ def filter_cells(
 
     for i in range(n_chunks):
 
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
+        c_start = min_cell + i * chunk_cells
+        c_end = min(c_start + chunk_cells - 1, max_cell)
 
         print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
@@ -368,7 +370,7 @@ def filter_cells(
 
 ''' 过滤基因 '''
 def filter_genes(
-        atlas,
+        atlas: Atlas,
         min_counts: Optional[int] = None,
         min_cells: Optional[int] = None,
         max_counts: Optional[int] = None,
@@ -523,9 +525,9 @@ def filter_genes(
 
 ''' 计算每个细胞的总 UMI（Unique Molecular Identifier）计数 '''
 def calculate_cell_total_counts(
-        atlas,
+        atlas: Atlas,
         add_key: str = "cell_total_counts",
-        cell_chunk_size: int = 1_000_000,
+        chunk_cells: int = 1_000_000,
 ) -> None:
     """计算每个细胞的总表达量。
 
@@ -542,7 +544,7 @@ def calculate_cell_total_counts(
     add_key
         写回 ``obs`` 或 ``var`` 的结果列名。
 
-    cell_chunk_size
+    chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
     Notes
@@ -592,10 +594,10 @@ def calculate_cell_total_counts(
         print("obs 为空，跳过。")
         return
 
-    n_chunks = math.ceil((max_cell - min_cell + 1) / cell_chunk_size)
+    n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     print(f"cell_id 范围: {min_cell:,} ~ {max_cell:,}")
-    print(f"cell_chunk_size = {cell_chunk_size:,}")
+    print(f"chunk_cells = {chunk_cells:,}")
     print(f"预计分块数 = {n_chunks:,}")
 
     total_updated_cells = 0
@@ -605,8 +607,8 @@ def calculate_cell_total_counts(
 
     for i in range(n_chunks):
 
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
+        c_start = min_cell + i * chunk_cells
+        c_end = min(c_start + chunk_cells - 1, max_cell)
 
         print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
@@ -772,7 +774,7 @@ def calculate_gene_total_counts(
 
 
 ''' qc 控制指标 方法 1 ：小数据快速版，全量进内存；线粒体基因 + 核糖体基因 比例计算 '''
-def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
+def calculate_qc_metrics_fast(atlas: Atlas, qc_vars: dict | None = None):
 
     """快速计算细胞和基因 QC 指标。
 
@@ -947,9 +949,9 @@ def calculate_qc_metrics_fast(atlas, qc_vars: dict | None = None):
 
 ''' qc 控制指标 方法 2 ：大数据安全版'''
 def calculate_qc_metrics(
-    atlas,
-    qc_vars=None,
-    cell_chunk_size=100_000
+    atlas: Atlas,
+    qc_vars: dict[str, Any] | None=None,
+    chunk_cells: int=100_000
 ):
 
     """计算细胞和基因 QC 指标。
@@ -967,7 +969,7 @@ def calculate_qc_metrics(
     qc_vars
         QC 基因集合配置，例如线粒体或核糖体基因集合。
 
-    cell_chunk_size
+    chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
     Notes
@@ -1063,17 +1065,17 @@ def calculate_qc_metrics(
         print("obs 为空，跳过。")
         return
 
-    n_chunks = math.ceil((max_cell - min_cell + 1) / cell_chunk_size)
+    n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     print(f"Cells: {max_cell - min_cell + 1:,}")
-    print(f"Chunk size: {cell_chunk_size:,}")
+    print(f"Chunk size: {chunk_cells:,}")
     print(f"Chunks: {n_chunks:,}")
 
     # cell-wise QC：分块处理
     for i in range(n_chunks):
 
-        c_start = min_cell + i * cell_chunk_size
-        c_end = min(c_start + cell_chunk_size - 1, max_cell)
+        c_start = min_cell + i * chunk_cells
+        c_end = min(c_start + chunk_cells - 1, max_cell)
 
         print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 

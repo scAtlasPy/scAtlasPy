@@ -7,33 +7,32 @@
 # matplotlib.use("QtAgg", force=True)
 import scatlaspy as sap
 
-atlas = sap.Atlas("test_volcano",path=r"F:\data\database")
-file_path = r"F:\data\database\tahoe_10000_minimal_volcano\tahoe_10000_processed_clean.h5ad"
+# todo 要不要推荐用户限制内存
 
 # 1. 建立数据库
-atlas = sap.Atlas("test_1M",path=r"F:\data\database")
-file_path = r"F:\data\92b37feb-aa2c-40d7-bd90-0a9b5ddb3b27.h5ad" #
+# atlas = sap.Atlas("test_1M",path=r"F:\data\database")
+# file_path = r"F:\data\92b37feb-aa2c-40d7-bd90-0a9b5ddb3b27.h5ad" #
 
-atlas = sap.Atlas("test_10W",path=r"F:\data\database")
+atlas = sap.Atlas("test_10W_0608",path=r"F:\data\database")
 file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample10W.h5ad"
-
-atlas = sap.Atlas("test_20W",path=r"F:\data\database")
-file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample20W.h5ad"
-
-atlas = sap.Atlas("test_83W",path=r"F:\data\database")
-file_path = r"F:\data\FullMouseBrain_raw.h5ad"
-
-atlas = sap.Atlas("test_HBCA",path=r"F:\data\database")
+#
+# atlas = sap.Atlas("test_20W",path=r"F:\data\database")
+# file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample20W.h5ad"
+#
+# atlas = sap.Atlas("test_83W",path=r"F:\data\database")
+# file_path = r"F:\data\FullMouseBrain_raw.h5ad"
+#
+atlas = sap.Atlas("test_HBCA_0607",path=r"F:\data\database")
 file_path = r"F:\data\HBCA__subsample_20__hvg_2000.h5ad"
 
-atlas = sap.Atlas("test_280W_p4",path=r"F:\data\database")
+atlas = sap.Atlas("test_280W_random",path=r"F:\data\database")
 file_path = r"F:\data\adata_JAX_dataset_1.h5ad"
 
-atlas = sap.Atlas("test_500W",path=r"F:\data\database")
-file_path = r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate14_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad"
-
-# 多文件导入
-atlas = sap.Atlas("test_100M-123",path=r"F:\data\database")
+# atlas = sap.Atlas("test_500W",path=r"F:\data\database")
+# file_path = r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate14_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad"
+#
+# # 多文件导入
+# atlas = sap.Atlas("test_100M-123",path=r"F:\data\database")
 h5ad_paths = [ # 18,251,480 x 62,710
     r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate1_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
     r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate2_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
@@ -41,10 +40,9 @@ h5ad_paths = [ # 18,251,480 x 62,710
 ]
 
 # 2. 大文件读取
-sap.io.load_h5ad_order(file_path , atlas)   # 顺序导入
-sap.io.load_h5ad_random(file_path , atlas)  # 随机导入
-sap.io.load_h5ad_fast( file_path , atlas )  # 随机导入：parquet文件中转， 快速版
-sap.io.load_h5ad_list_random(h5ad_paths,atlas) # 多文件随机导入
+sap.io.load_h5ad(file_path , atlas , load_type = "order")   # 顺序导入
+sap.io.load_h5ad(file_path , atlas , load_type = "random")  # 随机导入
+sap.io.load_h5ad(h5ad_paths, atlas , load_type = "list_random") # 多文件随机导入
 
 # 导入完数据，直接画 最高表达基因占比图（highest expressed genes
 # 用来检查 有没有少数基因“垄断”表达（技术偏差）
@@ -56,16 +54,17 @@ sap.pl.highest_expr_genes(
     use_all_cells=False,
     show_outliers=False,
     approx_quantile=True,
-    sample_cells=1_0_000,
+    sample_cells=10_000,
 )
 
 #  小数据 / 和 Scanpy 对齐 / 做展示图
 sap.pl.highest_expr_genes(
     atlas,
     n_top=20,
-    use_all_cells=True,
+    use_all_cells=False,
     show_outliers=True,
-    max_outliers=5000, # 每个基因最多绘制多少个离群点
+    sample_cells=10_000,
+    max_outliers=5_000, # 每个基因最多绘制多少个离群点
 )
 
 # 3. 过滤 filter_cells & filter_genes
@@ -100,8 +99,8 @@ sap.pp.normalize_and_log1p(atlas,target_sum=1e6) # 推荐用这个 normalize 法
 
 # 8. 特征选择：识别高变基因
 # 计算
-sap.pp.highly_variable_genes(atlas) # 识别高变基因
-sap.pp.highly_variable_genes_seurat(atlas) #  seurat
+sap.pp.highly_variable_genes(atlas,flavor = "cv") # 识别高变基因
+sap.pp.highly_variable_genes(atlas,flavor = "seurat") #  seurat
 # 可视化
 sap.pl.highly_variable_genes_plot(atlas)
 sap.pl.highly_variable_genes_plot_seurat(atlas)
@@ -114,22 +113,22 @@ sap.pp.sqrt(atlas)        # 法1：分块,内存安全，适合大数据，稍�
 sap.pp.sqrt_fast(atlas)   # 法2：不分块，内存不安全，适合小数据，较快
 
 # 11.过滤 + 建新表 + 建tid分块索引
-atlas.filter_build_index()
+atlas.build_read_index()
 
 # 12. minibatch 格式读取
-atlas.minibatch_CSR( X_type = "CSR")   # CSR 格式读取
-atlas.minibatch_dense(pass_mode = "single-pass") # 宽表 格式读取 , 单次遍历
-atlas.minibatch_dense(pass_mode = "multi-pass" , max_batches = 500) # 宽表 格式读取 , 多次遍历
+atlas.get_minibatch_csr(x_type="CSR")   # CSR 格式读取
+atlas.get_minibatch_dense(pass_mode ="single-pass") # 宽表 格式读取 , 单次遍历
+atlas.get_minibatch_dense(pass_mode ="multi-pass", max_batches = 500) # 宽表 格式读取 , 多次遍历
 
 # 13. 导出
 file_path = r"F:\data\out\test_10W_out.h5ad" # 导出文件路径名称
-sap.io.export_atlas_to_h5ad(atlas,file_path) # 导出文件
+sap.io.save_as_h5ad(atlas,file_path) # 导出文件
 
 # 导出为 df
-obs_df = sap.io.export_obs_to_pandas(atlas)
+obs_df = sap.io.get_obs_df(atlas)
 # atlas_cell_ids = sap.io.get_filtered_cell_ids(obs_df)
 atlas_cell_ids = obs_df["atlas_cell_id"].tolist()
-adata = sap.io.export_atlas_to_anndata(atlas,atlas_cell_ids)
+adata = sap.io.get_anndata(atlas,atlas_cell_ids)
 adata.write_h5ad(r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_819200-f.h5ad") # adata 导出为 h5ad
 
 
@@ -138,11 +137,11 @@ adata.write_h5ad(r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test
 sap.tl.pca(
     atlas,
     n_components=30,
-    fit_batches=100, # 训练轮数
+    fit_batches=1000, # 训练轮数
 )
 
 # 可视化层：只读 PCA 结果
-sap.pl.pca(atlas, color="cell_type")
+sap.pl.pca(atlas, color="cell_type") # embryo_id  keep
 sap.pl.pca_variance_ratio(atlas, n_pcs=30)
 sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=30)
 
@@ -153,7 +152,7 @@ sap.tl.kmeans(
     atlas,
     n_components=30,
     n_clusters=30,
-    fit_batches=100, # 训练轮数
+    fit_batches=1000, # 训练轮数
     buffer_batch_num=5,
     obs_col="kmeans"
 )
@@ -164,13 +163,14 @@ sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
 
 # 16. UMAP：计算 + 可视化
 # 计算层：基于 obsm_X_pca 计算 UMAP，写入 obsm_X_umap
+# todo 这个函数的计算和画图有冲突
 sap.tl.umap(
     atlas,
     fit_sample_n=500000,
     transform_batch_size=100000,
-    n_neighbors=45,
-    min_dist=0.2,
-    random_state=42,
+    n_neighbors=40,
+    min_dist=0.5,
+    # random_state=42,
     n_jobs=1,
     eval_sample_n=10000,
 )

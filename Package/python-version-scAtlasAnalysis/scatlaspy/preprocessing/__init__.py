@@ -17,7 +17,6 @@ from ._transformation import (
     expm1,
     normalize_and_log1p,
     highly_variable_genes,
-    highly_variable_genes_seurat,
     scale,
     scale_fast,
     sqrt,

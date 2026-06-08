@@ -7,6 +7,7 @@ import pandas as pd
 import time
 
 
+from typing import Any
 # 流式 PCA ；支持 minibatch 训练 + 推理
 class StreamingPCA:
     """面向 Atlas 数据库的流式 PCA 模型。
@@ -35,7 +36,7 @@ class StreamingPCA:
 
     # 初始化
     def __init__(self,
-                 n_components = 30,
+                 n_components: int = 30,
                  fit_batches: int = 1000,
                  buffer_batch_num: int = 5,
                  ):
@@ -75,7 +76,7 @@ class StreamingPCA:
 
 
     # 新建 obsm_X_pca 表
-    def _create_pca_table(self, atlas:Atlas, n_components = 30, table_name="obsm_X_pca"):
+    def _create_pca_table(self, atlas:Atlas, n_components: int = 30, table_name: str="obsm_X_pca"):
 
         """创建 Atlas 工作流所需的数据库表。
 
@@ -118,7 +119,7 @@ class StreamingPCA:
         print("obsm_X_pca 新建完成")
 
     # 新建 varm_PCs 表
-    def _create_pcs_table(self, atlas:Atlas,  n_components = 30, table_name="varm_PCs"):
+    def _create_pcs_table(self, atlas:Atlas,  n_components: int = 30, table_name: str="varm_PCs"):
 
         """创建 Atlas 工作流所需的数据库表。
 
@@ -161,7 +162,7 @@ class StreamingPCA:
         print("varm_PCs 新建完成")
 
     # 新建 uns_pca_stats 表
-    def _create_pca_stats_table(self, atlas:Atlas, table_name="uns_pca_stats"):
+    def _create_pca_stats_table(self, atlas:Atlas, table_name: str="uns_pca_stats"):
 
         """创建 Atlas 工作流所需的数据库表。
 
@@ -200,7 +201,7 @@ class StreamingPCA:
         print("uns_pca_stats 新建完成")
 
     # 写 obsm_X_pca 表
-    def _writer_obsm_X_pca(self, atlas: Atlas, X_batch, cell_offset, table_name="obsm_X_pca"):
+    def _writer_obsm_x_pca(self, atlas: Atlas, X_batch: np.ndarray, cell_offset: int, table_name: str= "obsm_X_pca"):
 
         """将计算结果写入数据库表。
 
@@ -256,7 +257,7 @@ class StreamingPCA:
         return cell_offset + n
 
     # 写 varm_PCs 表
-    def _writer_varm_PCs(self, atlas: Atlas, table_name="varm_PCs"):
+    def _writer_varm_pcs(self, atlas: Atlas, table_name: str= "varm_PCs"):
 
         """将计算结果写入数据库表。
 
@@ -292,7 +293,7 @@ class StreamingPCA:
         atlas.connection.append(table_name, df)
 
     # 写 uns_pca_stats 表
-    def _writer_uns_pca_stats(self, atlas: Atlas, table_name="uns_pca_stats"):
+    def _writer_uns_pca_stats(self, atlas: Atlas, table_name: str="uns_pca_stats"):
 
         """将计算结果写入数据库表。
 
@@ -368,7 +369,7 @@ class StreamingPCA:
         batch_count = 0
 
         for X_batch in tqdm(
-                atlas.minibatch_dense(
+                atlas.get_minibatch_dense(
                     pass_mode="multi-pass",
                     buffer_batch_num=self.buffer_batch_num,
                     max_batches=self.fit_batches,
@@ -452,12 +453,12 @@ class StreamingPCA:
 
         cell_offset = 0  # 关键：全局递增
 
-        for X_batch in tqdm(atlas.minibatch_dense( pass_mode="single-pass")):
+        for X_batch in tqdm(atlas.get_minibatch_dense(pass_mode="single-pass")):
 
             X_pca = self.ipca.transform(X_batch)
 
             # 只写 obsm（每个batch）
-            cell_offset = self._writer_obsm_X_pca(
+            cell_offset = self._writer_obsm_x_pca(
                 atlas,
                 X_pca,
                 cell_offset
@@ -505,7 +506,7 @@ class StreamingPCA:
         self.fit(atlas)
 
         # 写一次模型结果
-        self._writer_varm_PCs(atlas)
+        self._writer_varm_pcs(atlas)
         self._writer_uns_pca_stats(atlas)
 
         # transform（写 obsm）
@@ -546,7 +547,7 @@ class StreamingPCA:
         }
 
     # 从数据库读取 PCA components，并恢复到 self.components_
-    def load_components(self, atlas, table_name="varm_PCs"):
+    def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
 
         """执行 ``load_components`` 的核心功能。
 
@@ -616,7 +617,7 @@ class StreamingPCA:
         atlas
             Atlas 对象。
 
-            要求已经完成过滤索引构建，并能够通过 ``atlas.minibatch_dense`` 读取表达矩阵 minibatch。
+            要求已经完成过滤索引构建，并能够通过 ``atlas.get_minibatch_dense`` 读取表达矩阵 minibatch。
 
         Returns
         -------
@@ -862,7 +863,7 @@ class ScanpyArpackPCA:
     # --------------------------------------------------------
     # 建表：保持和原 StreamingPCA 一样的表结构
     # --------------------------------------------------------
-    def _create_pca_table(self, atlas: Atlas, n_components=30, table_name="obsm_X_pca"):
+    def _create_pca_table(self, atlas: Atlas, n_components: int=30, table_name: str="obsm_X_pca"):
         """创建 Atlas 工作流所需的数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。
@@ -903,7 +904,7 @@ class ScanpyArpackPCA:
         atlas.connection.execute(sql)
         print("obsm_X_pca 新建完成")
 
-    def _create_pcs_table(self, atlas: Atlas, n_components=30, table_name="varm_PCs"):
+    def _create_pcs_table(self, atlas: Atlas, n_components: int=30, table_name: str="varm_PCs"):
         """创建 Atlas 工作流所需的数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。
@@ -944,7 +945,7 @@ class ScanpyArpackPCA:
         atlas.connection.execute(sql)
         print("varm_PCs 新建完成")
 
-    def _create_pca_stats_table(self, atlas: Atlas, table_name="uns_pca_stats"):
+    def _create_pca_stats_table(self, atlas: Atlas, table_name: str="uns_pca_stats"):
         """创建 Atlas 工作流所需的数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。
@@ -1079,7 +1080,7 @@ class ScanpyArpackPCA:
         return df["atlas_gene_id"].to_numpy(dtype=np.int32)
 
     # --------------------------------------------------------
-    # 从 minibatch_dense 收集 dense 矩阵
+    # 从 get_minibatch_dense 收集 dense 矩阵
     # --------------------------------------------------------
     def _collect_dense_matrix(self, atlas: Atlas):
         """执行 ``_collect_dense_matrix`` 的核心功能。
@@ -1130,7 +1131,7 @@ class ScanpyArpackPCA:
         n_genes = None
 
         for X_batch in tqdm(
-                atlas.minibatch_dense(
+                atlas.get_minibatch_dense(
                     batch_size=batch_size,
                     pass_mode="single-pass",
                 ),
@@ -1145,7 +1146,7 @@ class ScanpyArpackPCA:
             total_rows += X_batch.shape[0]
 
         if len(batches) == 0:
-            raise RuntimeError("[Scanpy PCA] 没有从 minibatch_dense 获得任何 batch")
+            raise RuntimeError("[Scanpy PCA] 没有从 get_minibatch_dense 获得任何 batch")
 
         X = np.vstack(batches).astype(np.float32, copy=False)
 
@@ -1158,7 +1159,7 @@ class ScanpyArpackPCA:
             raise RuntimeError(
                 f"[Scanpy PCA] 收集到的行数和 obs 不一致："
                 f"X.shape[0]={X.shape[0]}, obs cells={n_cells}。\n"
-                f"这通常说明 minibatch_dense 丢了最后 partial batch。"
+                f"这通常说明 get_minibatch_dense 丢了最后 partial batch。"
             )
 
         if not np.isfinite(X).all():
@@ -1172,7 +1173,7 @@ class ScanpyArpackPCA:
     # --------------------------------------------------------
     # 写结果表
     # --------------------------------------------------------
-    def _write_obsm_X_pca(self, atlas: Atlas, X_pca, cell_ids, table_name="obsm_X_pca"):
+    def _write_obsm_X_pca(self, atlas: Atlas, X_pca: np.ndarray, cell_ids: np.ndarray, table_name: str="obsm_X_pca"):
         """将计算结果写入数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。
@@ -1216,7 +1217,7 @@ class ScanpyArpackPCA:
 
         print(f"[Scanpy PCA] obsm_X_pca written: {len(df):,} cells")
 
-    def _write_varm_PCs(self, atlas: Atlas, adata, table_name="varm_PCs"):
+    def _write_varm_PCs(self, atlas: Atlas, adata: Any, table_name: str="varm_PCs"):
         """将计算结果写入数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。
@@ -1269,7 +1270,7 @@ class ScanpyArpackPCA:
 
         print(f"[Scanpy PCA] varm_PCs written: {len(df):,} genes")
 
-    def _write_uns_pca_stats(self, atlas: Atlas, adata, table_name="uns_pca_stats"):
+    def _write_uns_pca_stats(self, atlas: Atlas, adata: Any, table_name: str="uns_pca_stats"):
         """将计算结果写入数据库表。
 
         该内部函数属于PCA 计算模块，用于支撑同一模块中的公共 API。

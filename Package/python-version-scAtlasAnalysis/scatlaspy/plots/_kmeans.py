@@ -7,7 +7,7 @@ from ..data import Atlas
 def kmeans_cluster_size(
         atlas: Atlas,
         obs_col: str = "kmeans",
-        figsize=(7, 4),
+        figsize: tuple[float, float] | None=(7, 4),
         show_percent: bool = True,
         title: str | None = None
 ):

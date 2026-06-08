@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
+import re
+from typing import Any
 
 
 # =====================================================
@@ -26,7 +28,70 @@ DEFAULT_DISCRETE_PALETTES = (
 )
 
 
-def _build_discrete_color_map(labels, palette=None):
+# =====================================================
+# 通用分类标签自然排序
+# -----------------------------------------------------
+# 解决：
+# embryo_1, embryo_10, embryo_11, embryo_2
+#
+# 排成：
+# embryo_1, embryo_2, embryo_3, ..., embryo_10
+#
+# 同样适用于：
+# cluster_1 / cluster_10
+# batch2 / batch10
+# group_3_day_2 / group_3_day_12
+# =====================================================
+_MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
+
+
+def _natural_sort_key(value: Any):
+    """
+    分类标签自然排序 key。
+
+    Examples
+    --------
+    embryo_1  < embryo_2  < embryo_10
+    cluster_1 < cluster_2 < cluster_11
+    """
+
+    s = str(value).strip()
+
+    # 缺失值标签放最后
+    if s.casefold() in _MISSING_CATEGORY_LABELS:
+        return (1, ())
+
+    parts = re.split(r"(\d+)", s)
+
+    key = []
+    for part in parts:
+        if part == "":
+            continue
+
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.casefold()))
+
+    return (0, tuple(key))
+
+
+def _sort_categories_natural(labels: Any) -> list[str]:
+    """
+    对分类标签做默认自然排序。
+
+    不额外暴露参数，所有离散分类变量默认使用这个排序。
+    """
+
+    labels = [str(x) for x in list(labels)]
+
+    # 去重，避免重复 category
+    labels = list(dict.fromkeys(labels))
+
+    return sorted(labels, key=_natural_sort_key)
+
+
+def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     """构建内部中间数据结构。
 
     该内部函数属于PCA 可视化模块，用于支撑同一模块中的公共 API。
@@ -101,14 +166,14 @@ def _build_discrete_color_map(labels, palette=None):
 
 # 可视化 / 对外入口层 ;  用 PCA 的前两个主成分（PC1, PC2）做二维散点图
 def pca(
-        atlas,
+        atlas: Atlas,
         color: str | None = None,
         x_pc: int = 0,
         y_pc: int = 1,
         annotate_var_explained: bool = True,
         sample_n: int | None = 500000,
         use_expr_field: str = "data_log1p",
-        figsize=(22, 8),
+        figsize: tuple[float, float] | None=(22, 8),
         point_size: float = 1.0,
         alpha: float = 0.7,
         cmap: str = "viridis",
@@ -465,9 +530,22 @@ def pca(
         # C2. obs 分类列：离散颜色 + legend
         else:
             values = values.astype("object").where(values.notna(), "NA")
-            values = values.astype(str).astype("category")
+            values_str = values.astype(str)
 
-            cats = list(values.cat.categories)
+            # 默认使用自然排序
+            # embryo_1, embryo_2, ..., embryo_10
+            cats = _sort_categories_natural(pd.unique(values_str))
+
+            # 显式指定 category 顺序
+            values = pd.Series(
+                pd.Categorical(
+                    values_str,
+                    categories=cats,
+                    ordered=True,
+                ),
+                index=plot_df.index,
+                name="color_value",
+            )
 
             color_map = _build_discrete_color_map(
                 labels=cats,
@@ -622,7 +700,7 @@ def pca_variance_ratio(
         log: bool = False,
         show: bool | None = None,
         save: bool | str | None = None,
-        figsize=(16, 8),
+        figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
     """绘制 PCA 单个主成分解释方差比例。
@@ -788,7 +866,7 @@ def pca_variance_ratio_cumsum(
         log: bool = False,
         show: bool | None = None,
         save: bool | str | None = None,
-        figsize=(16, 8),
+        figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
     """绘制 PCA 累计解释方差比例。

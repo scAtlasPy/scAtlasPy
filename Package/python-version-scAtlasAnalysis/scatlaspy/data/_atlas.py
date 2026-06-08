@@ -3,8 +3,8 @@ from _duckdb import DuckDBPyConnection
 import duckdb
 import os
 import logging
-from ._minibatch import MinibatchFetchMultiThreads
-from ._filter_index import FilterBuildIndex
+from ._minibatch import MultiThreadedMinibatchFetcher
+from ._filter_index import FilterIndexBuilder
 
 # 配置日志
 logger = logging.getLogger("Atlas")
@@ -129,7 +129,7 @@ class Atlas:
             数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -161,7 +161,6 @@ class Atlas:
         else:
             name = os.path.splitext(filename)[0]
 
-        # 绕过 __init__，避免触发“自动创建数据库”的逻辑
         atlas = cls.__new__(cls)
 
         atlas._Atlas__name = name
@@ -197,7 +196,7 @@ class Atlas:
             目录路径或文件路径。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -231,7 +230,7 @@ class Atlas:
         整体用法和 Scanpy 中相近的 ``sap.file_path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -277,7 +276,7 @@ class Atlas:
         整体用法和 Scanpy 中相近的 ``sap.name`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -323,7 +322,7 @@ class Atlas:
         整体用法和 Scanpy 中相近的 ``sap.path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -369,7 +368,7 @@ class Atlas:
         整体用法和 Scanpy 中相近的 ``sap.connection`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -422,7 +421,7 @@ class Atlas:
             目录路径或文件路径。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -465,7 +464,7 @@ class Atlas:
             数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -565,7 +564,7 @@ class Atlas:
             需要执行的 SQL 语句。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -607,7 +606,7 @@ class Atlas:
         整体用法和 Scanpy 中相近的 ``sap.exists`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -621,7 +620,7 @@ class Atlas:
         logger.debug(f"检查数据库文件是否存在: {self.file_path} -> {exists}")
         return exists
 
-    def query(self, query):
+    def query(self, query: str):
         """执行 ``query`` 的核心功能。
 
         负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
@@ -636,7 +635,7 @@ class Atlas:
             需要执行的 SQL 查询语句。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -653,7 +652,7 @@ class Atlas:
         df = result.df() # 将查询结果转换为pandas DataFrame
         return df
 
-    def query_raw(self, query):
+    def query_raw(self, query: str):
         """执行 ``query_raw`` 的核心功能。
 
         负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
@@ -668,7 +667,7 @@ class Atlas:
             需要执行的 SQL 查询语句。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -694,7 +693,7 @@ class Atlas:
         它用于快速确认数据库是否包含 ``obs``、``var``、``X_HyS_data``、embedding 和分析结果表。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -740,7 +739,7 @@ class Atlas:
             n_genes = None
 
         # 5. 格式化输出
-        def fmt(x):
+        def fmt(x: Any):
             """执行 ``fmt`` 的核心功能。
 
             负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
@@ -755,7 +754,7 @@ class Atlas:
                 需要排序、格式化或转换的单个输入值。
 
             Returns
--------
+            -------
             result
                 函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -793,7 +792,7 @@ class Atlas:
             数量参数，例如返回行数、抽样数量或参与计算的元素个数。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -857,7 +856,7 @@ class Atlas:
         它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -878,7 +877,7 @@ class Atlas:
         它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -888,7 +887,7 @@ class Atlas:
         """
         return self.describe()
 
-    def filter_build_index(
+    def build_read_index(
             self,
             cell_condition: str | None = None,
             gene_condition: str | None = None,
@@ -897,7 +896,7 @@ class Atlas:
     ):
         """根据过滤条件重建 Atlas 过滤索引。
 
-        该方法调用 ``FilterBuildIndex``，根据 ``obs`` 和 ``var`` 中的过滤列生成连续
+        该方法调用 ``FilterIndexBuilder``，根据 ``obs`` 和 ``var`` 中的过滤列生成连续
         ``filter_cell_id`` 与 ``filter_gene_id``。
 
         随后会重建 ``X_HyS_data_filtered`` 和 ``X_HyS_indptr_filtered``，供 PCA、KMeans 和
@@ -921,9 +920,9 @@ class Atlas:
         --------
         调用该函数：::
 
-            sap.filter_build_index(...)
+            sap.build_read_index(...)
         """
-        builder = FilterBuildIndex(
+        builder = FilterIndexBuilder(
             self.file_path,
             cell_condition=cell_condition,
             gene_condition=gene_condition,
@@ -933,32 +932,32 @@ class Atlas:
         builder.run()
 
 
-    def minibatch_CSR(self , X_type = "CSR" ):
+    def get_minibatch_csr(self, x_type: str = "CSR"):
         """按 minibatch 读取 CSR 表达矩阵。
 
-        该方法构造 ``MinibatchFetchMultiThreads``，从过滤后的 HyS 表中逐批恢复 CSR 矩阵。
+        该方法构造 ``MultiThreadedMinibatchFetcher``，从过滤后的 HyS 表中逐批恢复 CSR 矩阵。
 
         它适合需要稀疏矩阵输入的训练、调试或和 scipy sparse 工作流对接的场景。
 
         Parameters
         ----------
-        X_type
+        x_type
             输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
 
         Examples
         --------
         调用该函数：::
 
-            sap.minibatch_CSR(...)
+            sap.get_minibatch_csr(...)
         """
 
-        fetcher = MinibatchFetchMultiThreads( file_path = self.file_path , X_type =  X_type )
+        fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type=  x_type)
         for X_batch in fetcher.run():
             pass
             # yield X_batch
 
 
-    def minibatch_dense(
+    def get_minibatch_dense(
             self,
             pass_mode: str = "single-pass",
             buffer_batch_num: int = 5,
@@ -986,7 +985,7 @@ class Atlas:
             每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
         Yields
--------
+        -------
         batch
             逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
 
@@ -994,7 +993,7 @@ class Atlas:
         --------
         调用该函数：::
 
-            sap.minibatch_dense(...)
+            sap.get_minibatch_dense(...)
         """
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
@@ -1003,10 +1002,10 @@ class Atlas:
         # 1. single-pass：只跑一遍
         if pass_mode == "single-pass":
 
-            fetcher = MinibatchFetchMultiThreads(
+            fetcher = MultiThreadedMinibatchFetcher(
                 file_path=self.file_path,
                 batch_size=batch_size,
-                X_type="dense",
+                x_type="dense",
                 pass_mode="single-pass",
                 buffer_batch_num=buffer_batch_num,
                 max_batches=max_batches,
@@ -1026,7 +1025,7 @@ class Atlas:
 
             # 如果达到 max_batches，停止
             if max_batches is not None and produced_batches >= max_batches:
-                print(f"[minibatch_dense] reach max_batches={max_batches}, stop")
+                print(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
                 break
 
             # 当前 pass 还需要输出多少 batch
@@ -1036,15 +1035,15 @@ class Atlas:
                 remain_batches = max_batches - produced_batches
 
             print(
-                f"[minibatch_dense] multi-pass start pass={pass_id + 1}, "
+                f"[get_minibatch_dense] multi-pass start pass={pass_id + 1}, "
                 f"produced={produced_batches}, "
                 f"remain={remain_batches}"
             )
 
-            fetcher = MinibatchFetchMultiThreads(
+            fetcher = MultiThreadedMinibatchFetcher(
                 file_path=self.file_path,
                 batch_size=batch_size,
-                X_type="dense",
+                x_type="dense",
                 pass_mode="multi-pass",
                 buffer_batch_num=buffer_batch_num,
                 max_batches=remain_batches,
@@ -1063,7 +1062,7 @@ class Atlas:
                     break
 
             print(
-                f"[minibatch_dense] pass={pass_id + 1} done, "
+                f"[get_minibatch_dense] pass={pass_id + 1} done, "
                 f"pass_batches={pass_batches}, "
                 f"total_produced={produced_batches}"
             )
@@ -1072,7 +1071,7 @@ class Atlas:
 
             # 防止异常情况下空 pass 无限循环
             if pass_batches == 0:
-                print("[minibatch_dense] pass produced 0 batch, stop")
+                print("[get_minibatch_dense] pass produced 0 batch, stop")
                 break
 
 

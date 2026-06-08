@@ -2,7 +2,7 @@ import duckdb
 from tqdm import tqdm
 from datetime import datetime
 
-class FilterBuildIndex:
+class FilterIndexBuilder:
 
     """过滤索引构建器。
 
@@ -111,13 +111,13 @@ class FilterBuildIndex:
         self._rebuild_obs_filter_id()   # 重排 obs： 过滤细胞 + 生成 filter_cell_id
         self._rebuild_var_filter_id()   # 重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
 
-        self._rebuild_X_HyS_data_filtered()
+        self._rebuild_x_hys_data_filtered()
 
-        self._rebuild_X_HyS_indptr_filtered()
+        self._rebuild_x_hys_indptr_filtered()
 
         self.conn.close()
 
-        print(" filter_build_index ，耗时: {:.2f} 秒".format(
+        print(" build_read_index ，耗时: {:.2f} 秒".format(
             (datetime.now() - start).total_seconds()
         ))
 
@@ -234,9 +234,9 @@ class FilterBuildIndex:
 
 
     # 3.重建新表：X_HyS_data_filtered
-    def _rebuild_X_HyS_data_filtered(self):
+    def _rebuild_x_hys_data_filtered(self):
 
-        """执行 ``_rebuild_X_HyS_data_filtered`` 的核心功能。
+        """执行 ``_rebuild_x_hys_data_filtered`` 的核心功能。
 
         该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
 
@@ -366,8 +366,8 @@ class FilterBuildIndex:
 
 
     # 4.重建新表：X_HyS_indptr_filtered
-    def _rebuild_X_HyS_indptr_filtered(self):
-        """执行 ``_rebuild_X_HyS_indptr_filtered`` 的核心功能。
+    def _rebuild_x_hys_indptr_filtered(self):
+        """执行 ``_rebuild_x_hys_indptr_filtered`` 的核心功能。
 
         该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
 

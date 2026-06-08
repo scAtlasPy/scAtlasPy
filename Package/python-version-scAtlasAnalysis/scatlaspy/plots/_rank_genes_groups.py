@@ -2,10 +2,13 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from typing import Any
+from ..data import Atlas
+
 
 # 画 rank_genes_groups 排名图
 def rank_genes_groups(
-        atlas,
+        atlas: Atlas,
         key: str = "rank_genes_groups",
         groups: list | None = None,
         n_genes: int = 25,
@@ -123,7 +126,7 @@ def rank_genes_groups(
     df["group"] = df["group"].astype(str)
 
     # ✅ 修改：group 排序函数，能转成数字的按数字排，不能转数字的按字符串排
-    def _group_sort_key(x):
+    def _group_sort_key(x: Any):
         """生成分组或标签的自然排序键。
 
         该内部函数属于差异表达可视化模块，用于支撑同一模块中的公共 API。
@@ -291,7 +294,7 @@ def rank_genes_groups(
 
 # 绘制火山图
 def rank_genes_groups_volcano(
-        atlas,
+        atlas: Atlas,
         key: str = "rank_genes_groups",
         group: str | int = "0",
         lfc_key: str = "logfoldchanges",
@@ -302,7 +305,7 @@ def rank_genes_groups_volcano(
         top_n: int = 8,
         figsize: tuple = (12, 10),
         y_cap: float |  None = None,
-        xlim_abs: float | None = None,     # ✅ 修改：控制 x 轴是否对称显示
+        xlim_abs: float | None = None,
         save_path: str | None = None,
         show: bool = True,
         return_fig: bool = False,
@@ -569,10 +572,10 @@ def rank_genes_groups_volcano(
     ax.spines["left"].set_linewidth(1.2)
     ax.spines["bottom"].set_linewidth(1.2)
 
-    # ✅ 修改：y 轴使用自适应上限
+    # y 轴使用自适应上限
     ax.set_ylim(-1, y_upper)
 
-    # ✅ 修改：x 轴对称显示，视觉上更像标准火山图
+    # x 轴对称显示，视觉上更像标准火山图
     finite_lfc = (
         df[lfc_key]
         .replace([np.inf, -np.inf], np.nan)
@@ -614,8 +617,8 @@ def rank_genes_groups_volcano(
 
 # rank_genes_groups 排名图 对应的 提琴图
 def rank_genes_groups_violin(
-        atlas,
-        group = 0 ,
+        atlas: Atlas,
+        group: str = 0 ,
         key: str = "rank_genes_groups",
         groupby: str = "kmeans",
         reference: str | int | None = None,

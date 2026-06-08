@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 
+from typing import Any
+from ..data import Atlas
 # 示例： 内置 PBMC marker reference（Phase 1）
 def _get_builtin_pbmc_marker_reference():
 
@@ -189,7 +191,7 @@ def _score_one_celltype_v2(
 
 # 主函数：自动 cluster 注释
 def annotate_clusters(
-        atlas,
+        atlas: Atlas,
         rank_result: dict,
         groupby: str = "kmeans",
         reference_name: str = "builtin_pbmc",
@@ -311,7 +313,7 @@ def annotate_clusters(
     cluster_ids = list(score_df["cluster_id"].unique())
 
     # 尽量按数字排序
-    def _sort_key(x):
+    def _sort_key(x: Any):
         """生成分组或标签的自然排序键。
 
         该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。

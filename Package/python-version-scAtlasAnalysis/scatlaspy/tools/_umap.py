@@ -5,8 +5,9 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 
+from ..data import Atlas
 # 评估函数：KNN overlap
-def knn_overlap(X_high, X_low, k=15):
+def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 
     """计算高维和低维空间的近邻重叠率。
 
@@ -62,7 +63,7 @@ def knn_overlap(X_high, X_low, k=15):
 
 # UMAP 抽样训练
 def umap(
-        atlas,
+        atlas: Atlas,
         fit_sample_n: int | None = 50000,
         transform_batch_size: int = 50000,
         n_components: int = 2,

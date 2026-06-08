@@ -6,6 +6,8 @@ import pandas as pd
 from scipy import stats
 
 
+from typing import Any
+from ..data import Atlas
 def _q(name: str) -> str:
     """为 SQL 标识符添加安全引用。
 
@@ -258,7 +260,7 @@ def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def rank_genes_groups(
-        atlas,
+        atlas: Atlas,
         groupby: str = "kmeans",
         use_expr_field: str = "data_log1p",
         groups: list | None = None,
@@ -440,7 +442,7 @@ def rank_genes_groups(
 
         all_groups = group_df["group_name"].astype(str).tolist()
 
-        def _group_sort_key(x):
+        def _group_sort_key(x: Any):
             """生成分组或标签的自然排序键。
 
             该内部函数属于差异表达模块，用于支撑同一模块中的公共 API。
