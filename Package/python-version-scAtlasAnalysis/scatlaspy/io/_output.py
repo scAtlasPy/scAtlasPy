@@ -1,13 +1,18 @@
+from __future__ import annotations
 import numpy as np
 import pandas as pd
 import h5py
 from tqdm import tqdm
-from ..data import Atlas
+from os import PathLike, fspath
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:  # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
+    from ..data import Atlas
+
 
 ''' 数据导出: 把数据直接变成文件'''
-def save_as_h5ad(
+def write_h5ad(
     atlas: Atlas,
-    out_h5ad_path: str,
+    out_h5ad_path: PathLike[str] | str,
     *,
     batch_cells: int = 1_000_000, 
 ):
@@ -38,8 +43,10 @@ def save_as_h5ad(
     --------
     调用该函数：::
 
-        sap.io.save_as_h5ad(...)
+        sap.io.write_h5ad(...)
     """
+
+    out_h5ad_path = fspath(out_h5ad_path)
 
     conn = atlas.connection
 
@@ -367,60 +374,11 @@ def get_obs_df(
     return df
 
 
-# 示例函数； 从 obs_df 中筛选 filter_col == True 的细胞，
-def get_filtered_cell_ids(obs_df: pd.DataFrame, filter_col: str = "filter_cells"):
-    """获取数据库或对象中的内部信息。
-
-    把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
-
-    函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-    整体用法和 Scanpy 中相近的 ``sap.io.get_filtered_cell_ids`` 风格 API 类似，但结果保存在 Atlas
-    数据库表中，便于后续步骤复用。
-
-    Parameters
-    ----------
-    obs_df
-        包含 ``obs`` 元数据的 DataFrame。
-
-    filter_col
-        用于判断细胞是否通过过滤的 ``obs`` 列名。
-
-    Returns
-    -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.io.get_filtered_cell_ids(...)
-    """
-
-    if obs_df.index.name != "atlas_cell_id":
-        raise ValueError(
-            "obs_df 的 index 不是 atlas_cell_id。"
-            "请确认 obs_df 是否来自 get_obs_df()。"
-        )
-
-    if filter_col not in obs_df.columns:
-        raise ValueError(f"obs_df 中不存在字段: {filter_col}")
-
-    filtered_df = obs_df[obs_df[filter_col] == True]
-
-    return filtered_df.index.astype(int).tolist()
-
-
 # 根据 atlas_cell_id list，从 DuckDB 中导出子集 AnnData 到内存
 def get_anndata(
     atlas: Atlas,
     atlas_cell_ids: list[int] | np.ndarray | None,
-    x_field: str = "data",
+    use_data: str = "data",
     include_obsm: bool = True,
     include_varm: bool = True,
 ):
@@ -428,7 +386,7 @@ def get_anndata(
 
     该函数从 Atlas 表中重建 ``obs``、``var`` 和 CSR 表达矩阵，并可选择导出 ``obsm`` 与 ``varm``。
 
-    可以通过 ``atlas_cell_ids`` 导出细胞子集，通过 ``x_field`` 指定使用哪个表达字段作为 AnnData 的 ``X``。
+    可以通过 ``atlas_cell_ids`` 导出细胞子集，通过 ``use_data`` 指定使用哪个表达字段作为 AnnData 的 ``X``。
 
     Parameters
     ----------
@@ -439,7 +397,7 @@ def get_anndata(
     atlas_cell_ids
         需要导出的 Atlas 细胞 ID 子集。
 
-    x_field
+    use_data
         ``X_HyS_data`` 中用作 AnnData ``X`` 的表达字段。
 
     include_obsm
@@ -510,7 +468,7 @@ def get_anndata(
         """
         return '"' + name.replace('"', '""') + '"'
 
-    # 检查 x_field 是否存在
+    # 检查 use_data 是否存在
     x_field_exists = conn.execute(
         """
         SELECT COUNT(*)
@@ -518,15 +476,15 @@ def get_anndata(
         WHERE table_name = 'X_HyS_data'
           AND column_name = ?
         """,
-        [x_field],
+        [use_data],
     ).fetchone()[0]
 
     if x_field_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {x_field}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     print("==== get_anndata ====")
     print(f"[INFO] selected cells = {len(atlas_cell_ids):,}")
-    print(f"[INFO] x_field = {x_field}")
+    print(f"[INFO] use_data = {use_data}")
 
     # 1. 创建临时 selected cell 表，保留用户输入顺序
     selected_df = pd.DataFrame({
@@ -601,11 +559,11 @@ def get_anndata(
         SELECT
             s._cell_order AS row_id,
             x.atlas_gene_id AS col_id,
-            x.{_q(x_field)} AS value
+            x.{_q(use_data)} AS value
         FROM X_HyS_data AS x
         JOIN _selected_cells AS s
           ON x.atlas_cell_id = s.atlas_cell_id
-        WHERE x.{_q(x_field)} IS NOT NULL
+        WHERE x.{_q(use_data)} IS NOT NULL
         ORDER BY s._cell_order, x.atlas_gene_id
     """
 

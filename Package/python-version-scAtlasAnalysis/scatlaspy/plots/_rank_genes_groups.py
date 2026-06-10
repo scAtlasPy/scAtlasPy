@@ -1,4 +1,5 @@
 import math
+from os import PathLike
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -9,14 +10,14 @@ from ..data import Atlas
 # 画 rank_genes_groups 排名图
 def rank_genes_groups(
         atlas: Atlas,
-        key: str = "rank_genes_groups",
+        use_table: str = "rank_genes_groups",
         groups: list | None = None,
         n_genes: int = 25,
         score_key: str = "scores",
         gene_label: str = "names",
         ncols: int = 4,
         figsize: tuple | None = None,
-        save_path: str | None = None,
+        save_path: PathLike[str] | str | None = None,
         show: bool = True,
         return_fig: bool = False,
 ):
@@ -32,7 +33,7 @@ def rank_genes_groups(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    key
+    use_table
         结果键名、表名前缀或 HDF5 group 名称。
 
     groups
@@ -80,7 +81,7 @@ def rank_genes_groups(
 
 
 
-    print(f"\n==== pl.rank_genes_groups (key={key}) ====")
+    print(f"\n==== pl.rank_genes_groups (use_table={use_table}) ====")
 
     conn = atlas.connection
     if conn is None:
@@ -94,12 +95,12 @@ def rank_genes_groups(
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_name = ?
-    """, [key]).fetchone()[0]
+    """, [use_table]).fetchone()[0]
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {key}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{key}')"
+            f"数据库中不存在结果表: {use_table}。"
+            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
         )
 
     # -------------------------------------------------
@@ -107,18 +108,18 @@ def rank_genes_groups(
     # -------------------------------------------------
     df = conn.execute(f"""
         SELECT *
-        FROM "{key}"
+        FROM "{use_table}"
     """).fetchdf()
 
     if len(df) == 0:
-        raise ValueError(f"{key} 表为空，无法绘图")
+        raise ValueError(f"{use_table} 表为空，无法绘图")
 
     required_cols = {"group", "rank", gene_label, score_key}
     missing = required_cols - set(df.columns)
 
     if len(missing) > 0:
         raise ValueError(
-            f"{key} 表缺少必要字段: {missing}。"
+            f"{use_table} 表缺少必要字段: {missing}。"
             f"当前字段为: {list(df.columns)}"
         )
 
@@ -162,7 +163,6 @@ def rank_genes_groups(
     # -------------------------------------------------
     all_groups = df["group"].dropna().unique().tolist()
 
-    # ✅ 修改：按数值顺序排序 group
     all_groups = sorted(all_groups, key=_group_sort_key)
 
     if groups is None:
@@ -295,7 +295,7 @@ def rank_genes_groups(
 # 绘制火山图
 def rank_genes_groups_volcano(
         atlas: Atlas,
-        key: str = "rank_genes_groups",
+        use_table: str = "rank_genes_groups",
         group: str | int = "0",
         lfc_key: str = "logfoldchanges",
         pval_key: str = "pvals_adj",
@@ -306,7 +306,7 @@ def rank_genes_groups_volcano(
         figsize: tuple = (12, 10),
         y_cap: float |  None = None,
         xlim_abs: float | None = None,
-        save_path: str | None = None,
+        save_path: PathLike[str] | str | None = None,
         show: bool = True,
         return_fig: bool = False,
         label_fontsize: int = 7,
@@ -324,7 +324,7 @@ def rank_genes_groups_volcano(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    key
+    use_table
         结果键名、表名前缀或 HDF5 group 名称。
 
     group
@@ -400,30 +400,30 @@ def rank_genes_groups_volcano(
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_name = ?
-    """, [key]).fetchone()[0]
+    """, [use_table]).fetchone()[0]
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {key}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{key}')"
+            f"数据库中不存在结果表: {use_table}。"
+            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
         )
 
     # 2. 读取指定 group 的结果
     df = conn.execute(f"""
         SELECT *
-        FROM "{key}"
+        FROM "{use_table}"
         WHERE CAST("group" AS TEXT) = CAST(? AS TEXT)
     """, [str(group)]).fetchdf()
 
     if len(df) == 0:
-        raise ValueError(f"{key} 表中没有 group={group} 的结果")
+        raise ValueError(f"{use_table} 表中没有 group={group} 的结果")
 
     required_cols = {lfc_key, pval_key, gene_label}
     missing = required_cols - set(df.columns)
 
     if len(missing) > 0:
         raise ValueError(
-            f"{key} 表缺少火山图必要字段: {missing}。"
+            f"{use_table} 表缺少火山图必要字段: {missing}。"
             f"当前字段为: {list(df.columns)}"
         )
 
@@ -619,14 +619,14 @@ def rank_genes_groups_volcano(
 def rank_genes_groups_violin(
         atlas: Atlas,
         group: str = 0 ,
-        key: str = "rank_genes_groups",
+        use_table: str = "rank_genes_groups",
         groupby: str = "kmeans",
         reference: str | int | None = None,
         genes: list[str] | None = None,
         n_genes: int = 8,
         use_expr_field: str = "data_log1p",
         sample_n_per_group: int = 2000,
-        save_path: str | None = None
+        save_path: PathLike[str] | str | None = None
 ):
 
     """绘制差异表达基因小提琴图。
@@ -644,7 +644,7 @@ def rank_genes_groups_violin(
     group
         需要绘制或分析的单个分组名称。
 
-    key
+    use_table
         结果键名、表名前缀或 HDF5 group 名称。
 
     groupby
@@ -683,7 +683,7 @@ def rank_genes_groups_violin(
 
         sap.pl.rank_genes_groups_violin(...)
     """
-    print(f"\n==== rank_genes_groups_violin (group={group}, key={key}, reference={reference}) ====")
+    print(f"\n==== rank_genes_groups_violin (group={group}, use_table={use_table}, reference={reference}) ====")
     conn = atlas.connection
 
     # 检查列
@@ -705,12 +705,12 @@ def rank_genes_groups_violin(
         SELECT COUNT(*)
         FROM information_schema.tables
         WHERE table_name = ?
-    """, [key]).fetchone()[0]
+    """, [use_table]).fetchone()[0]
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {key}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{key}')"
+            f"数据库中不存在结果表: {use_table}。"
+            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
         )
 
     # =====================================================
@@ -723,14 +723,14 @@ def rank_genes_groups_violin(
                 atlas_gene_id,
                 names AS atlas_gene_name,
                 rank
-            FROM "{key}"
+            FROM "{use_table}"
             WHERE CAST("group" AS TEXT) = CAST(? AS TEXT)
             ORDER BY rank
             LIMIT {int(n_genes)}
         """, [str(group)]).fetchdf()
 
         if len(rank_df) == 0:
-            raise ValueError(f"{key} 表中找不到 group={group} 的结果")
+            raise ValueError(f"{use_table} 表中找不到 group={group} 的结果")
 
         genes = rank_df["atlas_gene_name"].astype(str).tolist()
 
@@ -786,7 +786,7 @@ def rank_genes_groups_violin(
         # ✅ 修改：如果 reference=None，优先从结果表读取 reference
         ref_from_result = conn.execute(f"""
             SELECT DISTINCT reference
-            FROM "{key}"
+            FROM "{use_table}"
             WHERE CAST("group" AS TEXT) = CAST(? AS TEXT)
             LIMIT 1
         """, [str(group)]).fetchone()

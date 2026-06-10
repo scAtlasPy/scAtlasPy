@@ -3,8 +3,7 @@ from ._dotplot import (
 )
 
 from ._hvg import (
-    highly_variable_genes_plot,
-    highly_variable_genes_plot_seurat,
+    highly_variable_genes,
 )
 
 from ._kmeans import (

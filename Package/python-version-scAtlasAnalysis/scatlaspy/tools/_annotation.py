@@ -1,9 +1,10 @@
 import numpy as np
 import pandas as pd
 from datetime import datetime
-
 from typing import Any
 from ..data import Atlas
+
+
 # 示例： 内置 PBMC marker reference（Phase 1）
 def _get_builtin_pbmc_marker_reference():
 
@@ -192,8 +193,9 @@ def _score_one_celltype_v2(
 # 主函数：自动 cluster 注释
 def annotate_clusters(
         atlas: Atlas,
-        rank_result: dict,
+        rank_result: dict | pd.DataFrame | None = None,
         groupby: str = "kmeans",
+        use_table: str = "rank_genes_groups",
         reference_name: str = "builtin_pbmc",
         write_to_obs: bool = True,
         obs_col: str = "cell_type_auto",
@@ -264,10 +266,79 @@ def annotate_clusters(
     print("\n==== annotate_clusters (Phase 1, revised) ====")
     start = datetime.now()
     conn = atlas.connection
+    if conn is None:
+        atlas.connect("r+")
+        conn = atlas.connection
+
+    def _q(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    def _prepare_marker_df(marker_df: pd.DataFrame) -> pd.DataFrame:
+        """Normalize marker result columns for annotation scoring."""
+        if not isinstance(marker_df, pd.DataFrame):
+            raise TypeError("rank_result values must be pandas DataFrame objects")
+
+        marker_df = marker_df.copy()
+
+        if "atlas_gene_name" not in marker_df.columns and "names" in marker_df.columns:
+            marker_df["atlas_gene_name"] = marker_df["names"]
+
+        if "score" not in marker_df.columns and "scores" in marker_df.columns:
+            marker_df["score"] = marker_df["scores"]
+
+        if "log2fc" not in marker_df.columns and "logfoldchanges" in marker_df.columns:
+            marker_df["log2fc"] = marker_df["logfoldchanges"]
+
+        if "pct_diff" not in marker_df.columns:
+            if "pct_nz_in" in marker_df.columns and "pct_nz_ref" in marker_df.columns:
+                marker_df["pct_diff"] = marker_df["pct_nz_in"] - marker_df["pct_nz_ref"]
+            elif "pct_in" in marker_df.columns and "pct_rest" in marker_df.columns:
+                marker_df["pct_diff"] = marker_df["pct_in"] - marker_df["pct_rest"]
+
+        if "rank" in marker_df.columns:
+            marker_df = marker_df.sort_values("rank")
+
+        return marker_df.reset_index(drop=True)
+
+    if rank_result is None:
+        table_exists = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = ?
+            """,
+            [use_table],
+        ).fetchone()[0]
+
+        if table_exists == 0:
+            raise ValueError(
+                f"rank_result is None and database table {use_table!r} does not exist. "
+                "Please run sap.tl.rank_genes_groups(atlas) first."
+            )
+
+        rank_result = conn.execute(f"SELECT * FROM {_q(use_table)}").df()
+
+    if isinstance(rank_result, pd.DataFrame):
+        if len(rank_result) == 0:
+            raise ValueError("rank_result cannot be empty")
+
+        if "group" not in rank_result.columns:
+            raise ValueError("rank_result DataFrame must contain a 'group' column")
+
+        rank_result = {
+            str(group): _prepare_marker_df(marker_df)
+            for group, marker_df in rank_result.groupby("group", dropna=True)
+        }
+
+    elif isinstance(rank_result, dict):
+        rank_result = {
+            str(group): _prepare_marker_df(marker_df)
+            for group, marker_df in rank_result.items()
+        }
 
     # 检查输入
     if not isinstance(rank_result, dict) or len(rank_result) == 0:
-        raise ValueError("rank_result 不能为空，需传入 plot_rank_genes_groups() 的返回结果")
+        raise ValueError("rank_result must be a non-empty DataFrame or marker dict")
 
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     if groupby not in obs_cols:

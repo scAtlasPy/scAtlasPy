@@ -1,4 +1,5 @@
 import duckdb
+from os import PathLike, fspath
 from tqdm import tqdm
 from datetime import datetime
 
@@ -28,17 +29,17 @@ class FilterIndexBuilder:
     use_hvg
         是否只处理高变基因。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
     """
     def __init__(
         self,
-        file_path: str,
+        file_path: PathLike[str] | str,
         *, # file_path 可以按位置传， * 后面的参数必须写参数名
         cell_condition: str | None = None,
         gene_condition: str | None = None,
         use_hvg: bool = True,
-        select_data: str = "data_scale",
+        use_data: str = "data_log1p",
     ):
         """初始化对象。
 
@@ -62,14 +63,14 @@ class FilterIndexBuilder:
         use_hvg
             是否只处理高变基因。
 
-        select_data
+        use_data
             从 ``X_HyS_data`` 中读取的表达字段。
 
         Notes
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-        self.file_path = file_path       # sasql 文件绝对路径
+        self.file_path = fspath(file_path)       # sasql 文件绝对路径
         self.producer_num = 10           # minibatch 流式读取的线程数
         self.fetch_size = 1_0000_0000    # minibatch 流式读取的size
         self.chunk_size = 2_0000_0000    # 每次处理的数据量
@@ -77,7 +78,7 @@ class FilterIndexBuilder:
         self.cell_condition = cell_condition # cell 过滤条件 filter_cells 表示只选 filter_cells = True 的cell
         self.gene_condition = gene_condition # gene 过滤条件 filter_genes 表示只选 filter_genes = True 的gene
         self.use_hvg = use_hvg               # 是否 使用hvg基因
-        self.select_data = select_data       # 选择什么数据进行处理
+        self.use_data = use_data       # 选择什么数据进行处理
 
         self.conn = duckdb.connect(file_path)
         self.conn.execute("PRAGMA preserve_insertion_order=true")
@@ -328,7 +329,7 @@ class FilterIndexBuilder:
             SELECT
                 obs.filter_cell_id,
                 var.filter_gene_id,
-                CAST(X.{self.select_data} AS REAL) AS data,
+                CAST(X.{self.use_data} AS REAL) AS data,
                 CAST(0 AS TINYINT) AS tid
             FROM X_HyS_data AS X
             JOIN _obs_keep AS obs

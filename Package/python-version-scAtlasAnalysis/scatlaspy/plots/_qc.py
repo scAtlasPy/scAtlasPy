@@ -809,7 +809,6 @@ def scatter_qc_metrics(
         use_filtered: bool = False,
         filter_key: str = "filter_cells",
         sample_n: int | None = 50000,
-        random_state: int = 0,
         point_size: float = 8,
         alpha: float = 0.7
 ):

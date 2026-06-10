@@ -3,11 +3,10 @@ import numpy as np
 import threading
 import queue
 import time
+from os import PathLike, fspath
 import scipy.sparse as sp
 
 ''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
-
-
 class ShuffleBuffer:
 
     """dense minibatch 随机缓冲区。
@@ -73,6 +72,7 @@ class ShuffleBuffer:
         # buffer 是否已经 shuffle
         self.shuffled = False
 
+
     # 写入一个 batch 到 缓冲区
     def add_batch(self, X_batch: np.ndarray):
         """向 shuffle buffer 写入一个 dense minibatch。
@@ -120,6 +120,7 @@ class ShuffleBuffer:
             self.output_batch_id = 0
             self.shuffled = True
 
+
     # 输出一个 batch
     def sample_batch(self):
 
@@ -161,6 +162,7 @@ class ShuffleBuffer:
             self.shuffled = False
 
         return batch
+
 
     # 输出未凑满 buffer 的剩余 batch， 防止数据集 batch 数 < buffer_batch_num 时，一个 batch 都不输出
     def flush_remaining(self):
@@ -211,8 +213,6 @@ class ShuffleBuffer:
 
 
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
-
-
 class MultiThreadedMinibatchFetcher:
 
     """多线程 minibatch 读取器。
@@ -245,7 +245,7 @@ class MultiThreadedMinibatchFetcher:
     max_batches
         最多输出的 minibatch 数量；为 ``None`` 时不限制。
     """
-    def __init__(self, file_path: str,
+    def __init__(self, file_path: PathLike[str] | str,
                  batch_size: int=2048,
                  x_type: str= "CSR",
                  pass_mode: str="multi-pass",
@@ -286,7 +286,7 @@ class MultiThreadedMinibatchFetcher:
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
         self.X_type = x_type  # 输出的X表格式 "CSR" "dense"(宽表)
-        self.file_path = file_path  # sasql 文件的绝对路径
+        self.file_path = fspath(file_path)  # sasql 文件的绝对路径
         self.batch_size = batch_size
         self.producer_num = 10  # 线程数量
         self.gene_num = self._get_gene_num()  # 获取基因数量
@@ -328,6 +328,7 @@ class MultiThreadedMinibatchFetcher:
         self.output_cells = 0
         self.speed_log_every = 5  # 每输出多少个 batch 打印一次速度；想每个batch都打印就改成1
 
+
     def _get_zero_scale_transform(self):
         """获取数据库或对象中的内部信息。
 
@@ -360,6 +361,7 @@ class MultiThreadedMinibatchFetcher:
         conn.close()
         return arr.astype("float32")
 
+
     def _get_gene_num(self):
         """获取数据库或对象中的内部信息。
 
@@ -388,6 +390,7 @@ class MultiThreadedMinibatchFetcher:
         print("gene_num:", gene_num)
         conn.close()
         return gene_num
+
 
     def _prepare_indptr(self):
         """执行 ``_prepare_indptr`` 的核心功能。
@@ -427,6 +430,7 @@ class MultiThreadedMinibatchFetcher:
             q.put(rb)
         conn.close()
         return q
+
 
     def _prepare_batch_info_sql(self):
         """执行 ``_prepare_batch_info_sql`` 的核心功能。
@@ -487,6 +491,7 @@ class MultiThreadedMinibatchFetcher:
 
         return batch_cell_counts, batch_nnz
 
+
     def _check_batch_info(self):
         """执行 ``_check_batch_info`` 的核心功能。
 
@@ -526,6 +531,7 @@ class MultiThreadedMinibatchFetcher:
                 f"[BatchInfo] batch 信息丢细胞: "
                 f"batches={total_from_batches}, indptr={total_cells}"
             )
+
 
     def _producer(self, tid: int):
         """执行 ``_producer`` 的核心功能。
@@ -617,6 +623,7 @@ class MultiThreadedMinibatchFetcher:
                 self.queue.put(None, timeout=0.5)
             except queue.Full:
                 pass
+
 
     def _consumer(self):
         """执行 ``_consumer`` 的核心功能。
@@ -844,6 +851,7 @@ class MultiThreadedMinibatchFetcher:
         # 通知 run() 结束
         self.out_queue.put(None)
 
+
     def run(self):
         """执行 ``run`` 的核心功能。
 
@@ -888,6 +896,7 @@ class MultiThreadedMinibatchFetcher:
 
         consumer.join()
 
+
     # 辅助函数 1：是否已经达到输出上限
     def _output_limit_reached(self):
 
@@ -912,6 +921,7 @@ class MultiThreadedMinibatchFetcher:
                 self.max_batches is not None
                 and self.total_batches >= self.max_batches
         )
+
 
     # 辅助函数 2：是否应该停止继续读取新 batch
     def _read_limit_reached(self, prepared_batches: int):
@@ -948,6 +958,7 @@ class MultiThreadedMinibatchFetcher:
 
         # 其他情况，读取后基本就会输出，所以看 total_batches
         return self.total_batches >= self.max_batches
+
 
     # 辅助函数 3：统一输出 batch
     def _put_output(self, X_batch: np.ndarray):

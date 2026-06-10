@@ -1,4 +1,4 @@
-from ..data import Atlas
+from __future__ import annotations
 from _duckdb import DuckDBPyConnection
 import os
 import logging
@@ -10,9 +10,12 @@ import numpy as np
 import pandas as pd
 import scanpy as sc
 from anndata import AnnData
+from os import PathLike
 from scipy import sparse
 from tqdm import tqdm
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
+if TYPE_CHECKING:   # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
+    from ..data import Atlas
 
 StoreType = Literal["count", "log"]
 
@@ -22,13 +25,13 @@ logger = logging.getLogger('Atlas')
 
 # 统一的 h5ad 导入接口
 def load_h5ad(
-    h5ad_path: str | list[str],
+    h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     *,
     load_type: Literal["order", "random", "list_random"] = "random",
+    store_type: StoreType = "count",
     cells_per_block: int = 500,
     blocks_per_pool: int = 10,
-    store_type: StoreType = "count",
 ) -> Any:
     """统一 h5ad 导入接口。
 
@@ -36,7 +39,7 @@ def load_h5ad(
 
     Parameters
     ----------
-    h5ad_path : str | list[str]
+    h5ad_path : PathLike[str] | str | list[PathLike[str] | str]
         h5ad 文件路径。
 
         - 当 ``load_type="order"``、``"random"``时：
@@ -163,10 +166,12 @@ def load_h5ad(
             "如果要导入多个 h5ad，请使用 load_type='list_random'"
         )
 
-    if not isinstance(h5ad_path, str):
+    if not isinstance(h5ad_path, (str, PathLike)):
         raise TypeError(
             f"h5ad_path 必须是 str，当前类型为: {type(h5ad_path)}"
         )
+
+    h5ad_path = os.fspath(h5ad_path)
 
     # =====================================================
     # 4. order：顺序导入
@@ -203,11 +208,11 @@ def load_h5ad(
 
 ''' 方法1 ： 随机读取 , 多个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_list_random(
-    h5ad_paths: list[str],
+    h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
+    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
     blocks_per_pool: int = 10,    # 每次从全局随机 block 池读取多少个 block 后 flush
-    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
@@ -255,8 +260,10 @@ def _load_h5ad_list_random(
 
 
     # 支持单路径 / 多路径
-    if isinstance(h5ad_paths, str):
+    if isinstance(h5ad_paths, (str, PathLike)):
         h5ad_paths = [h5ad_paths]
+
+    h5ad_paths = [os.fspath(path) for path in h5ad_paths]
 
     if len(h5ad_paths) == 0:
         raise ValueError("h5ad_paths 不能为空")
@@ -718,11 +725,11 @@ def _load_h5ad_list_random(
 
 ''' 方法2 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_random(
-    h5ad_path: str,
+    h5ad_path: PathLike[str] | str,
     atlas: Atlas,
+    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
     blocks_per_pool: int = 10,   # 固定窗口级随机，默认 5 个 batch
-    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
@@ -762,7 +769,11 @@ def _load_h5ad_random(
         sap.io._load_h5ad_random(...)
     """
 
+    h5ad_path = os.fspath(h5ad_path)
+
     t_start= time.time()
+
+    h5ad_path = os.fspath(h5ad_path)
 
     commit_every = 5
     gc_every = 10
@@ -1025,11 +1036,11 @@ def _load_h5ad_random(
 
 ''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_order(
-    h5ad_path: str,
+    h5ad_path: PathLike[str] | str,
     atlas: Atlas,
+    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
     blocks_per_pool: int = 10,
-    store_type: StoreType = "count",    # 目标存储类型，"count" 或 "log"
 ):
 
     """按原始细胞顺序导入单个 h5ad 文件。
@@ -1238,7 +1249,7 @@ def _load_h5ad_order(
 
 
 ''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
-def load_multi_format(file_path: str, atlas: Atlas):
+def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
 
     """导入小型单细胞数据文件。
 
@@ -1565,7 +1576,7 @@ def _convert_x_store_type_inplace(
 
 
 # 简单判断 h5ad.X 的底层稀疏格式
-def _print_h5ad_x_format(h5ad_path: str):
+def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
     """执行 ``_print_h5ad_x_format`` 的核心功能。
 
     该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
@@ -1589,6 +1600,8 @@ def _print_h5ad_x_format(h5ad_path: str):
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
+
+    h5ad_path = os.fspath(h5ad_path)
 
     with h5py.File(h5ad_path, "r") as f:
         if "X" not in f:
@@ -2092,7 +2105,7 @@ def _append_x_hys(
 
 
 # 导入 obsm
-def _add_obsm_from_h5ad(h5ad_path: str, atlas: Atlas, cells_per_block: int = 500):
+def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_block: int = 500):
 
     """将数据写入 Atlas 数据库。
 
@@ -2121,6 +2134,8 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas: Atlas, cells_per_block: int = 500
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
+    h5ad_path = os.fspath(h5ad_path)
+
     logger.info("导入 obsm")
     conn = atlas.connection
 
@@ -2165,7 +2180,7 @@ def _add_obsm_from_h5ad(h5ad_path: str, atlas: Atlas, cells_per_block: int = 500
 
 
 # 导入 varm
-def _add_varm_from_h5ad(h5ad_path: str, atlas: Atlas):
+def _add_varm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas):
 
     """将数据写入 Atlas 数据库。
 
@@ -2191,6 +2206,8 @@ def _add_varm_from_h5ad(h5ad_path: str, atlas: Atlas):
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
+    h5ad_path = os.fspath(h5ad_path)
+
     logger.info("导入 varm")
 
     conn = atlas.connection
@@ -2227,7 +2244,7 @@ def _add_varm_from_h5ad(h5ad_path: str, atlas: Atlas):
 
 
 # 多种数据格式的导入
-def _read_smart(file_path: str ):
+def _read_smart(file_path: PathLike[str] | str):
     """根据文件后缀自动选择 Scanpy 读取函数。
 
     该函数检查输入文件路径的扩展名，并调用对应的 ``scanpy.read_*`` 函数读取为 AnnData。
@@ -2258,6 +2275,7 @@ def _read_smart(file_path: str ):
     """
 
     # 获取文件后缀名（小写形式）
+    file_path = os.fspath(file_path)
     file_ext = os.path.splitext(file_path)[1].lower()
 
     # 根据文件后缀选择对应的读取方法
@@ -2713,7 +2731,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
-def clean_gene_names(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """在数据库中清洗并去重基因名。
 
     该函数直接在 ``var`` 表中检查重复基因名，并为第二次及以后出现的重复项添加 ``_1``、``_2`` 等后缀。
@@ -2742,7 +2760,7 @@ def clean_gene_names(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     --------
     调用该函数：::
 
-        sap.io.clean_gene_names(...)
+        sap.io.gene_names_duplicated(...)
     """
     logger.info(f" 开始在数据库 var表 中清洗基因名 ")
 

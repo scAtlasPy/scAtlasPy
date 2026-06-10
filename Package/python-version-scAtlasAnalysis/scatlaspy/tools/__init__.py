@@ -1,6 +1,5 @@
 from ._pca import (
     pca,
-    pca_scanpy_arpack,
 )
 
 from ._kmeans import (

@@ -8,31 +8,30 @@
 import scatlaspy as sap
 
 # todo 要不要推荐用户限制内存
+    # 日志控制
+    # 输出控制
+    # 注释控制
+    # 命名控制    -- ok
+    # 枚举类型排查 -- ok
 
 # 1. 建立数据库
-# atlas = sap.Atlas("test_1M",path=r"F:\data\database")
-# file_path = r"F:\data\92b37feb-aa2c-40d7-bd90-0a9b5ddb3b27.h5ad" #
+atlas = sap.Atlas(r"F:\data\database\pbmc3k")
+import scanpy as sc
+adata = sc.datasets.pbmc3k()
+atlas.load_anndata(adata)
 
-atlas = sap.Atlas("test_10W_0608",path=r"F:\data\database")
+atlas = sap.Atlas(r"F:\data\database\test_10W_1")
 file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample10W.h5ad"
-#
-# atlas = sap.Atlas("test_20W",path=r"F:\data\database")
+atlas.load_h5ad(file_path)
+
 # file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample20W.h5ad"
-#
-# atlas = sap.Atlas("test_83W",path=r"F:\data\database")
 # file_path = r"F:\data\FullMouseBrain_raw.h5ad"
-#
-atlas = sap.Atlas("test_HBCA_0607",path=r"F:\data\database")
-file_path = r"F:\data\HBCA__subsample_20__hvg_2000.h5ad"
-
-atlas = sap.Atlas("test_280W_random",path=r"F:\data\database")
-file_path = r"F:\data\adata_JAX_dataset_1.h5ad"
-
-# atlas = sap.Atlas("test_500W",path=r"F:\data\database")
+# file_path = r"F:\data\HBCA__subsample_20__hvg_2000.h5ad"
+# file_path = r"F:\data\adata_JAX_dataset_1.h5ad"
 # file_path = r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate14_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad"
 #
-# # 多文件导入
-# atlas = sap.Atlas("test_100M-123",path=r"F:\data\database")
+#  多文件导入
+# atlas = sap.Atlas(r"F:\data\database\test_100M-123")
 h5ad_paths = [ # 18,251,480 x 62,710
     r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate1_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
     r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate2_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad",
@@ -40,9 +39,9 @@ h5ad_paths = [ # 18,251,480 x 62,710
 ]
 
 # 2. 大文件读取
-sap.io.load_h5ad(file_path , atlas , load_type = "order")   # 顺序导入
-sap.io.load_h5ad(file_path , atlas , load_type = "random")  # 随机导入
-sap.io.load_h5ad(h5ad_paths, atlas , load_type = "list_random") # 多文件随机导入
+atlas.load_h5ad(file_path,load_type = "order")   # 顺序导入
+atlas.load_h5ad(file_path,load_type = "random")   # 随机导入
+atlas.load_h5ad(file_path,load_type = "list_random")   # 多文件随机导入
 
 # 导入完数据，直接画 最高表达基因占比图（highest expressed genes
 # 用来检查 有没有少数基因“垄断”表达（技术偏差）
@@ -92,7 +91,6 @@ sap.pp.normalize_total_scale_factor(atlas)   # 法2：初步计算， 在 obs表
 
 # 7.log1p
 sap.pp.log1p(atlas)
-sap.pp.log1p_fast(atlas)
 sap.pp.expm1(atlas) # log1p的逆运算
 
 sap.pp.normalize_and_log1p(atlas,target_sum=1e6) # 推荐用这个 normalize 法2  + log1p法1
@@ -102,15 +100,14 @@ sap.pp.normalize_and_log1p(atlas,target_sum=1e6) # 推荐用这个 normalize 法
 sap.pp.highly_variable_genes(atlas,flavor = "cv") # 识别高变基因
 sap.pp.highly_variable_genes(atlas,flavor = "seurat") #  seurat
 # 可视化
-sap.pl.highly_variable_genes_plot(atlas)
-sap.pl.highly_variable_genes_plot_seurat(atlas)
+sap.pl.highly_variable_genes(atlas,flavor="cv")
+sap.pl.highly_variable_genes(atlas,flavor="seurat")
 
 # 9. scale：进行 z-score转换
 sap.pp.scale(atlas)
 
 # 10.sqrt
-sap.pp.sqrt(atlas)        # 法1：分块,内存安全，适合大数据，稍慢
-sap.pp.sqrt_fast(atlas)   # 法2：不分块，内存不安全，适合小数据，较快
+sap.pp.sqrt(atlas)
 
 # 11.过滤 + 建新表 + 建tid分块索引
 atlas.build_read_index()
@@ -122,14 +119,13 @@ atlas.get_minibatch_dense(pass_mode ="multi-pass", max_batches = 500) # 宽表 �
 
 # 13. 导出
 file_path = r"F:\data\out\test_10W_out.h5ad" # 导出文件路径名称
-sap.io.save_as_h5ad(atlas,file_path) # 导出文件
+atlas.write_h5ad(file_path) # 导出文件
 
 # 导出为 df
-obs_df = sap.io.get_obs_df(atlas)
-# atlas_cell_ids = sap.io.get_filtered_cell_ids(obs_df)
+obs_df = atlas.get_obs_df()
 atlas_cell_ids = obs_df["atlas_cell_id"].tolist()
-adata = sap.io.get_anndata(atlas,atlas_cell_ids)
-adata.write_h5ad(r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\data\out\test_819200-f.h5ad") # adata 导出为 h5ad
+adata = atlas.get_anndata(atlas_cell_ids)
+adata.write_h5ad(r"F:\data\out\test_10W_out_1.h5ad") # adata 导出为 h5ad
 
 
 # 14. PCA
@@ -141,7 +137,7 @@ sap.tl.pca(
 )
 
 # 可视化层：只读 PCA 结果
-sap.pl.pca(atlas, color="cell_type") # embryo_id  keep
+sap.pl.pca(atlas, color="cell_type") # embryo_id  keep organ louvain CST3
 sap.pl.pca_variance_ratio(atlas, n_pcs=30)
 sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=30)
 
@@ -154,11 +150,11 @@ sap.tl.kmeans(
     n_clusters=30,
     fit_batches=1000, # 训练轮数
     buffer_batch_num=5,
-    obs_col="kmeans"
+    use_obs_col="kmeans"
 )
 
 # 可视化层：看每个 cluster 有多少细胞
-sap.pl.kmeans_cluster_size(atlas, obs_col="kmeans")
+sap.pl.kmeans_cluster_size(atlas, use_obs_col="kmeans")
 
 
 # 16. UMAP：计算 + 可视化
@@ -170,7 +166,6 @@ sap.tl.umap(
     transform_batch_size=100000,
     n_neighbors=40,
     min_dist=0.5,
-    # random_state=42,
     n_jobs=1,
     eval_sample_n=10000,
 )
@@ -186,17 +181,17 @@ sap.pl.umap(
 sap.pl.umap(
     atlas,
     color=["CST3", "NKG7", "PPBP"],
-    use_expr_field="data_log1p"
+    use_data="data_log1p"
 )
 # 混合显示 cluster + marker gene
 sap.pl.umap(
     atlas,
     color=["kmeans", "CST3", "NKG7", "PPBP"],
-    use_expr_field="data_log1p"
+    use_data="data_log1p"
 )
 
 # 17. Marker gene 计算
-result_dict = sap.tl.rank_genes_groups(atlas)
+sap.tl.rank_genes_groups(atlas)
 # 可视化：
 sap.pl.rank_genes_groups(atlas)          # 差异基因排名图
 sap.pl.rank_genes_groups_volcano(atlas)  # 火山图
@@ -206,7 +201,6 @@ sap.pl.rank_genes_groups_violin(atlas)   # 提琴图
 # 18. 自动注释：解释 cluster
 summary_df, score_df = sap.tl.annotate_clusters(
     atlas,
-    rank_result=result_dict,
     groupby="kmeans",
     reference_name="builtin_pbmc",
     write_to_obs=True,

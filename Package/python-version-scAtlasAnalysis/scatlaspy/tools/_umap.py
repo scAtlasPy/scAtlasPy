@@ -4,8 +4,9 @@ from sklearn.neighbors import NearestNeighbors
 from datetime import datetime
 import numpy as np
 import pandas as pd
-
 from ..data import Atlas
+
+
 # 评估函数：KNN overlap
 def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 
@@ -72,7 +73,7 @@ def umap(
         metric: str = "euclidean",
         random_state: int = 42,
         n_jobs: int = 1,
-        table_name: str = "obsm_X_umap",
+        add_table: str = "obsm_X_umap",
         save_params_table: str = "uns_umap_params",
         eval_sample_n: int = 5000,
         save_eval_table: str = "uns_umap_eval"
@@ -162,7 +163,7 @@ def umap(
         - ``1``：单线程，结果通常更稳定、更可复现。
         - 大于 ``1``：可能加快计算，但结果可能存在轻微随机差异。
 
-    table_name
+    add_table
         保存 UMAP 坐标的数据库表名。
 
         默认保存到 ``obsm_X_umap``。表结构为：
@@ -258,7 +259,7 @@ def umap(
 
      sap.tl.umap(
     ...     atlas,
-    ...     table_name="obsm_X_umap_n45_d02",
+    ...     add_table="obsm_X_umap_n45_d02",
     ...     save_params_table="uns_umap_params_n45_d02",
     ...     save_eval_table="uns_umap_eval_n45_d02"
     ... )
@@ -392,9 +393,9 @@ def umap(
         print(" KNN重叠率较高，局部邻域保持很好")
 
     # 建输出表
-    conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+    conn.execute(f"DROP TABLE IF EXISTS {add_table}")
     conn.execute(f"""
-        CREATE TABLE {table_name} (
+        CREATE TABLE {add_table} (
             atlas_cell_id BIGINT,
             umap1 FLOAT,
             umap2 FLOAT
@@ -431,7 +432,7 @@ def umap(
             str(fit_sample_n),
             str(transform_batch_size),
             "obsm_X_pca",
-            table_name,
+            add_table,
             str(eval_sample_n)
         ]
     })
@@ -492,7 +493,7 @@ def umap(
             "umap2": X_umap[:, 1]
         })
 
-        conn.append(table_name, out_df)
+        conn.append(add_table, out_df)
 
         offset += len(batch_df)
 

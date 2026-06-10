@@ -3,10 +3,12 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
+from os import PathLike
+from typing import Literal
 
 
 # 高变基因（HVG, Highly Variable Genes）选择图
-def highly_variable_genes_plot(
+def _highly_variable_genes_plot(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
         mean_key: str = "hvg_mean",
@@ -212,11 +214,11 @@ def highly_variable_genes_plot(
 
 
 # 高变基因（HVG, Highly Variable Genes）选择图 ： seurat 版本
-def highly_variable_genes_plot_seurat(
+def _highly_variable_genes_plot_seurat(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
         sample_other: int | None = 20000,
-        save: str | None = None,
+        save: PathLike[str] | str | None = None,
 ):
 
     """绘制 Seurat 风格高变基因筛选结果。
@@ -464,3 +466,124 @@ def highly_variable_genes_plot_seurat(
     plt.show()
 
     print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
+
+
+# 高变基因（HVG, Highly Variable Genes）选择图
+def highly_variable_genes(
+        atlas: Atlas,
+        flavor: Literal["seurat", "cv", "var"] = "seurat",
+
+        # 通用参数：两个底层函数都支持
+        hvg_key: str = "highly_variable_genes",
+        sample_other: int | None = 20000,
+
+        # cv / var 版本参数：只传给 highly_variable_genes_plot()
+        mean_key: str = "hvg_mean",
+        var_key: str = "hvg_var",
+        std_key: str = "hvg_std",
+        score_key: str = "hvg_score",
+        figsize: tuple[float, float] | None = None,
+        point_size_hvg: float = 8,
+        point_size_other: float = 6,
+        alpha_hvg: float = 0.9,
+        alpha_other: float = 0.6,
+
+        # seurat 版本参数：只传给 highly_variable_genes_plot_seurat()
+        save: PathLike[str] | str | None = None,
+):
+    """
+    绘制高变基因结果。
+
+    该函数是 HVG 绘图的统一入口，不自动判断 flavor，
+    而是根据用户显式指定的 flavor 调用已有的两个绘图函数。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。
+
+    flavor
+        HVG 绘图类型。
+
+        - "seurat":
+            调用 highly_variable_genes_plot_seurat()
+
+        - "cv":
+            调用 highly_variable_genes_plot()
+
+        - "var":
+            调用 highly_variable_genes_plot()
+
+    hvg_key
+        var 表中表示高变基因的布尔字段名。
+
+    sample_other
+        非高变基因抽样数量。为 None 时绘制全部非高变基因。
+
+    mean_key
+        cv / var 版本中，基因均值字段名。
+
+    var_key
+        cv / var 版本中，基因方差字段名。
+
+    std_key
+        cv / var 版本中，基因标准差字段名。
+
+    score_key
+        cv / var 版本中，HVG score 字段名。
+
+    figsize
+        cv / var 版本图像大小。
+
+    point_size_hvg
+        cv / var 版本高变基因点大小。
+
+    point_size_other
+        cv / var 版本非高变基因点大小。
+
+    alpha_hvg
+        cv / var 版本高变基因点透明度。
+
+    alpha_other
+        cv / var 版本非高变基因点透明度。
+
+    save
+        seurat 版本保存路径。
+
+    Returns
+    -------
+    result
+        底层绘图函数返回结果。
+    """
+
+    flavor = str(flavor).lower().strip()
+
+    if flavor == "seurat":
+        return _highly_variable_genes_plot_seurat(
+            atlas=atlas,
+            hvg_key=hvg_key,
+            sample_other=sample_other,
+            save=save,
+        )
+
+    elif flavor in ["cv", "var"]:
+        return _highly_variable_genes_plot(
+            atlas=atlas,
+            hvg_key=hvg_key,
+            mean_key=mean_key,
+            var_key=var_key,
+            std_key=std_key,
+            score_key=score_key,
+            sample_other=sample_other,
+            figsize=figsize,
+            point_size_hvg=point_size_hvg,
+            point_size_other=point_size_other,
+            alpha_hvg=alpha_hvg,
+            alpha_other=alpha_other,
+        )
+
+    else:
+        raise ValueError(
+            f"不支持的 flavor: {flavor}. "
+            "可选值为: 'seurat', 'cv', 'var'"
+        )

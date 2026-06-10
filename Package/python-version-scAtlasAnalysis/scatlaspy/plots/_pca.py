@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
+from os import PathLike, fspath
 import re
 from typing import Any
 
@@ -172,7 +173,7 @@ def pca(
         y_pc: int = 1,
         annotate_var_explained: bool = True,
         sample_n: int | None = 500000,
-        use_expr_field: str = "data_log1p",
+        use_data: str = "data_log1p",
         figsize: tuple[float, float] | None=(22, 8),
         point_size: float = 1.0,
         alpha: float = 0.7,
@@ -212,7 +213,7 @@ def pca(
     sample_n
         抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     figsize
@@ -418,9 +419,9 @@ def pca(
 
                 print(f"[COLOR] gene expression: {color}")
 
-                if use_expr_field not in x_cols:
+                if use_data not in x_cols:
                     raise ValueError(
-                        f"X_HyS_data 中不存在表达字段: {use_expr_field}"
+                        f"X_HyS_data 中不存在表达字段: {use_data}"
                     )
 
                 gene_id = int(gene_row[0])
@@ -430,7 +431,7 @@ def pca(
                 expr_df = conn.execute(f"""
                     SELECT
                         c.atlas_cell_id,
-                        COALESCE(x.{_q(use_expr_field)}, 0.0) AS color_value
+                        COALESCE(x.{_q(use_data)}, 0.0) AS color_value
                     FROM _pca_cells_tmp AS c
                     LEFT JOIN X_HyS_data AS x
                       ON c.atlas_cell_id = x.atlas_cell_id
@@ -699,7 +700,7 @@ def pca_variance_ratio(
         *,
         log: bool = False,
         show: bool | None = None,
-        save: bool | str | None = None,
+        save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
@@ -815,7 +816,8 @@ def pca_variance_ratio(
             save_path = f"{default_name}.png"
 
         # save 是字符串：根据字符串形式判断保存路径
-        elif isinstance(save, str):
+        elif isinstance(save, (str, PathLike)):
+            save = fspath(save)
 
             # 例如 save=".pdf" / ".png" / ".svg"
             # 保存为 pca_variance_ratio.pdf / pca_variance_ratio.png / pca_variance_ratio.svg
@@ -865,7 +867,7 @@ def pca_variance_ratio_cumsum(
         *,
         log: bool = False,
         show: bool | None = None,
-        save: bool | str | None = None,
+        save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
@@ -966,7 +968,8 @@ def pca_variance_ratio_cumsum(
             save_path = f"{default_name}.png"
 
         # save 是字符串：根据字符串形式判断保存路径
-        elif isinstance(save, str):
+        elif isinstance(save, (str, PathLike)):
+            save = fspath(save)
 
             # save=".pdf" / ".png" / ".svg"
             if save.startswith("."):

@@ -8,6 +8,7 @@ import logging
 import math
 import gc
 
+
 def _cleanup_qc_after_step(
         conn: DuckDBPyConnection,
         temp_tables: list[str]=None,
@@ -65,135 +66,14 @@ def _cleanup_qc_after_step(
 logger = logging.getLogger('Atlas')
 
 
-''' 过滤细胞 方法1 ：小数据快速版，全量进内存 '''
-def filter_cells_fast(atlas: 'Atlas',
-                       min_counts: Optional[int] = None,
-                       min_genes: Optional[int] = None,
-                       max_counts: Optional[int] = None,
-                       max_genes: Optional[int] = None,
-                       add_key: str | None="filter_cells"):
-    """快速根据 QC 阈值过滤细胞。
-
-    该函数直接使用 ``obs`` 中已经存在的 ``total_counts``、``n_genes_by_counts`` 等 QC
-    指标，根据上下限阈值生成布尔过滤列。
-
-    功能上类似 ``scanpy.pp.filter_cells``，但不会删除细胞，而是把结果写回 ``obs.add_key`` 供后续索引重建使用。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    min_counts
-        总表达量下限；为 ``None`` 时不使用该下限。
-
-    min_genes
-        检测基因数下限；为 ``None`` 时不使用该下限。
-
-    max_counts
-        总表达量上限；为 ``None`` 时不使用该上限。
-
-    max_genes
-        检测基因数上限；为 ``None`` 时不使用该上限。
-
-    add_key
-        写回 ``obs`` 或 ``var`` 的结果列名。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.filter_cells_fast(...)
-    """
-
-    print("开始过滤细胞...")
-    start = datetime.now()
-
-    conn = atlas.connection
-    th = os.cpu_count()
-    conn.execute(f"PRAGMA threads={th}")
-    print(f"DuckDB threads = {th}")
-
-    # 预先添加列
-    conn.execute(f"""
-        ALTER TABLE obs 
-        ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN DEFAULT FALSE
-    """)
-
-    # 统计细胞数
-    total_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
-    print(f"总细胞数 = {total_cells:,}")
-
-
-    # 构建 SQL 过滤条件
-    conds = []
-    if min_counts is not None: conds.append(f"sum_expr >= {min_counts}")
-    if max_counts is not None: conds.append(f"sum_expr <= {max_counts}")
-    if min_genes  is not None: conds.append(f"nonzero_genes >= {min_genes}")
-    if max_genes  is not None: conds.append(f"nonzero_genes <= {max_genes}")
-    condition = " AND ".join(conds) if conds else "TRUE"
-
-
-    # Step1：先把需要保留的 atlas_cell_id 算好
-    print("统计基因数量与表达量（流式聚合）...")
-
-
-    conn.execute(f"""
-        CREATE TEMP TABLE keep_cells AS
-        SELECT atlas_cell_id
-        FROM (
-            SELECT 
-                atlas_cell_id,
-                SUM(data) AS sum_expr,
-            COUNT(*) AS nonzero_genes
-            FROM X_HyS_data
-            GROUP BY atlas_cell_id
-        ) WHERE {condition}
-    """)
-
-    # Step2：只更新 TRUE（避免笨重 UPDATE JOIN）
-    print("更新 obs（仅 TRUE，加速 3~10x）...")
-
-    conn.execute(f"UPDATE obs SET {add_key}=FALSE")   # 全部设为 FALSE
-    conn.execute(f"""
-        UPDATE obs SET {add_key}=TRUE
-        WHERE atlas_cell_id 
-        IN (SELECT atlas_cell_id FROM keep_cells)
-    """)
-
-    # Step3: 统计结果
-    keep_cells = conn.execute(f"SELECT COUNT(*) FROM keep_cells").fetchone()[0]
-    removed = total_cells - keep_cells
-
-    # 删除临时表
-    conn.execute("DROP TABLE IF EXISTS keep_cells")
-
-    print(f"保留细胞 = {keep_cells:,}")
-    print(f"过滤细胞 = {removed:,} ({removed/total_cells*100:.2f}%)")
-    print("总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-    # 内存清理
-    _cleanup_qc_after_step(
-        conn,
-        temp_tables=["keep_cells"],
-        checkpoint=False,
-        collect=True,
-    )
-
-
-''' 过滤细胞 方法2 ：大数据安全版 '''
+''' 过滤细胞 '''
 def filter_cells(
         atlas: Atlas,
         min_counts: Optional[int] = None,
         min_genes: Optional[int] = None,
         max_counts: Optional[int] = None,
         max_genes: Optional[int] = None,
-        add_key: str = "filter_cells",
+        add_data: str = "filter_cells",
         chunk_cells: int = 500_000,   # 分块大小
 ):
     """根据表达量和检测基因数过滤细胞。
@@ -220,7 +100,7 @@ def filter_cells(
     max_genes
         检测基因数上限；为 ``None`` 时不使用该上限。
 
-    add_key
+    add_data
         写回 ``obs`` 或 ``var`` 的结果列名。
 
     chunk_cells
@@ -255,7 +135,7 @@ def filter_cells(
     # 1. 添加 obs 过滤字段
     conn.execute(f"""
         ALTER TABLE obs 
-        ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN DEFAULT FALSE
+        ADD COLUMN IF NOT EXISTS {add_data} BOOLEAN DEFAULT FALSE
     """)
 
     total_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
@@ -264,7 +144,7 @@ def filter_cells(
     print("初始化 obs 过滤字段为 FALSE ...")
     conn.execute(f"""
         UPDATE obs
-        SET {add_key} = FALSE
+        SET {add_data} = FALSE
     """)
 
     # 2. 构建过滤条件
@@ -338,7 +218,7 @@ def filter_cells(
         # 只更新当前 chunk 内 TRUE 的 cells
         conn.execute(f"""
             UPDATE obs
-            SET {add_key} = TRUE
+            SET {add_data} = TRUE
             WHERE atlas_cell_id IN (
                 SELECT atlas_cell_id FROM keep_cells_chunk
             )
@@ -368,6 +248,7 @@ def filter_cells(
 #     字段	                    含义
 #  filter_cells	       该 cell 是否符合过滤条件 true
 
+
 ''' 过滤基因 '''
 def filter_genes(
         atlas: Atlas,
@@ -375,7 +256,7 @@ def filter_genes(
         min_cells: Optional[int] = None,
         max_counts: Optional[int] = None,
         max_cells: Optional[int] = None,
-        add_key: str = "filter_genes"
+        add_data: str = "filter_genes"
 ) -> None:
     """根据表达细胞数和总表达量过滤基因。
 
@@ -402,7 +283,7 @@ def filter_genes(
     max_cells
         表达该基因的细胞数上限。
 
-    add_key
+    add_data
         写回 ``obs`` 或 ``var`` 的结果列名。
 
     Notes
@@ -439,7 +320,7 @@ def filter_genes(
     # 2. 添加过滤字段
     conn.execute(f"""
         ALTER TABLE var 
-        ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN DEFAULT FALSE
+        ADD COLUMN IF NOT EXISTS {add_data} BOOLEAN DEFAULT FALSE
     """)
 
     # 3. 构建 SQL 条件
@@ -480,7 +361,7 @@ def filter_genes(
 
     conn.execute(f"""
         UPDATE var
-        SET {add_key} =
+        SET {add_data} =
             CASE
                 WHEN {condition}
                 THEN TRUE
@@ -493,7 +374,7 @@ def filter_genes(
     # 6. 处理完全零表达基因；CSR 中完全没出现的 gene，默认不通过过滤
     conn.execute(f"""
         UPDATE var
-        SET {add_key} = FALSE
+        SET {add_data} = FALSE
         WHERE atlas_gene_id NOT IN (
             SELECT atlas_gene_id FROM gene_filter_stats_tmp
         )
@@ -502,7 +383,7 @@ def filter_genes(
     # 7. 统计结果
     keep_count = conn.execute(f"""
         SELECT COUNT(*) FROM var
-        WHERE {add_key} = TRUE
+        WHERE {add_data} = TRUE
     """).fetchone()[0]
 
     conn.execute("DROP TABLE IF EXISTS gene_filter_stats_tmp")
@@ -523,10 +404,11 @@ def filter_genes(
 #     字段	                    含义
 #  filter_genes	       该 gene是否符合过滤条件 true
 
+
 ''' 计算每个细胞的总 UMI（Unique Molecular Identifier）计数 '''
 def calculate_cell_total_counts(
         atlas: Atlas,
-        add_key: str = "cell_total_counts",
+        add_data: str = "cell_total_counts",
         chunk_cells: int = 1_000_000,
 ) -> None:
     """计算每个细胞的总表达量。
@@ -541,7 +423,7 @@ def calculate_cell_total_counts(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    add_key
+    add_data
         写回 ``obs`` 或 ``var`` 的结果列名。
 
     chunk_cells
@@ -574,12 +456,12 @@ def calculate_cell_total_counts(
     # Step 0：确保 obs 有目标列
     conn.execute(f"""
         ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS {add_key} DOUBLE
+        ADD COLUMN IF NOT EXISTS {add_data} DOUBLE
     """)
 
     conn.execute(f"""
         UPDATE obs
-        SET {add_key} = 0
+        SET {add_data} = 0
     """)
 
     # Step 1：获取 cell_id 范围
@@ -634,7 +516,7 @@ def calculate_cell_total_counts(
         # 只写回当前 chunk 有表达记录的 cell
         conn.execute(f"""
             UPDATE obs
-            SET {add_key} = t.total_counts
+            SET {add_data} = t.total_counts
             FROM cell_total_counts_chunk t
             WHERE obs.atlas_cell_id = t.atlas_cell_id
         """)
@@ -658,11 +540,12 @@ def calculate_cell_total_counts(
 #     字段	                    含义
 #  cell_total_counts	     每个细胞的总 UMI 计数
 
+
 '''  计算每个基因的表达值 '''
 def calculate_gene_total_counts(
                     atlas: 'Atlas',
-                    add_key1: str = "gene_total_counts",
-                    add_key2: str = "gene_mean_counts",
+                    add_data1: str = "gene_total_counts",
+                    add_data2: str = "gene_mean_counts",
                     ) -> None:
     """计算每个基因的表达统计量。
 
@@ -676,10 +559,10 @@ def calculate_gene_total_counts(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    add_key1
+    add_data1
         写入第一个基因级统计结果的列名。
 
-    add_key2
+    add_data2
         写入第二个基因级统计结果的列名。
 
     Notes
@@ -708,10 +591,10 @@ def calculate_gene_total_counts(
     # 确保 var 表有目标列
     cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
 
-    if add_key1 not in cols:
-        conn.execute(f"ALTER TABLE var ADD COLUMN {add_key1} DOUBLE DEFAULT 0")
-    if add_key2 not in cols:
-        conn.execute(f"ALTER TABLE var ADD COLUMN {add_key2} DOUBLE DEFAULT 0")
+    if add_data1 not in cols:
+        conn.execute(f"ALTER TABLE var ADD COLUMN {add_data1} DOUBLE DEFAULT 0")
+    if add_data2 not in cols:
+        conn.execute(f"ALTER TABLE var ADD COLUMN {add_data2} DOUBLE DEFAULT 0")
 
     # 细胞总数（用于 mean）
     total_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
@@ -736,8 +619,8 @@ def calculate_gene_total_counts(
     conn.execute(f"""
         UPDATE var
         SET
-            {add_key1} = s.total_counts,
-            {add_key2} = s.total_counts / {total_cells}
+            {add_data1} = s.total_counts,
+            {add_data2} = s.total_counts / {total_cells}
         FROM gene_stats_tmp AS s
         WHERE var.atlas_gene_id = s.atlas_gene_id
     """)
@@ -748,8 +631,8 @@ def calculate_gene_total_counts(
     conn.execute(f"""
         UPDATE var
         SET
-            {add_key1} = 0,
-            {add_key2} = 0
+            {add_data1} = 0,
+            {add_data2} = 0
         WHERE atlas_gene_id NOT IN (SELECT atlas_gene_id FROM gene_stats_tmp)
     """)
 
@@ -773,181 +656,7 @@ def calculate_gene_total_counts(
 #  gene_mean_counts	         每个基因的平均表达值（SUM / 总细胞数）
 
 
-''' qc 控制指标 方法 1 ：小数据快速版，全量进内存；线粒体基因 + 核糖体基因 比例计算 '''
-def calculate_qc_metrics_fast(atlas: Atlas, qc_vars: dict | None = None):
-
-    """快速计算细胞和基因 QC 指标。
-
-    该函数在 DuckDB 中聚合 HyS 表，为细胞计算 total counts、检测基因数，并可按 ``qc_vars``
-    指定的基因集合计算比例指标。
-
-    结果写入 ``obs`` 和 ``var``，用于过滤、绘图和后续质量控制判断。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    qc_vars
-        QC 基因集合配置，例如线粒体或核糖体基因集合。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.calculate_qc_metrics_fast(...)
-    """
-    print("==== calculate_qc_metrics (SINGLE PASS) ====")
-    start = datetime.now()
-
-    conn = atlas.connection
-
-    if qc_vars is None:
-        qc_vars = {
-            "mt": "MT-",
-            "ribo": "^(RPS|RPL)"
-        }
-
-    # 标记 var
-    for qc_key, pattern in qc_vars.items():
-
-        conn.execute(f"""
-            ALTER TABLE var
-            ADD COLUMN IF NOT EXISTS {qc_key} BOOLEAN
-        """)
-
-        if pattern.startswith("^"):
-            conn.execute(f"""
-                UPDATE var
-                SET {qc_key} = regexp_matches(atlas_gene_name, '{pattern}', 'i')
-            """)
-        else:
-            conn.execute(f"""
-                UPDATE var
-                SET {qc_key} = UPPER(atlas_gene_name) LIKE '{pattern.upper()}%'
-            """)
-
-    # 动态生成 qc SUM
-    qc_sum_expr = []
-    for qc_key in qc_vars.keys():
-        qc_sum_expr.append(
-            f"SUM(CASE WHEN v.{qc_key} THEN x.data ELSE 0 END) AS total_counts_{qc_key}"
-        )
-
-    qc_sum_sql = ",\n".join(qc_sum_expr)
-
-    # -------- cell + qc --------
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _cell_qc AS
-        SELECT
-            x.atlas_cell_id,
-
-            SUM(x.data) AS cell_total_counts,
-            COUNT(*)    AS n_genes_by_counts,
-
-            {qc_sum_sql}
-
-        FROM X_HyS_data x
-        JOIN var v
-          ON x.atlas_gene_id = v.atlas_gene_id
-        GROUP BY x.atlas_cell_id
-    """)
-
-    # -------- gene --------
-    conn.execute("""
-        CREATE OR REPLACE TEMP TABLE _gene_qc AS
-        SELECT
-            atlas_gene_id,
-            SUM(data) AS gene_total_counts,
-            COUNT(*)  AS n_cells_by_counts
-        FROM X_HyS_data
-        GROUP BY atlas_gene_id
-    """)
-
-    # 写入 obs
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS cell_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS n_genes_by_counts INTEGER
-    """)
-
-    for qc_key in qc_vars.keys():
-        conn.execute(f"""
-            ALTER TABLE obs
-            ADD COLUMN IF NOT EXISTS total_counts_{qc_key} REAL
-        """)
-        conn.execute(f"""
-            ALTER TABLE obs
-            ADD COLUMN IF NOT EXISTS pct_counts_{qc_key} REAL
-        """)
-
-    # UPDATE obs
-    set_expr = [
-        "cell_total_counts = c.cell_total_counts",
-        "n_genes_by_counts = c.n_genes_by_counts"
-    ]
-
-    for qc_key in qc_vars.keys():
-        set_expr.append(f"total_counts_{qc_key} = c.total_counts_{qc_key}")
-        set_expr.append(f"""
-            pct_counts_{qc_key} =
-            CASE WHEN c.cell_total_counts > 0
-            THEN 100.0 * c.total_counts_{qc_key} / c.cell_total_counts
-            ELSE 0 END
-        """)
-
-    conn.execute(f"""
-        UPDATE obs
-        SET {",".join(set_expr)}
-        FROM _cell_qc c
-        WHERE obs.atlas_cell_id = c.atlas_cell_id
-    """)
-
-    # 写入 var
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS gene_total_counts REAL
-    """)
-    conn.execute("""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS n_cells_by_counts INTEGER
-    """)
-
-    conn.execute("""
-        UPDATE var
-        SET
-            gene_total_counts = g.gene_total_counts,
-            n_cells_by_counts = g.n_cells_by_counts
-        FROM _gene_qc g
-        WHERE var.atlas_gene_id = g.atlas_gene_id
-    """)
-
-    # 清理
-    conn.execute("DROP TABLE IF EXISTS _cell_qc")
-    conn.execute("DROP TABLE IF EXISTS _gene_qc")
-
-    # 内存清理
-    _cleanup_qc_after_step(
-        conn,
-        temp_tables=["_cell_qc", "_gene_qc"],
-        checkpoint=False,
-        collect=True,
-    )
-
-    print("✅ SINGLE PASS QC 完成")
-    print("耗时:", (datetime.now() - start).total_seconds())
-
-
-
-''' qc 控制指标 方法 2 ：大数据安全版'''
+''' qc 控制指标 '''
 def calculate_qc_metrics(
     atlas: Atlas,
     qc_vars: dict[str, Any] | None=None,

@@ -1,5 +1,6 @@
 from ..data import Atlas
 import re
+from os import PathLike
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -172,12 +173,12 @@ def violin(
         atlas: Atlas,
         genes: str | list[str],
         groupby: str = "kmeans",
-        use_expr_field: str = "data_log1p",
+        use_data: str = "data_log1p",
         sample_n_per_group: int | None = 2000,
         groups: list | None = None,
         where: str | None = None,
         order: list | None = None,
-        save_path: str | None = None
+        save_path: PathLike[str] | str | None = None
 ):
 
     """按分组绘制基因表达小提琴图。
@@ -198,7 +199,7 @@ def violin(
     groupby
         ``obs`` 中用于分组的列名。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     sample_n_per_group
@@ -253,8 +254,8 @@ def violin(
         raise ValueError("obs 中不存在 atlas_cell_id")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
-    if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
+    if use_data not in x_cols:
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -395,7 +396,7 @@ def violin(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_expr_field}, 0.0) AS expr
+            COALESCE(x.{use_data}, 0.0) AS expr
         FROM _violin_cells_tmp c
         CROSS JOIN _violin_genes_tmp g
         LEFT JOIN X_HyS_data x
@@ -510,7 +511,7 @@ def stacked_violin(
         atlas: Atlas,
         genes: str | list[str],
         groupby: str = "cell_type_auto",
-        use_expr_field: str = "data_log1p",
+        use_data: str = "data_log1p",
         sample_n_per_group: int | None = 2000,
         groups: list | None = None,
         where: str | None = None,
@@ -518,7 +519,7 @@ def stacked_violin(
         color_vmin: float | None = 0.0,
         color_vmax: float | None = 5.0,
         font_size: int = 14,
-        save_path: str | None = None
+        save_path: PathLike[str] | str | None = None
 ):
 
     """按分组绘制堆叠小提琴图。
@@ -539,7 +540,7 @@ def stacked_violin(
     groupby
         ``obs`` 中用于分组的列名。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     sample_n_per_group
@@ -601,8 +602,8 @@ def stacked_violin(
         raise ValueError("obs 中不存在 atlas_cell_id")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
-    if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
+    if use_data not in x_cols:
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -741,7 +742,7 @@ def stacked_violin(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_expr_field}, 0.0) AS expr
+            COALESCE(x.{use_data}, 0.0) AS expr
         FROM _sv_cells_tmp c
         CROSS JOIN _sv_genes_tmp g
         LEFT JOIN X_HyS_data x

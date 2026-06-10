@@ -4,10 +4,10 @@ import gc
 import numpy as np
 import pandas as pd
 from scipy import stats
-
-
 from typing import Any
 from ..data import Atlas
+
+
 def _q(name: str) -> str:
     """为 SQL 标识符添加安全引用。
 
@@ -262,14 +262,14 @@ def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
 def rank_genes_groups(
         atlas: Atlas,
         groupby: str = "kmeans",
-        use_expr_field: str = "data_log1p",
+        use_data: str = "data_log1p",
         groups: list | None = None,
         reference: str | int = "rest",
         n_genes: int | None = None,
         mask_var: str | None = None, # = "highly_variable_genes"
         corr_method: str = "benjamini-hochberg",
         rankby_abs: bool = False,
-        key_added: str = "rank_genes_groups",
+        add_table: str = "rank_genes_groups",
         input_is_log: bool = True,
         lfc_eps: float = 1e-9,  # 对齐 Scanpy 的 logFC 伪计数
         inplace: bool = True,
@@ -280,7 +280,7 @@ def rank_genes_groups(
     该函数从 ``obs`` 和 ``X_HyS_data`` 中按 ``groupby`` 聚合表达统计量，计算目标组与参考组之间的
     t-test、log fold change、表达比例和校正 p 值。
 
-    结果按组写入以 ``key_added`` 为前缀的数据库表，功能上对应 Scanpy 的
+    结果按组写入以 ``add_table`` 为前缀的数据库表，功能上对应 Scanpy 的
     ``sc.tl.rank_genes_groups``，但适配 Atlas 的 DuckDB 存储结构。
 
     Parameters
@@ -292,7 +292,7 @@ def rank_genes_groups(
     groupby
         ``obs`` 中用于分组的列名。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     groups
@@ -313,7 +313,7 @@ def rank_genes_groups(
     rankby_abs
         是否按统计量绝对值排序。
 
-    key_added
+    add_table
         保存差异表达结果时使用的结果名前缀。
 
     input_is_log
@@ -377,8 +377,8 @@ def rank_genes_groups(
         if groupby not in obs_cols:
             raise ValueError(f"obs 中不存在列: {groupby}")
 
-        if use_expr_field not in x_cols:
-            raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
+        if use_data not in x_cols:
+            raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
         if mask_var is not None and mask_var not in var_cols:
             raise ValueError(f"var 中不存在列: {mask_var}")
@@ -512,8 +512,8 @@ def rank_genes_groups(
             SELECT
                 CAST(o.{_q(groupby)} AS TEXT) AS group_name,
                 x.atlas_gene_id,
-                SUM(x.{_q(use_expr_field)}) AS sum_expr,
-                SUM(x.{_q(use_expr_field)} * x.{_q(use_expr_field)}) AS sumsq_expr,
+                SUM(x.{_q(use_data)}) AS sum_expr,
+                SUM(x.{_q(use_data)} * x.{_q(use_data)}) AS sumsq_expr,
                 COUNT(*) AS nnz
             FROM X_HyS_data x
             JOIN obs o
@@ -521,7 +521,7 @@ def rank_genes_groups(
             JOIN _rgg_gene_set gs
               ON x.atlas_gene_id = gs.atlas_gene_id
             WHERE o.{_q(groupby)} IS NOT NULL
-              AND x.{_q(use_expr_field)} IS NOT NULL
+              AND x.{_q(use_data)} IS NOT NULL
             GROUP BY 1, 2
         """)
 
@@ -765,18 +765,18 @@ def rank_genes_groups(
         # 6. 写入数据库表
         # -------------------------------------------------
         if inplace:
-            conn.execute(f"DROP TABLE IF EXISTS {_q(key_added)}")
+            conn.execute(f"DROP TABLE IF EXISTS {_q(add_table)}")
             conn.register("_rgg_result_py", result_df)
 
             conn.execute(f"""
-                CREATE TABLE {_q(key_added)} AS
+                CREATE TABLE {_q(add_table)} AS
                 SELECT *
                 FROM _rgg_result_py
             """)
 
             conn.unregister("_rgg_result_py")
 
-            print(f"-> result written to table: {key_added}")
+            print(f"-> result written to table: {add_table}")
 
         print("rank_genes_groups 完成")
         print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))

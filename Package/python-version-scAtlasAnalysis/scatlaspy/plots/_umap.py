@@ -2,6 +2,7 @@ from ..data import Atlas
 from matplotlib.lines import Line2D
 import re
 import math
+from os import PathLike
 from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -171,7 +172,7 @@ def umap(
         color: str | list[str] = "kmeans",
         sample_n: int | None = 50000,
         where: str | None = None,
-        use_expr_field: str = "data_log1p",
+        use_data: str = "data_log1p",
         ncols: int = 3,
         figsize: tuple[float, float] | None=(22, 8),
         point_size: float = 1.0,
@@ -180,7 +181,7 @@ def umap(
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         legend_loc: str = "right_margin",
         frameon: bool = True,
-        save_path: str | None = None,
+        save_path: PathLike[str] | str | None = None,
         plot_batch_size: int = 200000,
         return_df: bool = False,
 ):
@@ -208,7 +209,7 @@ def umap(
     where
         可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     ncols
@@ -346,7 +347,7 @@ def umap(
             genes=gene_colors,
             sample_n=sample_n,
             where=where,
-            use_expr_field=use_expr_field,
+            use_data=use_data,
             ncols=ncols,
             figsize=figsize,
             point_size=point_size,
@@ -380,7 +381,7 @@ def umap(
             genes=gene_colors,
             sample_n=sample_n,
             where=where,
-            use_expr_field=use_expr_field,
+            use_data=use_data,
             ncols=ncols,
             figsize=figsize,
             point_size=point_size,
@@ -406,7 +407,7 @@ def _plot_umap_obs(
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         frameon: bool = True,
-        save_path: str | None = None,
+        save_path: PathLike[str] | str | None = None,
         plot_batch_size: int = 200000,
         return_df: bool = False,
 ):
@@ -722,7 +723,7 @@ def _draw_umap_obs_streaming(
         alpha: float = 0.7,
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         frameon: bool = True,
-        save_path: str | None = None,
+        save_path: PathLike[str] | str | None = None,
         plot_batch_size: int = 200000
 ):
 
@@ -901,7 +902,7 @@ def _draw_umap_obs_streaming(
                 color="w",
                 label=str(lab),
                 markerfacecolor=label_to_color[lab],
-                markersize=10,  # ✅【修改】圆点大小
+                markersize=10,
             )
             for lab in unique_labels
         ]
@@ -995,7 +996,7 @@ def _plot_umap_features(
         genes: str | list[str],
         sample_n: int | None = 50000,
         where: str | None = None,
-        use_expr_field: str = "data_scale",
+        use_data: str = "data_scale",
         ncols: int = 3,
         figsize: tuple[float, float] | None=None,
         point_size: float = 8,
@@ -1027,7 +1028,7 @@ def _plot_umap_features(
     where
         可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
 
-    use_expr_field
+    use_data
         绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
 
     ncols
@@ -1096,8 +1097,8 @@ def _plot_umap_features(
     if "atlas_cell_id" not in x_cols or "atlas_gene_id" not in x_cols:
         raise ValueError("X_HyS_data 需要包含 atlas_cell_id / atlas_gene_id")
 
-    if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
+    if use_data not in x_cols:
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("var 需要包含 atlas_gene_id / atlas_gene_name")
@@ -1147,7 +1148,7 @@ def _plot_umap_features(
     # 查询 gene_id
     gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
 
-    if use_expr_field == "data_scale":
+    if use_data == "data_scale":
         if "zero_scale_transform" not in var_cols:
             raise ValueError(
                 "var 中不存在 zero_scale_transform。\n"
@@ -1175,7 +1176,7 @@ def _plot_umap_features(
     if len(gene_map_df) == 0:
         raise ValueError("var 中找不到这些基因")
 
-    if use_expr_field == "data_scale":
+    if use_data == "data_scale":
         gene_map = {
             row["atlas_gene_name"]: (
                 int(row["atlas_gene_id"]),
@@ -1201,13 +1202,13 @@ def _plot_umap_features(
 
     for gene in genes:
 
-        if use_expr_field == "data_scale":
+        if use_data == "data_scale":
             gene_id, zero_fill = gene_map[gene]
 
             expr_df = conn.execute(f"""
                 SELECT
                     c.atlas_cell_id,
-                    COALESCE(x.{use_expr_field}, {zero_fill}) AS expr
+                    COALESCE(x.{use_data}, {zero_fill}) AS expr
                 FROM _umap_cells_tmp c
                 LEFT JOIN X_HyS_data x
                   ON c.atlas_cell_id = x.atlas_cell_id
@@ -1220,7 +1221,7 @@ def _plot_umap_features(
             expr_df = conn.execute(f"""
                 SELECT
                     c.atlas_cell_id,
-                    COALESCE(x.{use_expr_field}, 0.0) AS expr
+                    COALESCE(x.{use_data}, 0.0) AS expr
                 FROM _umap_cells_tmp c
                 LEFT JOIN X_HyS_data x
                   ON c.atlas_cell_id = x.atlas_cell_id
@@ -1229,7 +1230,7 @@ def _plot_umap_features(
 
         df = umap_df.merge(expr_df, on="atlas_cell_id", how="left")
 
-        if use_expr_field == "data_scale":
+        if use_data == "data_scale":
             _, zero_fill = gene_map[gene]
             df["expr"] = df["expr"].fillna(zero_fill)
         else:

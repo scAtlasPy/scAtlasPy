@@ -3,8 +3,22 @@ from _duckdb import DuckDBPyConnection
 import duckdb
 import os
 import logging
+import numpy as np
+import pandas as pd
+from os import PathLike
+from anndata import AnnData
 from ._minibatch import MultiThreadedMinibatchFetcher
 from ._filter_index import FilterIndexBuilder
+from ..io import (
+    gene_names_duplicated as _io_gene_names_duplicated,
+    get_anndata as _io_get_anndata,
+    get_obs_df as _io_get_obs_df,
+    load_anndata as _io_load_anndata,
+    load_h5ad as _io_load_h5ad,
+    load_multi_format as _io_load_multi_format,
+    write_h5ad as _io_write_h5ad,
+)
+from ..io._input import StoreType
 
 # 配置日志
 logger = logging.getLogger("Atlas")
@@ -64,40 +78,27 @@ class Atlas:
         目录路径或文件路径。
     """
 
-    def __init__(self, name: str, path:str):
-
-        """初始化对象。
-
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
-
-        path
-            目录路径或文件路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    def __init__(self, file_name: PathLike[str] | str):
         """
-        logger.info(f"开始初始化 Atlas 实例，名称: {name}, 路径: {path}")
+        初始化 Atlas 数据库对象。
 
-        self.__name = name  # 该数据库的名称（无后缀）
-        self.__path = path  # 该数据库所在文件夹的路径
-        self.__connection = None  # 存储当前的数据库连接
-        self.__mode: Literal["r+", "r"] = "r+"  # 当前连接模式，默认读写
-        self.__file_path = os.path.join(self.__path, f"{self.__name}.sasql") # 数据库文件的绝对路径
+        支持：
+            Atlas(r"F:\\data\\file_name\\sql_obs.sasql")
+            Atlas(r"F:\\data\\file_name\\sql_obs")
+            Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
+            Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
+        """
+
+        self.__file_path = self._resolve_file_path(file_name)
+        self.__connection = None
+        self.__mode: Literal["r+", "r"] = "r+"
+
+        logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
 
         if not os.path.exists(self.file_path):
             logger.info(f"数据库文件不存在，开始创建新数据库: {self.file_path}")
             try:
-                self.__connection=self._create(name, path)
+                self.__connection = self._create()
                 logger.info(f"数据库创建成功: {self.file_path}")
             except Exception as e:
                 logger.error(f"数据库创建失败: {str(e)}")
@@ -108,254 +109,49 @@ class Atlas:
 
         logger.info("Atlas 实例初始化完成")
 
-    @classmethod
-    def open(
-            cls,
-            file_path: str,
-            mode: Literal["r+", "r"] = "r+",
-    ) -> "Atlas":
-        """打开已经存在的 Atlas 数据库。
 
-        该类方法接收一个 ``.sasql`` 文件路径，解析数据库名称和目录，创建 ``Atlas`` 对象，并按指定模式建立 DuckDB 连接。
+    @staticmethod
+    def _resolve_file_path(file_name: PathLike[str] | str) -> str:
+        """
+        解析 Atlas 数据库路径。
 
-        适合在已有 Atlas 数据库上继续执行过滤、预处理、降维、聚类、绘图或导出。
+        支持：
+            Atlas(r"F:\\data\\file_name\\sql_obs.sasql")
+            Atlas(r"F:\\data\\file_name\\sql_obs")
+            Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
+            Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
 
-        Parameters
-        ----------
-        file_path
-            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
-
-        mode
-            数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.open(...)
+        如果没有 .sasql 后缀，会自动补上。
         """
 
-        file_path = os.path.abspath(file_path)
+        file_name = os.fspath(file_name)
 
-        if not os.path.exists(file_path):
-            raise FileNotFoundError(
-                f"数据库文件不存在，无法打开: {file_path}\n"
-                f"如果你想创建新数据库，请使用 Atlas.create(name, path)"
+        if not isinstance(file_name, str):
+            raise TypeError(
+                "file_name 必须是 str 或 PathLike[str] 类型，"
+                f"但收到的是: {type(file_name)}"
             )
 
-        if os.path.isdir(file_path):
-            raise IsADirectoryError(
-                f"传入的是文件夹，不是数据库文件: {file_path}\n"
-                f"请传入完整数据库文件路径，例如：Atlas.open(r'F:\\data\\xxx.sasql')"
-            )
-        path = os.path.dirname(file_path)
-        filename = os.path.basename(file_path)
+        file_name = file_name.strip()
 
-        if filename.endswith(".sasql"):
-            name = filename[:-len(".sasql")]
-        else:
-            name = os.path.splitext(filename)[0]
+        if file_name == "":
+            raise ValueError("file_name 不能为空")
 
-        atlas = cls.__new__(cls)
+        file_name = os.path.expanduser(file_name)
 
-        atlas._Atlas__name = name
-        atlas._Atlas__path = path
-        atlas._Atlas__file_path = file_path
-        atlas._Atlas__connection = None
-        atlas._Atlas__mode = mode
+        if file_name.lower().endswith(".sasql"):
+            return os.path.abspath(file_name)
 
-        atlas.connect(mode)
+        return os.path.abspath(file_name + ".sasql")
 
-        logger.info(f"已打开 Atlas 数据库: {file_path}, mode={mode}")
-
-        return atlas
-
-    @classmethod
-    def create(
-            cls,
-            name: str,
-            path: str,
-    ) -> "Atlas":
-        """创建新的 Atlas 数据库。
-
-        该类方法根据数据库名称和目录创建新的 ``.sasql`` 文件，并初始化 DuckDB 连接。
-
-        如果目标文件已经存在，函数会按当前实现的检查逻辑避免无意覆盖已有数据库。
-
-        Parameters
-        ----------
-        name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
-
-        path
-            目录路径或文件路径。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.create(...)
-        """
-
-        path = os.path.abspath(path)
-        file_path = os.path.join(path, f"{name}.sasql")
-
-        if os.path.exists(file_path):
-            raise FileExistsError(
-                f"数据库已存在: {file_path}\n"
-                f"如果你只是想重新连接已有数据库，请使用：\n"
-                f"Atlas.open(r'{file_path}')"
-            )
-
-        return cls(name=name, path=path)
 
     @property
     def file_path(self) -> str:
-        """执行 ``file_path`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.file_path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.file_path(...)
+        """
+        Atlas 数据库文件的绝对路径。
         """
         return self.__file_path
 
-    @file_path.setter
-    def file_path(self, value: str) -> None:
-        """执行 ``file_path`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.file_path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        value
-            属性的新值。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.file_path(...)
-        """
-        self.__file_path = value
-
-    @property
-    def name(self) -> str:
-        """执行 ``name`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.name`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.name(...)
-        """
-        return self.__name
-
-    @name.setter
-    def name(self, value: str) -> None:
-        """执行 ``name`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.name`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        value
-            属性的新值。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.name(...)
-        """
-        self.__name = value
-
-    @property
-    def path(self) -> str:
-        """执行 ``path`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.path(...)
-        """
-        return self.__path
-
-    @path.setter
-    def path(self, value: str) -> None:
-        """执行 ``path`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.path`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        value
-            属性的新值。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.path(...)
-        """
-        self.__path = value
 
     @property
     def connection(self) -> Optional[duckdb.DuckDBPyConnection]:
@@ -380,76 +176,39 @@ class Atlas:
         """
         return self.__connection
 
+
     @connection.setter
-    def connection(self, value: str)-> None:
-        """执行 ``connection`` 的核心功能。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.connection`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-        Parameters
-        ----------
-        value
-            属性的新值。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.connection(...)
-        """
+    def connection(self, value: Optional[duckdb.DuckDBPyConnection]) -> None:
         self.__connection = value
 
-    def _create(self, name: str, path: str) -> duckdb.DuckDBPyConnection:
-        """创建 Atlas 工作流所需的数据库表。
 
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
-
-        path
-            目录路径或文件路径。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    def _create(self) -> duckdb.DuckDBPyConnection:
         """
-        logger.debug(f"开始创建数据库，名称: {name}, 路径: {path}")
+        创建 Atlas 数据库文件。
+        """
 
-        # 检查数据库是否已存在
+        db_dir = os.path.dirname(self.file_path)
+
+        logger.debug(f"开始创建数据库: {self.file_path}")
+
         if os.path.exists(self.file_path):
             raise RuntimeError(f"数据库已存在: {self.file_path}")
-        try:
-            # 确保目录存在
-            logger.debug(f"创建目录: {path}")
-            os.makedirs(path, exist_ok=True)
 
-            # 连接到持久化数据库文件，如果文件不存在会自动创建
+        try:
+            logger.debug(f"创建目录: {db_dir}")
+            os.makedirs(db_dir, exist_ok=True)
+
             logger.debug("连接 DuckDB 数据库")
             con = duckdb.connect(database=self.file_path)
 
-            logger.debug(f"数据库已成功创建：{self.file_path}")
+            logger.debug(f"数据库已成功创建: {self.file_path}")
             return con
 
         except Exception as e:
-            logger.error(f"创建数据库失败：{str(e)}")
+            logger.error(f"创建数据库失败: {str(e)}")
             logger.exception("创建数据库异常详情:")
-            raise RuntimeError(f"创建数据库失败：{str(e)}")
+            raise RuntimeError(f"创建数据库失败: {str(e)}")
+
 
     def connect(self, mode: Literal["r+", "r"] = "r+") -> duckdb.DuckDBPyConnection:
         """建立 DuckDB 数据库连接。
@@ -494,7 +253,8 @@ class Atlas:
 
             elif mode == "r+":  # 读写模式
                 logger.debug("读写模式连接")
-                os.makedirs(self.__path, exist_ok=True)  # 确保目录存在
+                db_dir = os.path.dirname(self.file_path)
+                os.makedirs(db_dir, exist_ok=True)
 
                 # 无论文件是否存在，都会创建或连接
                 self.__connection = duckdb.connect(database=self.file_path, read_only=False)
@@ -508,6 +268,7 @@ class Atlas:
                 logger.error(f"不支持的连接模式: {mode}")
                 raise ValueError(f"不支持的连接模式: {mode}")
 
+            self.__mode = mode
             logger.debug("数据库连接成功")
             return self.__connection
 
@@ -515,6 +276,7 @@ class Atlas:
             logger.error(f"连接数据库失败: {str(e)}")
             logger.exception("连接数据库异常详情:")
             raise RuntimeError(f"连接数据库失败: {str(e)}")
+
 
     def close(self):
         """执行 ``close`` 的核心功能。
@@ -547,6 +309,7 @@ class Atlas:
             logger.error(f"关闭数据库连接时出错: {str(e)}")
             logger.exception("关闭数据库连接异常详情:")
             raise RuntimeError(f"关闭数据库连接时出错: {str(e)}")
+
 
     def execute_sql(self, sql: str) -> DuckDBPyConnection | None:
         """执行 ``execute_sql`` 的核心功能。
@@ -596,6 +359,7 @@ class Atlas:
             self.__connection.commit()
             return None
 
+
     def exists(self) -> bool:
         """执行 ``exists`` 的核心功能。
 
@@ -619,6 +383,7 @@ class Atlas:
         exists = os.path.exists(self.file_path)
         logger.debug(f"检查数据库文件是否存在: {self.file_path} -> {exists}")
         return exists
+
 
     def query(self, query: str):
         """执行 ``query`` 的核心功能。
@@ -651,6 +416,7 @@ class Atlas:
         result = self.connection.execute(query)
         df = result.df() # 将查询结果转换为pandas DataFrame
         return df
+
 
     def query_raw(self, query: str):
         """执行 ``query_raw`` 的核心功能。
@@ -685,6 +451,7 @@ class Atlas:
         result = self.connection.execute(query)
         return result
 
+
     def describe(self) -> str:
         """查看 Atlas 数据库概要。
 
@@ -710,7 +477,7 @@ class Atlas:
         conn = self.__connection
 
         # 1. 数据库路径
-        database = self.file_path
+        file_name = self.file_path
 
         # 2. 查询所有表
         try:
@@ -767,7 +534,7 @@ class Atlas:
             return "NA" if x is None else f"{int(x):,}"
 
         text = (
-            f"database    : {database}\n"
+            f"file_name    : {file_name}\n"
             f"tables      : {len(tables)}\n"
             f"table names : {table_names}\n"
             f"n_cells     : {fmt(n_cells)}\n"
@@ -776,7 +543,50 @@ class Atlas:
 
         return text
 
-    def show(self, table_name: str, n: int = 5):
+
+    def __repr__(self) -> str:
+        """执行 ``__repr__`` 的核心功能。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Returns
+        -------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
+        return self.describe()
+
+
+    def __str__(self) -> str:
+        """执行 ``__str__`` 的核心功能。
+
+        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
+
+        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+
+        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+
+        Returns
+        -------
+        result
+            函数返回结果。具体类型取决于参数设置和内部执行路径。
+
+        Notes
+        -----
+        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        """
+        return self.describe()
+
+
+    def head(self, table_name: str, n: int = 5):
         """查看指定数据库表的前几行。
 
         该方法会检查目标表是否存在，读取表结构，并返回指定行数的数据。
@@ -842,57 +652,22 @@ class Atlas:
         print(f"table   : {table_name}")
         print(f"columns : {', '.join(columns)}")
         print(f"rows    : first {int(n)}")
-        print(df)
 
-        return df
+        with pd.option_context(
+                "display.max_columns", None,
+                "display.max_rows", int(n),
+                "display.width", 0,
+                "display.max_colwidth", None,
+        ):
+            print(df.to_string(index=True))
 
-    def __repr__(self) -> str:
-        """执行 ``__repr__`` 的核心功能。
-
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        return self.describe()
-
-
-    def __str__(self) -> str:
-        """执行 ``__str__`` 的核心功能。
-
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-        return self.describe()
 
     def build_read_index(
             self,
             cell_condition: str | None = None,
             gene_condition: str | None = None,
             use_hvg: bool = True,
-            select_data: str = "data_scale",
+            use_data: str = "data_log1p",
     ):
         """根据过滤条件重建 Atlas 过滤索引。
 
@@ -913,7 +688,7 @@ class Atlas:
         use_hvg
             是否只处理高变基因。
 
-        select_data
+        use_data
             从 ``X_HyS_data`` 中读取的表达字段。
 
         Examples
@@ -927,7 +702,7 @@ class Atlas:
             cell_condition=cell_condition,
             gene_condition=gene_condition,
             use_hvg=use_hvg,
-            select_data=select_data,
+            use_data=use_data,
         )
         builder.run()
 
@@ -960,9 +735,9 @@ class Atlas:
     def get_minibatch_dense(
             self,
             pass_mode: str = "single-pass",
-            buffer_batch_num: int = 5,
-            max_batches: int | None = None,
             batch_size: int = 2048,
+            max_batches: int | None = None,
+            buffer_batch_num: int = 5,
     ):
         """按 minibatch 读取 dense 表达矩阵。
 
@@ -1074,4 +849,83 @@ class Atlas:
                 print("[get_minibatch_dense] pass produced 0 batch, stop")
                 break
 
+
+    # =====================================================
+    # io 方法包装
+    # -----------------------------------------------------
+    # 保留原函数位置不动：
+    #   sap.io.load_h5ad(file_path, atlas, ...)
+    #
+    # 同时支持对象式调用：
+    #   atlas.load_h5ad(file_path, ...)
+    # =====================================================
+
+    def load_h5ad(
+        self,
+        h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
+        *,
+        load_type: Literal["order", "random", "list_random"] = "random",
+        store_type: StoreType = "count",
+        cells_per_block: int = 500,
+        blocks_per_pool: int = 10,
+    ) -> Any:
+        return _io_load_h5ad(
+            h5ad_path,
+            self,
+            load_type=load_type,
+            store_type=store_type,
+            cells_per_block=cells_per_block,
+            blocks_per_pool=blocks_per_pool,
+        )
+
+
+    def load_anndata(self, adata: AnnData) -> None:
+        return _io_load_anndata(adata, self)
+
+
+    def load_multi_format(self, file_path: PathLike[str] | str) -> None:
+        return _io_load_multi_format(file_path, self)
+
+
+    def gene_names_duplicated(
+        self,
+        gene_name_column: str = "atlas_gene_name",
+    ) -> bool | None:
+        return _io_gene_names_duplicated(self, gene_name_column=gene_name_column)
+
+
+    def write_h5ad(
+        self,
+        out_h5ad_path: PathLike[str] | str,
+        *,
+        batch_cells: int = 1_000_000,
+    ) -> None:
+        return _io_write_h5ad(
+            self,
+            out_h5ad_path,
+            batch_cells=batch_cells,
+        )
+
+
+    def get_obs_df(
+        self,
+        columns: list[str] | str | None = None,
+    ) -> pd.DataFrame:
+        return _io_get_obs_df(self, columns=columns)
+
+
+    def get_anndata(
+        self,
+        atlas_cell_ids: list[int] | np.ndarray | None,
+        use_data: str = "data",
+        include_obsm: bool = True,
+        include_varm: bool = True,
+    ) -> AnnData:
+        return _io_get_anndata(
+            self,
+            atlas_cell_ids=atlas_cell_ids,
+            use_data=use_data,
+            include_obsm=include_obsm,
+            include_varm=include_varm,
+        )
 

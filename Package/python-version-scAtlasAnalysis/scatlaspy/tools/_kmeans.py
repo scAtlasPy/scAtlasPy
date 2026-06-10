@@ -102,6 +102,7 @@ class StreamingKMeans:
         #     reassignment_ratio=0,  # ✅ 新增：减少运行中重新分配中心带来的额外开销
         # )
 
+
     # 写 obs_cluster
     def _write_clusters(self, atlas: Atlas, cell_ids: np.ndarray, labels: np.ndarray, table_name: str):
 
@@ -138,6 +139,7 @@ class StreamingKMeans:
         })
 
         atlas.connection.append(table_name, df)
+
 
     # 写 kmeans_centers
     def _write_centers(self, atlas: Atlas, table_name: str="kmeans_centers"):
@@ -192,6 +194,7 @@ class StreamingKMeans:
         conn.append(table_name, df)
 
         print("[Pipeline] centers written")
+
 
     # 转换 pca + minibatch kmeans 聚类 训练
     def fit_kmeans(self, atlas: Atlas):
@@ -292,13 +295,14 @@ class StreamingKMeans:
 
         return self
 
+
     # 转换 pca + minibatch kmeans 聚类 预测
     def predict_kmeans(
             self,
             atlas: Atlas,
-            cluster_table: str="obs_cluster",
+            use_cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
-            obs_col: str = "kmeans"
+            use_obs_col: str = "kmeans"
     ):
 
         """执行 ``predict_kmeans`` 的核心功能。
@@ -318,13 +322,13 @@ class StreamingKMeans:
             Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
             embedding 结果表。
 
-        cluster_table
+        use_cluster_table
             保存细胞聚类标签的数据库表名。
 
         write_to_obs
             是否将结果同步写入 ``obs`` 表。
 
-        obs_col
+        use_obs_col
             ``obs`` 中用于写入或读取结果的列名。
 
         Returns
@@ -346,9 +350,9 @@ class StreamingKMeans:
 
         conn = atlas.connection
 
-        conn.execute(f"DROP TABLE IF EXISTS {cluster_table}")
+        conn.execute(f"DROP TABLE IF EXISTS {use_cluster_table}")
         conn.execute(f"""
-            CREATE TABLE {cluster_table} (
+            CREATE TABLE {use_cluster_table} (
                 atlas_cell_id BIGINT,
                 cluster_id INTEGER
             )
@@ -357,10 +361,10 @@ class StreamingKMeans:
         # obs 中增加 kmeans 列
         if write_to_obs:
             obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-            if obs_col not in obs_cols:
-                conn.execute(f"ALTER TABLE obs ADD COLUMN {obs_col} INTEGER")
+            if use_obs_col not in obs_cols:
+                conn.execute(f"ALTER TABLE obs ADD COLUMN {use_obs_col} INTEGER")
             # 先清空旧结果
-            conn.execute(f"UPDATE obs SET {obs_col} = NULL")
+            conn.execute(f"UPDATE obs SET {use_obs_col} = NULL")
 
         # 读取 PCA components
         if self.components_ is None:
@@ -394,7 +398,7 @@ class StreamingKMeans:
             })
 
             # 写表
-            conn.append(cluster_table, batch_df)
+            conn.append(use_cluster_table, batch_df)
 
             # 同步写回 obs.kmeans
             if write_to_obs:
@@ -402,7 +406,7 @@ class StreamingKMeans:
 
                 conn.execute(f"""
                     UPDATE obs
-                    SET {obs_col} = t.cluster_id
+                    SET {use_obs_col} = t.cluster_id
                     FROM _kmeans_batch_tmp t
                     WHERE obs.atlas_cell_id = t.atlas_cell_id
                 """)
@@ -426,9 +430,9 @@ class StreamingKMeans:
         # check_df = conn.execute(f"""
         # SELECT
         #     (SELECT COUNT(*) FROM obs WHERE filter_cell_id IS NOT NULL) AS filtered_cell_n,
-        #     (SELECT COUNT(*) FROM {cluster_table}) AS cluster_n,
-        #     (SELECT COUNT(DISTINCT atlas_cell_id) FROM {cluster_table}) AS cluster_unique_n,
-        #     (SELECT COUNT(*) FROM obs WHERE {obs_col} IS NOT NULL) AS obs_labeled_n
+        #     (SELECT COUNT(*) FROM {use_cluster_table}) AS cluster_n,
+        #     (SELECT COUNT(DISTINCT atlas_cell_id) FROM {use_cluster_table}) AS cluster_unique_n,
+        #     (SELECT COUNT(*) FROM obs WHERE {use_obs_col} IS NOT NULL) AS obs_labeled_n
         # """).fetchdf()
         #
         # print(check_df)
@@ -437,6 +441,7 @@ class StreamingKMeans:
         self._write_centers(atlas, table_name="kmeans_centers")
 
         return self
+
 
     # 从数据库读取 PCA components，并恢复到 self.components_
     def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
@@ -494,13 +499,14 @@ class StreamingKMeans:
 
         return components_
 
+
     # 运行主函数
     def run(
             self,
             atlas: Atlas,
-            cluster_table: str="obs_cluster",
+            use_cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
-            obs_col: str = "kmeans"
+            use_obs_col: str = "kmeans"
     ):
         """训练并写入流式 KMeans 聚类结果。
 
@@ -517,13 +523,13 @@ class StreamingKMeans:
 
             要求数据库中已经存在 PCA loadings 表，并且过滤索引和 minibatch 读取流程可以正常使用。
 
-        cluster_table
+        use_cluster_table
             保存聚类结果的数据库表名。
 
         write_to_obs
             是否把聚类标签同步写入 ``obs`` 表。
 
-        obs_col
+        use_obs_col
             写入 ``obs`` 时使用的列名。
 
         Returns
@@ -535,7 +541,7 @@ class StreamingKMeans:
         --------
         运行完整 KMeans 流程：::
 
-            model.run(atlas, cluster_table="obs_cluster", obs_col="kmeans")
+            model.run(atlas, use_cluster_table="obs_cluster", use_obs_col="kmeans")
         """
 
         #  kmeans 训练
@@ -544,9 +550,9 @@ class StreamingKMeans:
         #  kmeans 转换
         self.predict_kmeans(
             atlas,
-            cluster_table=cluster_table,
+            use_cluster_table=use_cluster_table,
             write_to_obs=write_to_obs,
-            obs_col=obs_col
+            use_obs_col=use_obs_col
         )
 
         return self
@@ -560,8 +566,8 @@ def kmeans(
         batch_size: int = 2048,
         fit_batches: int = 1000,        # 指定 KMeans 训练阶段使用多少个 minibatch
         buffer_batch_num: int = 5,      # multi-pass 时 ShuffleBuffer 的 batch 数
-        obs_col: str = "kmeans",
-        cluster_table: str = "obs_cluster",
+        use_obs_col: str = "kmeans",
+        use_cluster_table: str = "obs_cluster",
         write_to_obs: bool = True,
 ):
 
@@ -570,7 +576,7 @@ def kmeans(
     该函数读取 ``varm_PCs`` 中保存的 PCA loadings，通过 Atlas minibatch 计算每批细胞的 PCA 坐标，并使用
     ``MiniBatchKMeans`` 进行流式训练和预测。
 
-    聚类标签可以写入独立的 ``cluster_table``，也可以同步写回 ``obs`` 表的 ``obs_col`` 列，供 UMAP
+    聚类标签可以写入独立的 ``use_cluster_table``，也可以同步写回 ``obs`` 表的 ``use_obs_col`` 列，供 UMAP
     和聚类大小图使用。
 
     Parameters
@@ -594,10 +600,10 @@ def kmeans(
     buffer_batch_num
         shuffle buffer 中缓存的 minibatch 数量。
 
-    obs_col
+    use_obs_col
         ``obs`` 中用于写入或读取结果的列名。
 
-    cluster_table
+    use_cluster_table
         保存细胞聚类标签的数据库表名。
 
     write_to_obs
@@ -647,9 +653,9 @@ def kmeans(
 
     runner.run(
         atlas,
-        cluster_table=cluster_table,
+        use_cluster_table=use_cluster_table,
         write_to_obs=write_to_obs,
-        obs_col=obs_col,
+        use_obs_col=use_obs_col,
     )
 
     t_end = time.time()

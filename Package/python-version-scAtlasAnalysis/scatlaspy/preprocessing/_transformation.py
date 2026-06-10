@@ -86,164 +86,14 @@ def _cleanup_transform_after_step(
         except Exception:
             pass
 
-'''normalize 法 1 ： 小内存 快速版 '''
-def normalize_total_fast(
-        atlas: Atlas,
-        target_sum: float = 10000,
-        chunk_ids: int = 50_000_000,
-        add_field: str = "data_normalize",
-        select_data: str = "data"
-) -> None:
 
-    """快速执行 total-count 归一化。
-
-    该函数在 DuckDB 中统计每个细胞的总表达量，计算 ``target_sum / total`` 缩放因子，并把归一化后的表达值写入
-    ``X_HyS_data`` 的新字段。
-
-    功能上类似 ``scanpy.pp.normalize_total``，但不会覆盖原始表达字段，便于在同一数据库中同时保留
-    raw、normalized 和 log-scale 表达。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    target_sum
-        归一化后每个细胞的目标总表达量。
-
-    chunk_ids
-        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
-
-    add_field
-        写入 ``X_HyS_data`` 的新表达字段名。
-
-    select_data
-        从 ``X_HyS_data`` 中读取的表达字段。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.normalize_total_fast(...)
-    """
-    print("==== normalize_total_streaming ====")
-    start = datetime.now()
-
-    conn = atlas.connection
-
-    # 0. 设置线程（可选）
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
-
-    # 1. 字段检查
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
-
-    # 2. 计算每个 cell 的总表达（只做一次）
-    print("Step 1: compute cell sums")
-
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _cell_sum AS
-        SELECT
-            atlas_cell_id,
-            SUM({select_data}) AS total
-        FROM X_HyS_data
-        GROUP BY atlas_cell_id
-        HAVING total > 0
-    """)
-
-    # 先删除源表中的旧列（保证 x.* 不冲突）
-    print("Step 1.5: drop old column in source table")
-
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
-    """)
-
-    # 3. 创建目标表（结构复制 + 新列）
-    print("Step 2: create target table")
-
-    conn.execute("""
-        CREATE OR REPLACE TABLE X_HyS_data_norm AS
-        SELECT * FROM X_HyS_data WHERE 1=0
-    """)
-
-    # 现在源表已经没有该列 → 可以安全添加
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data_norm
-        ADD COLUMN {add_field} REAL
-    """)
-
-    # 4. 获取 id 范围
-    min_id, max_id = conn.execute("""
-        SELECT MIN(id), MAX(id)
-        FROM X_HyS_data
-    """).fetchone()
-
-    if min_id is None:
-        print("X_HyS_data 为空，跳过")
-        return
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"Step 3: {n_chunks} chunks")
-
-    # 5. 分块 INSERT（保持 x.*）
-    for i in range(n_chunks):
-        start_id = min_id + i * chunk_ids
-        end_id = start_id + chunk_ids - 1
-
-        print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
-
-        conn.execute(f"""
-            INSERT INTO X_HyS_data_norm
-            SELECT
-                x.*,
-                x.{select_data} * {float(target_sum)} / s.total AS {add_field}
-            FROM X_HyS_data x
-            JOIN _cell_sum s
-              ON x.atlas_cell_id = s.atlas_cell_id
-            WHERE x.id BETWEEN {start_id} AND {end_id}
-            ORDER BY x.id
-        """)
-
-    # 6. 替换原表
-    print("Step 4: replace table")
-
-    conn.execute("DROP TABLE X_HyS_data")
-    conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
-    # 内存清理
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=["_cell_sum"],
-        checkpoint=True,
-        collect=True,
-    )
-
-    print("normalize_total_streaming 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-
-''' normalize 法 2 ： 大数据 安全版 '''
+''' normalize '''
 def normalize_total(
         atlas: Atlas,
         target_sum: float = 10000,
         chunk_cells: int = 500_000,  
-        add_field: str = "data_normalize",
-        select_data: str = "data"
+        add_data: str = "data_normalize",
+        use_data: str = "data"
 ) -> None:
 
     """执行 total-count 归一化。
@@ -264,10 +114,10 @@ def normalize_total(
     chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     Notes
@@ -296,18 +146,18 @@ def normalize_total(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 2. 删除源表旧 normalize 字段
     print("Step 1: drop old normalize column")
 
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
+        DROP COLUMN IF EXISTS {add_data}
     """)
 
     # 3. 创建目标表
@@ -322,7 +172,7 @@ def normalize_total(
 
     conn.execute(f"""
         ALTER TABLE X_HyS_data_norm
-        ADD COLUMN {add_field} REAL
+        ADD COLUMN {add_data} REAL
     """)
 
     # 4. 获取 cell_id 范围
@@ -356,7 +206,7 @@ def normalize_total(
             CREATE TEMP TABLE _cell_sum_chunk AS
             SELECT
                 atlas_cell_id,
-                SUM({select_data}) AS total
+                SUM({use_data}) AS total
             FROM X_HyS_data
             WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
             GROUP BY atlas_cell_id
@@ -368,7 +218,7 @@ def normalize_total(
             INSERT INTO X_HyS_data_norm
             SELECT
                 x.*,
-                x.{select_data} * {float(target_sum)} / s.total AS {add_field}
+                x.{use_data} * {float(target_sum)} / s.total AS {add_data}
             FROM X_HyS_data x
             JOIN _cell_sum_chunk s
               ON x.atlas_cell_id = s.atlas_cell_id
@@ -407,111 +257,12 @@ def normalize_total(
 #  data_normalize	     归一化后的data值
 
 
-''' normalize 法 3： 小内存 快速版，在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
-def normalize_total_scale_factor_fast(
-                    atlas: Atlas,
-                    target_sum: float = 10000,
-                    add_key: str = "scale_factor",
-                    select_data: str = "data" ) -> None:
-    """快速计算 total-count 归一化缩放因子。
-
-    该函数只计算每个细胞的 total-count scale factor，并写入 ``obs``，不直接修改 ``X_HyS_data`` 表达值。
-
-    当多个表达字段需要复用同一套归一化系数时，可以先计算 scale factor，再在后续步骤中引用。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    target_sum
-        归一化后每个细胞的目标总表达量。
-
-    add_key
-        写回 ``obs`` 或 ``var`` 的结果列名。
-
-    select_data
-        从 ``X_HyS_data`` 中读取的表达字段。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.normalize_total_scale_factor_fast(...)
-    """
-
-    print("==== normalize_total (scale_factor only) ====")
-    start = datetime.now()
-
-    conn = atlas.connection
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
-
-    # 0. 基本安全检查
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
-
-    # 1. 计算每个 cell 的 total
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _cell_sum AS
-        SELECT
-            atlas_cell_id,
-            SUM({select_data}) AS total
-        FROM X_HyS_data
-        GROUP BY atlas_cell_id
-        ORDER BY atlas_cell_id
-    """)
-
-    # 3. 在 obs 中写 scale_factor
-    conn.execute(f"""
-        ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS {add_key} REAL
-    """)
-
-    conn.execute(f"""
-        UPDATE obs
-        SET {add_key} =
-            CASE
-                WHEN s.total > 0
-                THEN {float(target_sum)} / s.total
-                ELSE 0
-            END
-        FROM _cell_sum AS s
-        WHERE obs.atlas_cell_id = s.atlas_cell_id
-    """)
-
-    # 内存清理
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=["_cell_sum"],
-        checkpoint=False,
-        collect=True,
-    )
-
-    print(f"normalize_total 完成，target_sum={target_sum}")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-
-''' normalize 法 4： 大数据 安全版，在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
+''' normalize 法 2：在 obs表上记录 scale_factor ， 等到使用的时候再计算 '''
 def normalize_total_scale_factor(
         atlas: Atlas,
         target_sum: float = 10000,
-        add_key: str = "scale_factor",
-        select_data: str = "data",
+        add_obs_col: str = "scale_factor",
+        use_data: str = "data",
         chunk_cells: int = 500_000,
 ) -> None:
     """计算 total-count 归一化缩放因子。
@@ -529,10 +280,10 @@ def normalize_total_scale_factor(
     target_sum
         归一化后每个细胞的目标总表达量。
 
-    add_key
-        写回 ``obs`` 或 ``var`` 的结果列名。
+    add_obs_col
+        写回 ``obs`` 的结果列名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     chunk_cells
@@ -564,22 +315,22 @@ def normalize_total_scale_factor(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 1. obs 添加 scale_factor 字段
     conn.execute(f"""
         ALTER TABLE obs
-        ADD COLUMN IF NOT EXISTS {add_key} REAL
+        ADD COLUMN IF NOT EXISTS {add_obs_col} REAL
     """)
 
     # 先初始化，避免空 cell 或未命中 cell 保留旧值
     conn.execute(f"""
         UPDATE obs
-        SET {add_key} = 0
+        SET {add_obs_col} = 0
     """)
 
     # 2. 获取 cell_id 范围
@@ -613,7 +364,7 @@ def normalize_total_scale_factor(
             CREATE TEMP TABLE _cell_sum_chunk AS
             SELECT
                 atlas_cell_id,
-                SUM({select_data}) AS total
+                SUM({use_data}) AS total
             FROM X_HyS_data
             WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
             GROUP BY atlas_cell_id
@@ -622,7 +373,7 @@ def normalize_total_scale_factor(
         # 只更新当前 chunk 对应 obs
         conn.execute(f"""
             UPDATE obs
-            SET {add_key} =
+            SET {add_obs_col} =
                 CASE
                     WHEN s.total > 0
                     THEN {float(target_sum)} / s.total
@@ -652,116 +403,18 @@ def normalize_total_scale_factor(
 #   scale_factor	     scale_factor，等到使用的时候在计算，data * scale_factor ，即可
 
 
-''' log1p 法 1 ： 小内存 快速版  '''
-def log1p_fast(
-            atlas: 'Atlas',
-            base: Optional[Number] = None,
-            add_field: str = "data_log1p",
-            select_data: str = "data_normalize" ) -> None:
-    """快速执行 log1p 转换。
-
-    该函数对 ``X_HyS_data`` 中指定表达字段执行 ``log(1 + x)``，并将结果写入新的表达字段。
-
-    常用于 total-count 归一化之后，为 PCA、HVG、UMAP feature plot 和 marker 可视化准备 log-scale
-    表达。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    base
-        对数或指数转换使用的底数；为 ``None`` 时使用自然底。
-
-    add_field
-        写入 ``X_HyS_data`` 的新表达字段名。
-
-    select_data
-        从 ``X_HyS_data`` 中读取的表达字段。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.log1p_fast(...)
-    """
-
-    logger.info("开始执行 log(1+x) 转换...")
-    print("==== log1p ====")
-    start = datetime.now()
-
-    try:
-        atlas.connection.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
-
-    conn = atlas.connection
-
-    # 0. 字段存在性检查
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
-
-    # 1. 构造 log1p 表达式
-    if base is None:
-        log_expr = f"ln(1.0 + {select_data})"
-    else:
-        log_expr = f"log({float(base)}, 1.0 + {select_data})"
-
-    if add_field is None:
-        raise ValueError("必须指定 add_field")
-
-    print(f"创建新字段 X_HyS_data.{add_field} ...")
-
-    # 2. 确保输出字段存在
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN IF NOT EXISTS {add_field} REAL
-    """)
-
-    # 3. 执行 log1p
-    conn.execute(f"""
-        UPDATE X_HyS_data
-        SET {add_field} = {log_expr}
-        WHERE {select_data} IS NOT NULL
-    """)
-
-    # 内存清理
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=[],
-        checkpoint=True,
-        collect=True,
-    )
-
-    # 4. 结束
-    print("log1p 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-
-''' log1p 法 2 ： 大数据 安全版 '''
+''' log1p '''
 def log1p(
                 atlas: 'Atlas',
                 base: Optional[Number] = None,
-                add_field: str = "data_log1p",
-                select_data: str = "data_normalize",
+                add_data: str = "data_log1p",
+                use_data: str = "data_normalize",
                 chunk_ids: int = 100_000_000) -> None:
     """执行 log1p 转换。
 
     该函数以 chunk 方式对表达字段执行 log1p 转换，适合在大表更新时控制单次 SQL 写入规模。
 
-    它不会删除原始表达字段，而是把结果写入 ``add_field``，方便比较不同转换结果。
+    它不会删除原始表达字段，而是把结果写入 ``add_data``，方便比较不同转换结果。
 
     Parameters
     ----------
@@ -772,10 +425,10 @@ def log1p(
     base
         对数或指数转换使用的底数；为 ``None`` 时使用自然底。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     chunk_ids
@@ -805,27 +458,27 @@ def log1p(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 1. 构造 log 表达式
     if base is None:
-        log_expr = f"ln(1.0 + {select_data})"
+        log_expr = f"ln(1.0 + {use_data})"
     else:
-        log_expr = f"log({float(base)}, 1.0 + {select_data})"
+        log_expr = f"log({float(base)}, 1.0 + {use_data})"
 
     # 2. 确保输出字段存在
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
+        DROP COLUMN IF EXISTS {add_data}
     """)
 
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        ADD COLUMN  {add_field} REAL
+        ADD COLUMN  {add_data} REAL
     """)
 
     # 3. 获取 id 范围
@@ -850,9 +503,9 @@ def log1p(
 
         conn.execute(f"""
             UPDATE X_HyS_data
-            SET {add_field} = {log_expr}
+            SET {add_data} = {log_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
-              AND {select_data} IS NOT NULL
+              AND {use_data} IS NOT NULL
         """)
 
     # 内存清理
@@ -877,8 +530,8 @@ def log1p(
 def expm1(
         atlas: 'Atlas',
         base: Optional[Number] = None,
-        add_field: str = "data_exp1",
-        select_data: str = "data_log1p",
+        add_data: str = "data_exp1",
+        use_data: str = "data_log1p",
         chunk_ids: int = 50_000_000 ) -> None:
     """执行 expm1 逆转换。
 
@@ -895,10 +548,10 @@ def expm1(
     base
         对数或指数转换使用的底数；为 ``None`` 时使用自然底。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     chunk_ids
@@ -931,27 +584,27 @@ def expm1(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 1. 构造 exp 表达式
     if base is None:
-        exp_expr = f"exp({select_data}) - 1.0"
+        exp_expr = f"exp({use_data}) - 1.0"
     else:
-        exp_expr = f"pow({float(base)}, {select_data}) - 1.0"
+        exp_expr = f"pow({float(base)}, {use_data}) - 1.0"
 
     # 2. 确保输出字段存在
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
+        DROP COLUMN IF EXISTS {add_data}
     """)
 
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        ADD COLUMN {add_field} REAL
+        ADD COLUMN {add_data} REAL
     """)
 
     # 3. 获取 id 范围
@@ -976,9 +629,9 @@ def expm1(
 
         conn.execute(f"""
             UPDATE X_HyS_data
-            SET {add_field} = {exp_expr}
+            SET {add_data} = {exp_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
-              AND {select_data} IS NOT NULL
+              AND {use_data} IS NOT NULL
         """)
 
     # 内存清理
@@ -1003,9 +656,9 @@ def expm1(
 def normalize_and_log1p(
             atlas: Atlas,
             target_sum: Optional[float] = 10000,
-            scale_key: str = "scale_factor",
-            add_field: str = "data_log1p",
-            select_data: str = "data",
+            use_obs_col: str = "scale_factor",
+            add_data: str = "data_log1p",
+            use_data: str = "data",
             base: Optional[Number] = None,
             chunk_ids: int = 50_000_000 ) -> None:
     """依次执行归一化和 log1p 转换。
@@ -1025,13 +678,13 @@ def normalize_and_log1p(
     target_sum
         归一化后每个细胞的目标总表达量。
 
-    scale_key
+    use_obs_col
         保存或读取归一化缩放因子的 ``obs`` 列名。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     base
@@ -1065,35 +718,35 @@ def normalize_and_log1p(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 1. 调用上面的函数 normalize_total → 计算 scale_factor
     normalize_total_scale_factor(
         atlas=atlas,
         target_sum=target_sum,
-        add_key=scale_key,
-        select_data=select_data,
+        add_obs_col=use_obs_col,
+        use_data=use_data,
     )
 
     # 2. 构造 log 表达式
     if base is None:
-        log_expr = f"ln(1.0 + x.{select_data} * o.{scale_key})"
+        log_expr = f"ln(1.0 + x.{use_data} * o.{use_obs_col})"
     else:
-        log_expr = f"log({float(base)}, 1.0 + x.{select_data} * o.{scale_key})"
+        log_expr = f"log({float(base)}, 1.0 + x.{use_data} * o.{use_obs_col})"
 
     # 3. 准备输出字段
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
+        DROP COLUMN IF EXISTS {add_data}
     """)
 
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        ADD COLUMN {add_field} REAL
+        ADD COLUMN {add_data} REAL
     """)
 
     # 4. 获取 X_HyS_data.id 范围
@@ -1118,7 +771,7 @@ def normalize_and_log1p(
 
         conn.execute(f"""
             UPDATE X_HyS_data AS x
-            SET {add_field} = {log_expr}
+            SET {add_data} = {log_expr}
             FROM obs AS o
             WHERE x.atlas_cell_id = o.atlas_cell_id
               AND x.id BETWEEN {start_id} AND {end_id}
@@ -1147,8 +800,8 @@ def highly_variable_genes(
         atlas: Atlas,
         flavor: Literal["seurat", "cv", "var"] = "seurat",
         n_top_genes: int = 2000,
-        add_key: str = "highly_variable_genes",
-        select_data: str = "data_log1p",
+        add_var_col: str = "highly_variable_genes",
+        use_data: str = "data_log1p",
         n_bins: int = 20,
         min_mean: float = 0.0125,
         max_mean: float = 3.0,
@@ -1178,10 +831,10 @@ def highly_variable_genes(
     n_top_genes
         需要选择的高变基因数量。
 
-    add_key
+    add_var_col
         写入 ``var`` 表的布尔标记字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     n_bins
@@ -1223,16 +876,16 @@ def highly_variable_genes(
             atlas=atlas,
             flavor=flavor,
             n_top_genes=n_top_genes,
-            add_key=add_key,
-            select_data=select_data,
+            add_var_col=add_var_col,
+            use_data=use_data,
         )
 
     elif flavor == "seurat":
         return _highly_variable_genes_seurat(
             atlas=atlas,
             n_top_genes=n_top_genes,
-            add_key=add_key,
-            select_data=select_data,
+            add_var_col=add_var_col,
+            use_data=use_data,
             n_bins=n_bins,
             min_mean=min_mean,
             max_mean=max_mean,
@@ -1254,14 +907,14 @@ def _highly_variable_genes_basic(
                         atlas: Atlas,
                         flavor: Literal["var", "cv"] = "cv",
                         n_top_genes: int = 2000,
-                        add_key: str = "highly_variable_genes",
-                        select_data: str = "data_log1p"
+                        add_var_col: str = "highly_variable_genes",
+                        use_data: str = "data_log1p"
                     ) -> None:
     """识别高变基因。
 
     该函数在数据库中按基因计算均值、方差、标准差、非零数量和变异性得分，并按 ``n_top_genes`` 选择高变基因。
 
-    结果写入 ``var`` 表中的 ``add_key`` 以及相关统计字段，可供 ``build_read_index``、PCA 和 scale
+    结果写入 ``var`` 表中的 ``add_var_col`` 以及相关统计字段，可供 ``build_read_index``、PCA 和 scale
     步骤使用。
 
     Parameters
@@ -1276,10 +929,10 @@ def _highly_variable_genes_basic(
     n_top_genes
         需要选择的高变基因数量。
 
-    add_key
+    add_var_col
         写回 ``obs`` 或 ``var`` 的结果列名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     Notes
@@ -1307,11 +960,11 @@ def _highly_variable_genes_basic(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 确保 var 表有可复用统计列
     conn.execute("""
@@ -1352,10 +1005,10 @@ def _highly_variable_genes_basic(
             SELECT
                 atlas_gene_id,
                 COUNT(*) AS nnz,
-                SUM({select_data}) AS sum_x,
-                SUM(({select_data}) * ({select_data})) AS sum_x2
+                SUM({use_data}) AS sum_x,
+                SUM(({use_data}) * ({use_data})) AS sum_x2
             FROM X_HyS_data
-            WHERE {select_data} IS NOT NULL
+            WHERE {use_data} IS NOT NULL
             GROUP BY atlas_gene_id
         )
         SELECT
@@ -1449,21 +1102,21 @@ def _highly_variable_genes_basic(
         """)
 
     # 在 var 表中写入布尔结果
-    print(f"Step 3: 写入 var.{add_key}")
+    print(f"Step 3: 写入 var.{add_var_col}")
 
     conn.execute(f"""
         ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS {add_key} BOOLEAN
+        ADD COLUMN IF NOT EXISTS {add_var_col} BOOLEAN
     """)
 
     conn.execute(f"""
         UPDATE var
-        SET {add_key} = FALSE
+        SET {add_var_col} = FALSE
     """)
 
     conn.execute(f"""
         UPDATE var
-        SET {add_key} = TRUE
+        SET {add_var_col} = TRUE
         FROM _hvg
         WHERE var.atlas_gene_id = _hvg.atlas_gene_id
     """)
@@ -1485,12 +1138,12 @@ def _highly_variable_genes_basic(
 #     新增字段	                     含义
 #   highly_variable_genes	     对 n_top_genes 标记为true
 
-''' HVG - seurat '''
+
 def _highly_variable_genes_seurat(
         atlas: Atlas,
         n_top_genes: int = 2000,
-        add_key: str = "highly_variable_genes",
-        select_data: str = "data_log1p",
+        add_var_col: str = "highly_variable_genes",
+        use_data: str = "data_log1p",
         n_bins: int = 20,
         min_mean: float = 0.0125,
         max_mean: float = 3.0,
@@ -1518,10 +1171,10 @@ def _highly_variable_genes_seurat(
     n_top_genes
         需要选择的高变基因数量。
 
-    add_key
+    add_var_col
         写回 ``obs`` 或 ``var`` 的结果列名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     n_bins
@@ -1623,17 +1276,17 @@ def _highly_variable_genes_seurat(
             raise ValueError(f"数据库中不存在表: {table_name}")
 
     # -------------------------------------------------
-    # 2. 检查 select_data 字段
+    # 2. 检查 use_data 字段
     # -------------------------------------------------
     col_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
           AND column_name = ?
-    """, [select_data]).fetchone()[0]
+    """, [use_data]).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # -------------------------------------------------
     # 3. 检查 filter 字段是否存在
@@ -1726,7 +1379,7 @@ def _highly_variable_genes_seurat(
 
     print(f"[INFO] HVG cells = {n_cells:,}")
     print(f"[INFO] HVG genes = {n_genes:,}")
-    print(f"[INFO] select_data = {select_data}")
+    print(f"[INFO] use_data = {use_data}")
 
     # -------------------------------------------------
     # 5. SQL 聚合 gene-level sum / sumsq
@@ -1735,7 +1388,7 @@ def _highly_variable_genes_seurat(
     # 内部先 expm1(x)。
     #
     # 所以这里:
-    #     x_raw = EXP(select_data) - 1
+    #     x_raw = EXP(use_data) - 1
     #
     # 然后全细胞含 0 统计：
     #     sum_x
@@ -1753,13 +1406,13 @@ def _highly_variable_genes_seurat(
         FROM (
             SELECT
                 x.atlas_gene_id,
-                EXP(x.{_q(select_data)}) - 1.0 AS x_raw
+                EXP(x.{_q(use_data)}) - 1.0 AS x_raw
             FROM X_HyS_data AS x
             JOIN _hvg_obs_keep AS o
               ON x.atlas_cell_id = o.atlas_cell_id
             JOIN _hvg_var_keep AS v
               ON x.atlas_gene_id = v.atlas_gene_id
-            WHERE x.{_q(select_data)} IS NOT NULL
+            WHERE x.{_q(use_data)} IS NOT NULL
         ) AS t
         GROUP BY atlas_gene_id
     """)
@@ -1893,7 +1546,7 @@ def _highly_variable_genes_seurat(
     print("Step 5: 选择 highly variable genes")
 
     work["highly_variable_rank"] = np.nan
-    work[add_key] = False
+    work[add_var_col] = False
 
     if n_top_genes is not None:
         valid_score = work["dispersions_norm"].replace([np.inf, -np.inf], np.nan)
@@ -1920,7 +1573,7 @@ def _highly_variable_genes_seurat(
         ))
 
         work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
-        work[add_key] = work["atlas_gene_id"].isin(top_ids)
+        work[add_var_col] = work["atlas_gene_id"].isin(top_ids)
 
         print(f"[INFO] n_top_genes={n_top_genes}，cutoffs 已忽略")
 
@@ -1936,7 +1589,7 @@ def _highly_variable_genes_seurat(
             & (score_for_cutoff < float(max_disp))
         )
 
-        work[add_key] = hv_mask.to_numpy()
+        work[add_var_col] = hv_mask.to_numpy()
 
         rank_df = work.loc[score.notna()].copy()
         rank_df = rank_df.sort_values(
@@ -1972,7 +1625,7 @@ def _highly_variable_genes_seurat(
                 "dispersions",
                 "dispersions_norm",
                 "highly_variable_rank",
-                add_key,
+                add_var_col,
             ]
             if c in gene_df.columns
         ],
@@ -1986,15 +1639,15 @@ def _highly_variable_genes_seurat(
             "dispersions",
             "dispersions_norm",
             "highly_variable_rank",
-            add_key,
+            add_var_col,
         ]],
         on="atlas_gene_id",
         how="left",
     )
 
-    gene_df[add_key] = gene_df[add_key].fillna(False).astype(bool)
+    gene_df[add_var_col] = gene_df[add_var_col].fillna(False).astype(bool)
 
-    hvg_count = int(gene_df[add_key].sum())
+    hvg_count = int(gene_df[add_var_col].sum())
     print(f"[INFO] selected HVGs = {hvg_count:,}")
 
     # -------------------------------------------------
@@ -2005,7 +1658,7 @@ def _highly_variable_genes_seurat(
 
         conn.execute(f"""
             ALTER TABLE var
-            ADD COLUMN IF NOT EXISTS {_q(add_key)} BOOLEAN
+            ADD COLUMN IF NOT EXISTS {_q(add_var_col)} BOOLEAN
         """)
 
         conn.execute("""
@@ -2030,7 +1683,7 @@ def _highly_variable_genes_seurat(
 
         write_df = gene_df[[
             "atlas_gene_id",
-            add_key,
+            add_var_col,
             "highly_variable_rank",
             "means",
             "dispersions",
@@ -2041,7 +1694,7 @@ def _highly_variable_genes_seurat(
         conn.execute(f"""
             UPDATE var
             SET
-                {_q(add_key)} = FALSE,
+                {_q(add_var_col)} = FALSE,
                 highly_variable_rank = NULL,
                 means = NULL,
                 dispersions = NULL,
@@ -2053,7 +1706,7 @@ def _highly_variable_genes_seurat(
         conn.execute(f"""
             UPDATE var AS v
             SET
-                {_q(add_key)} = p.{_q(add_key)},
+                {_q(add_var_col)} = p.{_q(add_var_col)},
                 highly_variable_rank = p.highly_variable_rank,
                 means = p.means,
                 dispersions = p.dispersions,
@@ -2105,12 +1758,12 @@ def _highly_variable_genes_seurat(
         return gene_df
 
 
-''' scale  法 1 ： 大数据，安全版 '''
+''' scale '''
 def scale(
         atlas: Atlas,
-        select_data: str = "data_log1p",
-        add_field: str = "data_scale",
-        add_field_to_var: str = "zero_scale_transform",
+        use_data: str = "data_log1p",
+        add_data: str = "data_scale",
+        add_var_col: str = "zero_scale_transform",
         max_value: float = 10.0,
         use_hvg: bool = True,
         hvg_key: str = "highly_variable_genes",
@@ -2129,13 +1782,13 @@ def scale(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    add_field_to_var
+    add_var_col
         写入 ``var`` 表的辅助统计列名。
 
     max_value
@@ -2178,9 +1831,9 @@ def scale(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
     """).fetchone()[0] == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     if conn.execute("""
         SELECT COUNT(*)
@@ -2199,11 +1852,11 @@ def scale(
         raise ValueError("X_HyS_data 中不存在 atlas_gene_id 字段")
 
     # 2. 输出字段准备
-    conn.execute(f""" ALTER TABLE X_HyS_data DROP COLUMN IF EXISTS {add_field} """)
-    conn.execute(f""" ALTER TABLE X_HyS_data ADD COLUMN IF NOT EXISTS {add_field} REAL """)
+    conn.execute(f""" ALTER TABLE X_HyS_data DROP COLUMN IF EXISTS {add_data} """)
+    conn.execute(f""" ALTER TABLE X_HyS_data ADD COLUMN IF NOT EXISTS {add_data} REAL """)
 
-    conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_field_to_var} """)
-    conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL """)
+    conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_var_col} """)
+    conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_var_col} REAL """)
 
     # 3. 准备目标 gene 集合
     print("-> 准备 target genes ...")
@@ -2257,12 +1910,12 @@ def scale(
         SELECT
             x.atlas_gene_id,
 
-            SUM(x.{select_data}) / {n_cells} AS mean,
+            SUM(x.{use_data}) / {n_cells} AS mean,
 
             SQRT(
                 GREATEST(
-                    SUM(x.{select_data} * x.{select_data}) / {n_cells}
-                    - POWER(SUM(x.{select_data}) / {n_cells}, 2),
+                    SUM(x.{use_data} * x.{use_data}) / {n_cells}
+                    - POWER(SUM(x.{use_data}) / {n_cells}, 2),
                     0.0
                 )
             ) AS std
@@ -2270,7 +1923,7 @@ def scale(
         FROM X_HyS_data x
         JOIN _target_genes t
           ON x.atlas_gene_id = t.atlas_gene_id
-        WHERE x.{select_data} IS NOT NULL
+        WHERE x.{use_data} IS NOT NULL
         GROUP BY x.atlas_gene_id
     """)
 
@@ -2286,7 +1939,7 @@ def scale(
     try:
         conn.execute(f"""
             UPDATE var v
-            SET {add_field_to_var} =
+            SET {add_var_col} =
                 CASE
                     WHEN g.std > 0 THEN
                         LEAST(
@@ -2347,14 +2000,14 @@ def scale(
             # 对显式存储的非零值写入 z-score
             conn.execute(f"""
                 UPDATE X_HyS_data x
-                SET {add_field} =
+                SET {add_data} =
                     CASE
                         WHEN g.std > 0 THEN
                             LEAST(
                                 {float(max_value)},
                                 GREATEST(
                                     -{float(max_value)},
-                                    (x.{select_data} - g.mean) / g.std
+                                    (x.{use_data} - g.mean) / g.std
                                 )
                             )
                         ELSE 0
@@ -2362,7 +2015,7 @@ def scale(
                 FROM _gene_stat g
                 WHERE x.atlas_gene_id = g.atlas_gene_id
                   AND x.id BETWEEN {chunk_start} AND {chunk_end}
-                  AND x.{select_data} IS NOT NULL
+                  AND x.{use_data} IS NOT NULL
             """)
 
             conn.execute("COMMIT")
@@ -2402,208 +2055,6 @@ def scale(
         (datetime.now() - start_all).total_seconds()
     ))
 
-
-''' scale_fast 法 2 ： 小内存 快速版   '''
-def scale_fast(
-        atlas: Atlas,
-        select_data: str = "data_log1p",
-        add_field: str = "data_scale",
-        add_field_to_var: str = "zero_scale_transform",
-        max_value: float = 10.0,
-        use_hvg: bool = True,
-        hvg_key: str = "highly_variable_genes"):
-    """快速对表达矩阵进行基因级标准化缩放。
-
-    该函数使用 DuckDB 聚合和批量 UPDATE 计算标准化表达，比逐 chunk 版本更直接。
-
-    它适合已经准备好 HVG 标记和表达字段的大数据预处理流程。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    select_data
-        从 ``X_HyS_data`` 中读取的表达字段。
-
-    add_field
-        写入 ``X_HyS_data`` 的新表达字段名。
-
-    add_field_to_var
-        写入 ``var`` 表的辅助统计列名。
-
-    max_value
-        标准化后允许的最大绝对值；用于截断极端 z-score。
-
-    use_hvg
-        是否只处理高变基因。
-
-    hvg_key
-        ``var`` 中表示高变基因的布尔列名。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.scale_fast(...)
-    """
-
-    print("\n==== scale_ultra (zero-aware industrial OLAP optimized) ====")
-    start_all = datetime.now()
-    conn = atlas.connection
-
-    # 0. 并行
-    try:
-        n_threads = os.cpu_count()
-        conn.execute(f"PRAGMA threads={n_threads}")
-        print(f"-> DuckDB threads = {n_threads}")
-    except Exception:
-        pass
-
-    # 1. 输入字段检查
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name='X_HyS_data'
-          AND column_name='{select_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
-
-    # 2. 输出字段准备
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN IF NOT EXISTS {add_field} REAL
-    """)
-    conn.execute(f"""
-        ALTER TABLE var
-        ADD COLUMN IF NOT EXISTS {add_field_to_var} REAL
-    """)
-
-    # 3. gene 列表
-    if use_hvg:
-        print("-> 使用 HVG gene 子集")
-        gene_ids = conn.execute(f"""
-            SELECT atlas_gene_id
-            FROM var
-            WHERE {hvg_key} = TRUE
-            ORDER BY atlas_gene_id
-        """).fetchall()
-    else:
-        gene_ids = conn.execute("""
-            SELECT atlas_gene_id
-            FROM var
-            ORDER BY atlas_gene_id
-        """).fetchall()
-
-    gene_ids = [g[0] for g in gene_ids]
-    n_genes = len(gene_ids)
-    if n_genes == 0:
-        print("无 gene，退出")
-        return
-
-    print(f"-> Total genes: {n_genes}")
-
-    gene_list_sql = ",".join(map(str, gene_ids))
-
-    # 获取总细胞数，用于含 0 统计
-    n_cells = conn.execute("""
-        SELECT COUNT(*) FROM obs
-    """).fetchone()[0]
-
-    if n_cells == 0:
-        raise ValueError("obs 为空，无法计算 scale")
-
-    print(f"-> Total cells for zero-aware scaling: {n_cells:,}")
-
-    # 4. 计算 gene-wise 统计 + 线性化系数 a,b；AVG/STDDEV_POP 改成含 0 公式
-    print("-> 计算 gene-wise mean/std -> a,b（含 0 统计）")
-
-    conn.execute(f"""
-        CREATE OR REPLACE TEMP TABLE _gene_stat AS
-        WITH gene_sum AS (
-            SELECT
-                atlas_gene_id,
-                SUM({select_data}) AS sum_x,
-                SUM({select_data} * {select_data}) AS sum_x2
-            FROM X_HyS_data
-            WHERE atlas_gene_id IN ({gene_list_sql})
-              AND {select_data} IS NOT NULL
-            GROUP BY atlas_gene_id
-        ),
-        gene_stat AS (
-            SELECT
-                atlas_gene_id,
-                sum_x / {n_cells} AS mean,
-                SQRT(
-                    GREATEST(
-                        sum_x2 / {n_cells}
-                        - POWER(sum_x / {n_cells}, 2),
-                        0.0
-                    )
-                ) AS std
-            FROM gene_sum
-        )
-        SELECT
-            atlas_gene_id,
-            mean,
-            std,
-            CASE WHEN std > 0
-                 THEN 1.0 / std
-                 ELSE 0
-            END AS a,
-            CASE WHEN std > 0
-                 THEN -mean / std
-                 ELSE 0
-            END AS b
-        FROM gene_stat
-    """)
-
-    # 5. 直接 UPDATE X_HyS_data
-    print("-> 直接应用线性化 z-score + clip")
-    conn.execute(f"""
-        UPDATE X_HyS_data x
-        SET {add_field} = 
-            LEAST(
-                {float(max_value)},
-                GREATEST(
-                    -{float(max_value)},
-                    g.a * x.{select_data} + g.b
-                )
-            )
-        FROM _gene_stat g
-        WHERE x.atlas_gene_id = g.atlas_gene_id
-          AND x.{select_data} IS NOT NULL
-    """)
-
-    # 6. 更新 var 表 zero_scale_transform
-    print("-> 更新 var zero_scale_transform")
-    conn.execute(f"""
-        UPDATE var v
-        SET {add_field_to_var} = g.b
-        FROM _gene_stat g
-        WHERE v.atlas_gene_id = g.atlas_gene_id
-    """)
-
-    # 内存清理
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=["_gene_stat"],
-        checkpoint=True,
-        collect=True,
-    )
-
-    print("\n==== scale_ultra zero-aware 完成 ====")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start_all).total_seconds()))
-
-
-
 # 运行结果
 #   X_HyS_data 表
 #     新增字段	                     含义
@@ -2612,113 +2063,11 @@ def scale_fast(
 #   zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
 
 
-''' sqrt 法 1 ： 小内存，快速版 '''
-def sqrt_fast(
-    atlas: "Atlas",
-    add_field: str = "data_sqrt",
-    select_data: str = "data") -> None:
-    """快速执行平方根转换。
-
-    该函数对指定表达字段执行平方根转换，并把结果写入 ``X_HyS_data`` 的新字段。
-
-    平方根转换可作为 count 数据的轻量方差稳定化方法，用于探索性分析或特定模型输入。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
-    add_field
-        写入 ``X_HyS_data`` 的新表达字段名。
-
-    select_data
-        从 ``X_HyS_data`` 中读取的表达字段。
-
-    Notes
-    -----
-    该函数会把结果写回 Atlas 数据库；如果后续需要只使用过滤后的细胞或基因，通常还需要重建过滤索引。
-
-    Examples
-    --------
-    调用该函数：::
-
-        sap.pp.sqrt_fast(...)
-    """
-
-    logger.info("开始执行 sqrt(x) 转换...")
-    print("==== sqrt ====")
-    start = datetime.now()
-
-    try:
-        atlas.connection.execute(f"PRAGMA threads={os.cpu_count()}")
-    except Exception:
-        pass
-
-    conn = atlas.connection
-
-    # 0. 字段存在性检查（防止 silent bug）
-    col_exists = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
-        """
-    ).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
-
-    if add_field is None:
-        raise ValueError("必须指定 add_field")
-
-    print(f"创建 / 使用字段 X_HyS_data.{add_field} ...")
-
-    # 1. 构造 sqrt 表达式（不处理 0）
-    sqrt_expr = f"sqrt({select_data})"
-
-    # 2. 确保输出字段存在
-
-    # 先删除旧列，避免旧值残留
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
-    """)
-
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN {add_field} REAL
-    """)
-
-    # 3. 执行 sqrt
-    conn.execute(
-        f"""
-        UPDATE X_HyS_data
-        SET {add_field} = {sqrt_expr}
-        WHERE {select_data} IS NOT NULL
-        """
-    )
-
-    # 内存清理
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=[],
-        checkpoint=True,
-        collect=True,
-    )
-
-    # 4. 结束
-    elapsed = (datetime.now() - start).total_seconds()
-    print("sqrt 转换完成")
-    print(f"耗时: {elapsed:.2f} 秒")
-
-
-''' sqrt  法 3 ： 大数据，安全版 '''
+''' sqrt '''
 def sqrt(
     atlas: "Atlas",
-    add_field: str = "data_sqrt",
-    select_data: str = "data",
+    add_data: str = "data_sqrt",
+    use_data: str = "data",
     chunk_ids: int = 100_000_000) -> None:
     """执行平方根转换。
 
@@ -2732,10 +2081,10 @@ def sqrt(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    add_field
+    add_data
         写入 ``X_HyS_data`` 的新表达字段名。
 
-    select_data
+    use_data
         从 ``X_HyS_data`` 中读取的表达字段。
 
     chunk_ids
@@ -2769,30 +2118,30 @@ def sqrt(
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
-          AND column_name = '{select_data}'
+          AND column_name = '{use_data}'
         """
     ).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {select_data}")
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
-    if add_field is None:
-        raise ValueError("必须指定 add_field")
+    if add_data is None:
+        raise ValueError("必须指定 add_data")
 
     # 1. 构造 sqrt 表达式（不处理 0）
-    sqrt_expr = f"sqrt({select_data})"
+    sqrt_expr = f"sqrt({use_data})"
 
     # 2. 确保输出字段存在
     # 先删旧列
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_field}
+        DROP COLUMN IF EXISTS {add_data}
     """)
 
     # 重新添加 REAL 字段
     conn.execute(f"""
         ALTER TABLE X_HyS_data
-        ADD COLUMN {add_field} REAL
+        ADD COLUMN {add_data} REAL
     """)
 
     # 3. 获取 id 范围
@@ -2820,9 +2169,9 @@ def sqrt(
         conn.execute(
             f"""
             UPDATE X_HyS_data
-            SET {add_field} = {sqrt_expr}
+            SET {add_data} = {sqrt_expr}
             WHERE id BETWEEN {start_id} AND {end_id}
-              AND {select_data} IS NOT NULL
+              AND {use_data} IS NOT NULL
             """
         )
 

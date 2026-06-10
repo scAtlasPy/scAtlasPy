@@ -6,7 +6,7 @@ from ..data import Atlas
 # KMeans 聚类结果图,看数量（cluster 大小）
 def kmeans_cluster_size(
         atlas: Atlas,
-        obs_col: str = "kmeans",
+        use_obs_col: str = "kmeans",
         figsize: tuple[float, float] | None=(7, 4),
         show_percent: bool = True,
         title: str | None = None
@@ -24,7 +24,7 @@ def kmeans_cluster_size(
         Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
         embedding 结果表。
 
-    obs_col
+    use_obs_col
         ``obs`` 中用于写入或读取结果的列名。
 
     figsize
@@ -57,26 +57,26 @@ def kmeans_cluster_size(
 
     # 检查 obs 中是否存在 kmeans 列
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-    if obs_col not in obs_cols:
+    if use_obs_col not in obs_cols:
         raise ValueError(
-            f"obs 中不存在列: {obs_col}\n"
-            f"请先运行 sap.tl.kmeans(atlas, obs_col='{obs_col}')"
+            f"obs 中不存在列: {use_obs_col}\n"
+            f"请先运行 sap.tl.kmeans(atlas, use_obs_col='{use_obs_col}')"
         )
 
     # 统计 cluster 数量
     df = conn.execute(f"""
         SELECT
-            {obs_col} AS cluster,
+            {use_obs_col} AS cluster,
             COUNT(*) AS n_cells
         FROM obs
-        WHERE {obs_col} IS NOT NULL
-        GROUP BY {obs_col}
-        ORDER BY {obs_col}
+        WHERE {use_obs_col} IS NOT NULL
+        GROUP BY {use_obs_col}
+        ORDER BY {use_obs_col}
     """).fetchdf()
 
     if len(df) == 0:
         raise ValueError(
-            f"obs.{obs_col} 中没有可用聚类结果。\n"
+            f"obs.{use_obs_col} 中没有可用聚类结果。\n"
             f"请先运行 sap.tl.kmeans(atlas)"
         )
 
@@ -99,7 +99,7 @@ def kmeans_cluster_size(
     ax.set_ylabel("Percent of cells (%)" if show_percent else "Number of cells", fontsize=13)
 
     if title is None:
-        title = f"{obs_col} cluster distribution"
+        title = f"{use_obs_col} cluster distribution"
 
     ax.set_title(title, fontsize=14, pad=10)
 
