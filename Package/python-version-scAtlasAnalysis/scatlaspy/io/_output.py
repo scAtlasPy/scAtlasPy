@@ -1,13 +1,18 @@
 from __future__ import annotations
-import numpy as np
-import pandas as pd
 import h5py
 from tqdm import tqdm
+import numpy as np
+import pandas as pd
+from scipy import sparse
+from anndata import AnnData
+from datetime import datetime
 from os import PathLike, fspath
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
     from ..data import Atlas
-
+import logging
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
 
 ''' 数据导出: 把数据直接变成文件'''
 def write_h5ad(
@@ -46,12 +51,13 @@ def write_h5ad(
         sap.io.write_h5ad(...)
     """
 
+    start_time = datetime.now()
+
     out_h5ad_path = fspath(out_h5ad_path)
 
     conn = atlas.connection
 
     # 读取 obs / var
-    print("[EXPORT] 读取 obs / var")
 
     obs = conn.execute("SELECT * FROM obs ORDER BY atlas_cell_id").df()
     var = conn.execute("SELECT * FROM var ORDER BY atlas_gene_id").df()
@@ -62,11 +68,7 @@ def write_h5ad(
     n_cells = obs.shape[0]
     n_genes = var.shape[0]
 
-    print(f"[EXPORT] cells={n_cells:,}, genes={n_genes:,}")
-
     # 读取 CSR indptr
-    print("[EXPORT] 读取 CSR indptr")
-
     indptr_df = conn.execute("""
         SELECT indptr
         FROM X_HyS_indptr
@@ -78,19 +80,13 @@ def write_h5ad(
     indptr[1:] = indptr_df["indptr"].to_numpy(dtype=np.int64)
 
     nnz = int(indptr[-1])
-    print(f"[EXPORT] nnz={nnz:,}")
 
     # 创建 h5ad 文件
-    print(f"[EXPORT] 创建 h5ad → {out_h5ad_path}")
-
     with h5py.File(out_h5ad_path, "w") as f:
 
         # ---------- 根节点属性 ----------
         f.attrs["encoding-type"] = "anndata"
         f.attrs["encoding-version"] = "0.1.0"
-
-        # 写 X (CSR, streaming)
-        print("[EXPORT] 写 X (CSR streaming)")
 
         gX = f.create_group("X")
 
@@ -120,7 +116,7 @@ def write_h5ad(
 
         for start in tqdm(
             range(0, nnz, batch_cells),
-            desc="CSR data"
+            desc="导出进度"
         ):
             end = min(start + batch_cells, nnz)
 
@@ -146,14 +142,8 @@ def write_h5ad(
 
         assert offset == nnz, f"nnz mismatch: {offset} != {nnz}"
 
-        # 写 obs / var
-        print("[EXPORT] 写 obs / var")
-
         _write_dataframe(f, "obs", obs)
         _write_dataframe(f, "var", var)
-
-        # 写 obsm
-        print("[EXPORT] 写 obsm")
 
         g_obsm = f.create_group("obsm")
 
@@ -173,11 +163,6 @@ def write_h5ad(
             df = df.drop(columns=["atlas_cell_id"])
             g_obsm.create_dataset(key, data=df.to_numpy())
 
-            print(f"  - obsm[{key}] {df.shape}")
-
-        # 写 varm
-        print("[EXPORT] 写 varm")
-
         g_varm = f.create_group("varm")
 
         for (table_name,) in conn.execute("""
@@ -196,9 +181,7 @@ def write_h5ad(
             df = df.drop(columns=["atlas_gene_id"])
             g_varm.create_dataset(key, data=df.to_numpy())
 
-            print(f"  - varm[{key}] {df.shape}")
-
-    print("导出完成")
+    print(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 
 # 写 AnnData 到 h5ad
@@ -311,6 +294,8 @@ def get_obs_df(
         sap.io.get_obs_df(...)
     """
 
+    start_time = datetime.now()
+
     conn = atlas.connection
 
     if conn is None:
@@ -371,6 +356,8 @@ def get_obs_df(
     # 5. 默认 atlas_cell_id 作为 pandas index
     df = df.set_index("atlas_cell_id", drop=False)
 
+    print(f" get_obs_df Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+
     return df
 
 
@@ -422,10 +409,7 @@ def get_anndata(
         sap.io.get_anndata(...)
     """
 
-    import numpy as np
-    import pandas as pd
-    from scipy import sparse
-    from anndata import AnnData
+
 
     conn = atlas.connection
 
@@ -458,7 +442,7 @@ def get_anndata(
             对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
 
         Returns
--------
+        -------
         quoted_name
             加双引号后的 SQL 标识符。
 
@@ -482,10 +466,6 @@ def get_anndata(
     if x_field_exists == 0:
         raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
-    print("==== get_anndata ====")
-    print(f"[INFO] selected cells = {len(atlas_cell_ids):,}")
-    print(f"[INFO] use_data = {use_data}")
-
     # 1. 创建临时 selected cell 表，保留用户输入顺序
     selected_df = pd.DataFrame({
         "atlas_cell_id": atlas_cell_ids,
@@ -505,8 +485,6 @@ def get_anndata(
     conn.unregister("_selected_cells_df")
 
     # 2. 读取 obs 子集
-    print("[EXPORT] 读取 obs 子集")
-
     obs = conn.execute("""
         SELECT o.*
         FROM obs AS o
@@ -529,9 +507,6 @@ def get_anndata(
     obs = obs.set_index("atlas_cell_name", drop=False)
     obs.index = obs.index.astype(str)
 
-    # 3. 读取 var 全集
-    print("[EXPORT] 读取 var 全集")
-
     var = conn.execute("""
         SELECT *
         FROM var
@@ -550,11 +525,7 @@ def get_anndata(
     n_cells = obs.shape[0]
     n_genes = var.shape[0]
 
-    print(f"[EXPORT] AnnData shape = {n_cells:,} × {n_genes:,}")
-
     # 4. 读取 X 子集，并组装 CSR
-    print("[EXPORT] 读取 X 子集并构建 CSR")
-
     x_sql = f"""
         SELECT
             s._cell_order AS row_id,
@@ -586,8 +557,6 @@ def get_anndata(
         X.sort_indices()
         nnz = X.nnz
 
-    print(f"[EXPORT] X nnz = {nnz:,}")
-
     # 5. 创建 AnnData
     adata = AnnData(
         X=X,
@@ -597,7 +566,6 @@ def get_anndata(
 
     # 6. 读取 obsm 子集
     if include_obsm:
-        print("[EXPORT] 读取 obsm 子集")
 
         obsm_tables = conn.execute("""
             SELECT table_name
@@ -618,8 +586,8 @@ def get_anndata(
             """).df()
 
             if df.shape[0] != n_cells:
-                print(
-                    f"  ⚠️ 跳过 obsm[{key}]："
+                logger.debug(
+                    f"跳过 obsm[{key}]："
                     f"行数 {df.shape[0]:,} != selected cells {n_cells:,}"
                 )
                 continue
@@ -629,11 +597,8 @@ def get_anndata(
 
             adata.obsm[key] = df.to_numpy()
 
-            print(f"  - obsm[{key}] {adata.obsm[key].shape}")
-
     # 7. 读取 varm 全集
     if include_varm:
-        print("[EXPORT] 读取 varm 全集")
 
         varm_tables = conn.execute("""
             SELECT table_name
@@ -652,8 +617,8 @@ def get_anndata(
             """).df()
 
             if df.shape[0] != n_genes:
-                print(
-                    f"  ⚠️ 跳过 varm[{key}]："
+                logger.debug(
+                    f"跳过 varm[{key}]："
                     f"行数 {df.shape[0]:,} != genes {n_genes:,}"
                 )
                 continue
@@ -663,14 +628,11 @@ def get_anndata(
 
             adata.varm[key] = df.to_numpy()
 
-            print(f"  - varm[{key}] {adata.varm[key].shape}")
-
     # 8. 清理临时表
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
     print(" AnnData 导出完成")
     print(f"  - cells: {adata.n_obs:,}")
     print(f"  - genes: {adata.n_vars:,}")
-    print(f"  - nnz:   {adata.X.nnz:,}")
 
     return adata

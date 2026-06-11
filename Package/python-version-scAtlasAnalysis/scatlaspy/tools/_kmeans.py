@@ -4,6 +4,9 @@ from ..data import Atlas
 import numpy as np
 import pandas as pd
 import time
+import logging
+
+logger = logging.getLogger('Atlas')
 
 # MiniBatchKMeans
 class StreamingKMeans:
@@ -193,8 +196,6 @@ class StreamingKMeans:
 
         conn.append(table_name, df)
 
-        print("[Pipeline] centers written")
-
 
     # 转换 pca + minibatch kmeans 聚类 训练
     def fit_kmeans(self, atlas: Atlas):
@@ -231,10 +232,6 @@ class StreamingKMeans:
 
             sap.tl.fit_kmeans(...)
         """
-        print("[Pipeline] Start 转换 pca + minibatch kmeans 聚类 训练 ")
-        print(f"[KMeans] n_clusters = {self.n_clusters}")
-        print(f"[KMeans] fit_batches = {self.fit_batches}")
-        print(f"[KMeans] buffer_batch_num = {self.buffer_batch_num}")
 
         # 读取 PCA components
         self.components_ = self.load_components(atlas)
@@ -242,11 +239,6 @@ class StreamingKMeans:
         # 如果用户传入的 n_components 和数据库里实际 PCA 维度不同，给一个提示
         real_components = self.components_.shape[0]
         if real_components != self.n_components:
-            print(
-                f"[WARN] 传入 n_components={self.n_components}，"
-                f"但 varm_PCs 中实际 components 数量={real_components}。"
-                f"后续将以数据库中的 {real_components} 个 PC 为准。"
-            )
             self.n_components = real_components
 
         batch_count = 0
@@ -260,16 +252,13 @@ class StreamingKMeans:
                     max_batches=self.fit_batches,
                 ),
                 total=self.fit_batches,
-                desc="[KMeans] partial_fit batches"
+                desc="KMeans fit"
         ):
 
             t0 = time.time()
-            print("[DEBUG] got X_batch", X_batch.shape, X_batch.dtype)
 
             X_pca = X_batch @ self.components_.T  # pca 转换
-            print(f"[DEBUG] PCA projection time = {time.time() - t0:.2f}s")
 
-            # todo
             X_pca = np.ascontiguousarray(X_pca, dtype=np.float32)
 
             if not np.isfinite(X_pca).all():
@@ -280,18 +269,14 @@ class StreamingKMeans:
 
             t1 = time.time()
             self.kmeans.partial_fit(X_pca)   # KMeans 训练
-            print(f"[DEBUG] kmeans partial_fit time = {time.time() - t1:.2f}s")
 
             batch_count += 1
 
             if batch_count % 10 == 0:
-                print(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
+                logger.info(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
 
         if batch_count == 0:
             raise RuntimeError("[KMeans] 没有获得任何 minibatch，无法训练 KMeans")
-
-        print("[KMeans] Fit done")
-        print(f"[KMeans] actual fitted batches = {batch_count}")
 
         return self
 
@@ -346,7 +331,6 @@ class StreamingKMeans:
 
             sap.tl.predict_kmeans(...)
         """
-        print("[Pipeline] Start minibatch kmeans 聚类 转换 ")
 
         conn = atlas.connection
 
@@ -379,7 +363,7 @@ class StreamingKMeans:
                     batch_size=self.batch_size,
                     pass_mode="single-pass",
                 ),
-                desc="[KMeans] predict batches"
+                desc="KMeans predict"
         ):
 
             # PCA transform
@@ -417,25 +401,10 @@ class StreamingKMeans:
             predict_batch_count += 1
 
             if predict_batch_count % 20 == 0:
-                print(
+                logger.info(
                     f"[KMeans] predicted cells = {cell_offset:,}, "
                     f"batches = {predict_batch_count}"
                 )
-
-        print("[Pipeline] Done")
-        print(f"[KMeans] total predicted cells = {cell_offset:,}")
-        print(f"[KMeans] total predict batches = {predict_batch_count}")
-
-        # 结果完整性检查
-        # check_df = conn.execute(f"""
-        # SELECT
-        #     (SELECT COUNT(*) FROM obs WHERE filter_cell_id IS NOT NULL) AS filtered_cell_n,
-        #     (SELECT COUNT(*) FROM {use_cluster_table}) AS cluster_n,
-        #     (SELECT COUNT(DISTINCT atlas_cell_id) FROM {use_cluster_table}) AS cluster_unique_n,
-        #     (SELECT COUNT(*) FROM obs WHERE {use_obs_col} IS NOT NULL) AS obs_labeled_n
-        # """).fetchdf()
-        #
-        # print(check_df)
 
         # 保存 centers
         self._write_centers(atlas, table_name="kmeans_centers")
@@ -494,8 +463,6 @@ class StreamingKMeans:
 
         # 转置回 PCA 原始格式 (gene, pc) -> (pc, gene)
         components_ = pcs.T.astype(np.float32)
-
-        print(f"[Load] components_ shape = {components_.shape}")
 
         return components_
 
@@ -626,13 +593,6 @@ def kmeans(
     """
     t_start = time.time()
 
-    print("\n==== sap.tl.kmeans ====")
-    print(f"[KMeans] n_components = {n_components}")
-    print(f"[KMeans] n_clusters = {n_clusters}")
-    print(f"[KMeans] batch_size = {batch_size}")
-    print(f"[KMeans] fit_batches = {fit_batches}")
-    print(f"[KMeans] buffer_batch_num = {buffer_batch_num}")
-
     conn = atlas.connection
 
     # 检查 PCA components 是否存在
@@ -659,6 +619,5 @@ def kmeans(
     )
 
     t_end = time.time()
-    print(f"[KMeans] total time = {t_end - t_start:.2f} seconds")
 
-    return runner
+    print(f" KMeans Done, 耗时 = {t_end - t_start:.2f} seconds")

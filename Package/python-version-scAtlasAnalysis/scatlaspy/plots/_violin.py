@@ -232,7 +232,7 @@ def violin(
 
         sap.pl.violin(...)
     """
-    print(f"\n==== violin (groupby={groupby}) ====")
+
     conn = atlas.connection
 
     # 参数标准化
@@ -322,7 +322,7 @@ def violin(
             需要排序、格式化或转换的单个输入值。
 
         Returns
--------
+        -------
         sort_key
             可用于自然排序的键。
 
@@ -355,7 +355,6 @@ def violin(
         group_df = group_df.sort_values("order_idx").drop(columns="order_idx").reset_index(drop=True)
 
     group_labels = group_df["group_label"].astype(str).tolist()
-    print(f"-> groups = {group_labels}")
 
     # 每个 group 单独抽样，再 union
     sampled_parts = []
@@ -502,8 +501,6 @@ def violin(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
-
-    return plot_df
 
 
 # 堆叠提琴图 violin gene 在 x 轴，group 在 y 轴，每个 group × gene 的格子里画一个小提琴形状，并用 median expression 控制颜色深浅
@@ -670,7 +667,7 @@ def stacked_violin(
             需要排序、格式化或转换的单个输入值。
 
         Returns
--------
+        -------
         sort_key
             可用于自然排序的键。
 
@@ -944,4 +941,3 @@ def stacked_violin(
 
     plt.show()
 
-    return expr_df, median_df

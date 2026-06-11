@@ -79,10 +79,6 @@ def rank_genes_groups(
         sap.pl.rank_genes_groups(...)
     """
 
-
-
-    print(f"\n==== pl.rank_genes_groups (use_table={use_table}) ====")
-
     conn = atlas.connection
     if conn is None:
         atlas.connect("r+")
@@ -175,10 +171,6 @@ def rank_genes_groups(
         raise ValueError(
             f"groups 过滤后为空。可用 groups: {all_groups}"
         )
-
-    print(f"-> groups = {plot_groups}")
-    print(f"-> n_genes = {n_genes}")
-    print(f"-> score_key = {score_key}")
 
     # -------------------------------------------------
     # 4. 准备画布
@@ -276,14 +268,11 @@ def rank_genes_groups(
     # -------------------------------------------------
     if save_path is not None:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"-> saved to: {save_path}")
 
     if show:
         plt.show()
     else:
         plt.close(fig)
-
-    print("pl.rank_genes_groups 完成 ✅")
 
     if return_fig:
         return fig
@@ -387,8 +376,6 @@ def rank_genes_groups_volcano(
 
         sap.pl.rank_genes_groups_volcano(...)
     """
-
-    print(f"\n==== pl.rank_genes_groups_volcano (group={group}) ====")
 
     conn = atlas.connection
     if conn is None:
@@ -599,14 +586,11 @@ def rank_genes_groups_volcano(
 
     if save_path is not None:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
-        print(f"-> saved to: {save_path}")
 
     if show:
         plt.show()
     else:
         plt.close(fig)
-
-    print("pl.rank_genes_groups_volcano 完成 ✅")
 
     if return_fig:
         return fig
@@ -683,7 +667,7 @@ def rank_genes_groups_violin(
 
         sap.pl.rank_genes_groups_violin(...)
     """
-    print(f"\n==== rank_genes_groups_violin (group={group}, use_table={use_table}, reference={reference}) ====")
+
     conn = atlas.connection
 
     # 检查列
@@ -700,7 +684,6 @@ def rank_genes_groups_violin(
     if use_expr_field not in x_cols:
         raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
 
-    # ✅ 修改：检查 rank_genes_groups 计算结果表是否存在
     table_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -717,7 +700,6 @@ def rank_genes_groups_violin(
     # 1. gene 列表
     # =====================================================
     if genes is None:
-        # ✅ 修改：不再依赖 rank_result，而是从 rank_genes_groups 表读取 top genes
         rank_df = conn.execute(f"""
             SELECT
                 atlas_gene_id,
@@ -734,7 +716,6 @@ def rank_genes_groups_violin(
 
         genes = rank_df["atlas_gene_name"].astype(str).tolist()
 
-        # ✅ 修改：直接从结果表得到 gene_id 和 gene_name
         gene_map_df = rank_df[["atlas_gene_id", "atlas_gene_name"]].drop_duplicates()
 
     else:
@@ -747,7 +728,6 @@ def rank_genes_groups_violin(
         # gene_name -> gene_id
         gene_name_sql = ", ".join([f"'{g}'" for g in genes])
 
-        # ✅ 修改：兼容 var 里有 atlas_gene_name 或 gene_name 的情况
         if "atlas_gene_name" in var_cols:
             gene_name_col = "atlas_gene_name"
         elif "gene_name" in var_cols:
@@ -775,15 +755,12 @@ def rank_genes_groups_violin(
     if len(genes) == 0:
         raise ValueError("genes 为空")
 
-    print(f"-> genes = {genes}")
-
     # =====================================================
     # 2. 抽样目标细胞
     # =====================================================
     group_sql = f"'{group}'" if isinstance(group, str) else str(group)
 
     if reference is None:
-        # ✅ 修改：如果 reference=None，优先从结果表读取 reference
         ref_from_result = conn.execute(f"""
             SELECT DISTINCT reference
             FROM "{use_table}"
@@ -1015,5 +992,3 @@ def rank_genes_groups_violin(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
-
-    return plot_df

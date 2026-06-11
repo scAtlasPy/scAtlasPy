@@ -170,19 +170,28 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
 def umap(
         atlas: Atlas,
         color: str | list[str] = "kmeans",
+        *,
         sample_n: int | None = 50000,
         where: str | None = None,
+
+        # gene feature 参数
         use_data: str = "data_log1p",
-        ncols: int = 3,
-        figsize: tuple[float, float] | None=(22, 8),
+
+        # 图形参数
+        figsize: tuple[float, float] | None = (22, 8),
         point_size: float = 1.0,
-        alpha: float =  0.7 ,
+        alpha: float = 0.7,
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        legend_loc: str = "right_margin",
+
+        # legend / layout
+        legend_loc: str | None = "right_margin",
+        ncols: int = 3,
         frameon: bool = True,
-        save_path: PathLike[str] | str | None = None,
+
+        # 大数据 / 输出参数
         plot_batch_size: int = 200000,
+        save_path: PathLike[str] | str | None = None,
         return_df: bool = False,
 ):
 
@@ -260,7 +269,6 @@ def umap(
 
         sap.pl.umap(...)
     """
-    print("\n==== sap.pl.umap ====")
 
     conn = atlas.connection
 
@@ -272,9 +280,6 @@ def umap(
 
     if len(color_list) == 0:
         raise ValueError("color 不能为空")
-
-    print(f"[UMAP] color = {color_list}")
-    print(f"[UMAP] sample_n = {sample_n}")
 
     if where is not None and str(where).strip() != "":
         print(f"[UMAP] where = {where}")
@@ -351,7 +356,8 @@ def umap(
             ncols=ncols,
             figsize=figsize,
             point_size=point_size,
-            alpha=alpha
+            alpha=alpha,
+            cmap=cmap,
         )
 
     # 混合模式
@@ -385,7 +391,8 @@ def umap(
             ncols=ncols,
             figsize=figsize,
             point_size=point_size,
-            alpha=alpha
+            alpha=alpha,
+            cmap=cmap,
         )
 
     return result
@@ -482,7 +489,7 @@ def _plot_umap_obs(
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
-    print(f"\n==== _plot_umap_obs (color={color}) ====")
+
     conn = atlas.connection
 
     # 检查表和列
@@ -702,8 +709,6 @@ def _plot_umap_obs(
 
     plt.show()
 
-    print("[UMAP] Done")
-
     if return_df:
         return plot_df
 
@@ -785,7 +790,6 @@ def _draw_umap_obs_streaming(
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
-    print("\n==== plot_umap_obs_streaming_full ====")
 
     conn = atlas.connection
 
@@ -861,8 +865,6 @@ def _draw_umap_obs_streaming(
                 linewidths=0,
                 rasterized=True
             )
-
-        print(f"[UMAP streaming] drawn cells = {total_drawn:,}")
 
     # 标题
     if title is None:
@@ -984,8 +986,6 @@ def _draw_umap_obs_streaming(
 
     plt.show()
 
-    print(f"[UMAP streaming] Done, total drawn = {total_drawn:,}")
-
     return None
 
 
@@ -1000,7 +1000,8 @@ def _plot_umap_features(
         ncols: int = 3,
         figsize: tuple[float, float] | None=None,
         point_size: float = 8,
-        alpha: float = 0.9
+        alpha: float = 0.9,
+        cmap: str = "viridis",
 ):
 
     """绘制中间分析结果。
@@ -1052,7 +1053,7 @@ def _plot_umap_features(
     -----
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
-    print("\n==== _plot_umap_features ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -1062,8 +1063,6 @@ def _plot_umap_features(
     if len(genes) == 0:
         raise ValueError("genes 不能为空")
 
-    print(f"[UMAP features] genes = {genes}")
-    print(f"[UMAP features] sample_n = {sample_n}")
     if where is not None and str(where).strip() != "":
         print(f"[UMAP features] where = {where}")
 
@@ -1142,8 +1141,6 @@ def _plot_umap_features(
 
     if len(umap_df) == 0:
         raise ValueError("筛选 / 抽样后没有可绘制的细胞")
-
-    print(f"[UMAP features] plotted cells = {len(umap_df):,}")
 
     # 查询 gene_id
     gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
@@ -1274,7 +1271,7 @@ def _plot_umap_features(
             df["umap1"].to_numpy(),
             df["umap2"].to_numpy(),
             c=df["expr"].to_numpy(),
-            cmap="viridis",
+            cmap=cmap,
             s=point_size,
             alpha=alpha,
             linewidths=0
@@ -1303,8 +1300,6 @@ def _plot_umap_features(
 
     plt.tight_layout(pad=1.0)
     plt.show()
-
-    print(f"[UMAP features] Done in {(datetime.now() - start).total_seconds():.2f}s")
 
     return plot_data
 

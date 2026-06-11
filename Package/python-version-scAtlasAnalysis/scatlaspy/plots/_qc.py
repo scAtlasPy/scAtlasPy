@@ -61,7 +61,7 @@ def highest_expr_genes(
 
         sap.pl.highest_expr_genes(...)
     """
-    print("\n==== plot_highest_expr_genes_sql (final aligned to scanpy) ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -361,7 +361,6 @@ def highest_expr_genes(
     outlier_df = None
 
     if show_outliers:
-        print("-> extracting outliers ...")
 
         if use_all_cells:
             outlier_df = conn.execute(f"""  -- 改成 f-string，支持 qfunc
@@ -590,9 +589,6 @@ def highest_expr_genes(
     _safe_drop_temp("_top_gene_values")
     _safe_drop_temp("_all_gene_mean_pct")
 
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-
 
 # 可视化QC指标 , 画 QC 小提琴图
 def violin_qc_metrics(
@@ -653,7 +649,7 @@ def violin_qc_metrics(
 
         sap.pl.violin_qc_metrics(...)
     """
-    print("\n==== violin_qc_metrics (SQL first sampling) ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -797,9 +793,6 @@ def violin_qc_metrics(
     plt.tight_layout(pad=1.0)
     plt.show()
 
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-
 
 # QC 散点图（scatter plot），用来发现“异常细胞”的关系图
 def scatter_qc_metrics(
@@ -859,7 +852,7 @@ def scatter_qc_metrics(
 
         sap.pl.scatter_qc_metrics(...)
     """
-    print("\n==== scatter_qc_metrics (SQL first sampling) ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -964,7 +957,5 @@ def scatter_qc_metrics(
 
     plt.tight_layout(pad=1.0)
     plt.show()
-
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
 
 

@@ -5,6 +5,10 @@ import queue
 import time
 from os import PathLike, fspath
 import scipy.sparse as sp
+import logging
+
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
 
 ''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
 class ShuffleBuffer:
@@ -387,7 +391,7 @@ class MultiThreadedMinibatchFetcher:
         gene_num = conn.execute(
             "SELECT COUNT(*) FROM var WHERE filter_gene_id IS NOT NULL"
         ).fetchone()[0]
-        print("gene_num:", gene_num)
+        ("gene_num:", gene_num)
         conn.close()
         return gene_num
 
@@ -520,11 +524,11 @@ class MultiThreadedMinibatchFetcher:
 
         total_from_batches = sum(self.batch_cell_counts)
 
-        print("[BatchInfo] total cells from indptr:", total_cells)
-        print("[BatchInfo] total cells from batches:", total_from_batches)
-        print("[BatchInfo] batch_num:", self.batch_num)
-        print("[BatchInfo] last batch cells:", self.batch_cell_counts[-1])
-        print("[BatchInfo] last batch nnz:", self.batch_nnz[-1])
+        logger.info("[BatchInfo] total cells from indptr:", total_cells)
+        logger.info("[BatchInfo] total cells from batches:", total_from_batches)
+        logger.info("[BatchInfo] batch_num:", self.batch_num)
+        logger.info("[BatchInfo] last batch cells:", self.batch_cell_counts[-1])
+        logger.info("[BatchInfo] last batch nnz:", self.batch_nnz[-1])
 
         if total_from_batches != total_cells:
             raise RuntimeError(
@@ -658,7 +662,7 @@ class MultiThreadedMinibatchFetcher:
 
             # 如果已经准备/输出够 max_batches，提前结束本轮
             if self._read_limit_reached(prepared_batches):
-                print(
+                logger.debug(
                     f"[Consumer] read limit reached, "
                     f"batch_idx={self.batch_idx}, "
                     f"prepared_batches={prepared_batches}, "
@@ -843,7 +847,7 @@ class MultiThreadedMinibatchFetcher:
                     X_remain.copy(),
                 )
 
-        print(
+        logger.info(
             f"[Done] processed_batches={self.batch_idx}, "
             f"output_batches={self.total_batches}"
         )
@@ -862,7 +866,7 @@ class MultiThreadedMinibatchFetcher:
         整体用法和 Scanpy 中相近的 ``sap.run`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
 
         Yields
--------
+        -------
         batch
             逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
 
@@ -887,7 +891,7 @@ class MultiThreadedMinibatchFetcher:
         # 从 out_queue 统一 yield
         while True:
             batch = self.out_queue.get()  # 阻塞
-            if batch is None:  # 👈 收到哨兵，说明所有 batch 都吐完
+            if batch is None:  # 收到哨兵，说明所有 batch 都吐完
                 break
             yield batch  # 正常 batch 继续向外 yield
 
@@ -909,7 +913,7 @@ class MultiThreadedMinibatchFetcher:
         它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -940,7 +944,7 @@ class MultiThreadedMinibatchFetcher:
             已经准备并放入 shuffle buffer 的 batch 数量。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -977,7 +981,7 @@ class MultiThreadedMinibatchFetcher:
             当前 batch 的表达矩阵或 embedding 矩阵。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 

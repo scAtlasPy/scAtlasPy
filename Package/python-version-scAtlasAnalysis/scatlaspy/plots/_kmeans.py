@@ -51,7 +51,7 @@ def kmeans_cluster_size(
 
         sap.pl.kmeans_cluster_size(...)
     """
-    print("\n==== plot_kmeans ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -113,8 +113,4 @@ def kmeans_cluster_size(
 
     plt.tight_layout()
     plt.show()
-
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-    return df
 

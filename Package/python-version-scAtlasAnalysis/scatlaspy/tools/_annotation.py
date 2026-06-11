@@ -263,7 +263,7 @@ def annotate_clusters(
 
         sap.tl.annotate_clusters(...)
     """
-    print("\n==== annotate_clusters (Phase 1, revised) ====")
+
     start = datetime.now()
     conn = atlas.connection
     if conn is None:
@@ -530,8 +530,6 @@ def annotate_clusters(
         """)
 
         conn.unregister("_cluster_annotation_tmp")
-
-    print(f"-> done in {(datetime.now() - start).total_seconds():.2f}s ✅")
 
     return summary_df, score_df
 

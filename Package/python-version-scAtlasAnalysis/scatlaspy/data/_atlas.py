@@ -25,7 +25,7 @@ logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
 
-def set_verbosity(level: str = "warning"):
+def set_verbosity(level: str = "warning") -> None:
     """设置 Atlas 包的日志输出级别。
 
     该函数调整名为 ``Atlas`` 的 logger，用于控制导入导出、预处理、工具函数和绘图流程中的日志详细程度。
@@ -44,6 +44,7 @@ def set_verbosity(level: str = "warning"):
         sap.set_verbosity(...)
     """
 
+    level = str(level).lower()
     level_map = {
         "error": logging.ERROR,
         "warning": logging.WARNING,
@@ -54,12 +55,26 @@ def set_verbosity(level: str = "warning"):
     if level not in level_map:
         raise ValueError("level 只支持: error, warning, info, debug")
 
-    logging.basicConfig(
-        level=level_map[level],
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
+    atlas_logger = logging.getLogger("Atlas")
+    atlas_logger.setLevel(level_map[level])
 
-    logging.getLogger("Atlas").setLevel(level_map[level])
+    atlas_logger.handlers = [
+        handler
+        for handler in atlas_logger.handlers
+        if not isinstance(handler, logging.NullHandler)
+    ]
+
+    if not atlas_logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        atlas_logger.addHandler(handler)
+
+    for handler in atlas_logger.handlers:
+        handler.setLevel(level_map[level])
+
+    atlas_logger.propagate = False
 
 class Atlas:
     """Atlas 数据库对象。
@@ -78,7 +93,11 @@ class Atlas:
         目录路径或文件路径。
     """
 
-    def __init__(self, file_name: PathLike[str] | str):
+    def __init__(
+            self,
+            file_name: PathLike[str] | str,
+            verbosity: Literal["error", "warning", "info", "debug"] | None = "warning",
+    ):
         """
         初始化 Atlas 数据库对象。
 
@@ -88,6 +107,9 @@ class Atlas:
             Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
             Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
         """
+
+        if verbosity is not None:
+            set_verbosity(verbosity)
 
         self.__file_path = self._resolve_file_path(file_name)
         self.__connection = None
@@ -205,7 +227,6 @@ class Atlas:
             return con
 
         except Exception as e:
-            logger.error(f"创建数据库失败: {str(e)}")
             logger.exception("创建数据库异常详情:")
             raise RuntimeError(f"创建数据库失败: {str(e)}")
 
@@ -273,7 +294,6 @@ class Atlas:
             return self.__connection
 
         except Exception as e:
-            logger.error(f"连接数据库失败: {str(e)}")
             logger.exception("连接数据库异常详情:")
             raise RuntimeError(f"连接数据库失败: {str(e)}")
 
@@ -306,7 +326,6 @@ class Atlas:
                 logger.debug("没有活动的数据库连接需要关闭")
 
         except Exception as e:
-            logger.error(f"关闭数据库连接时出错: {str(e)}")
             logger.exception("关闭数据库连接异常详情:")
             raise RuntimeError(f"关闭数据库连接时出错: {str(e)}")
 
@@ -337,7 +356,6 @@ class Atlas:
 
             sap.execute_sql(...)
         """
-        logger.info(f"执行SQL语句: {sql}")
 
         # 检查是否有活动的数据库连接
         if self.__connection is None:
@@ -411,6 +429,7 @@ class Atlas:
             sap.query(...)
         """
         logger.info("查询数据库，返回值类型为pandas")
+
         if self.__connection is None:
             self.connect("r+")
         result = self.connection.execute(query)
@@ -787,8 +806,8 @@ class Atlas:
             )
 
             for X_batch in fetcher.run():
+
                 yield X_batch
-                # pass
 
             return
 
@@ -800,7 +819,7 @@ class Atlas:
 
             # 如果达到 max_batches，停止
             if max_batches is not None and produced_batches >= max_batches:
-                print(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
+                logger.info(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
                 break
 
             # 当前 pass 还需要输出多少 batch
@@ -809,7 +828,7 @@ class Atlas:
             else:
                 remain_batches = max_batches - produced_batches
 
-            print(
+            logger.info(
                 f"[get_minibatch_dense] multi-pass start pass={pass_id + 1}, "
                 f"produced={produced_batches}, "
                 f"remain={remain_batches}"
@@ -831,22 +850,15 @@ class Atlas:
                 pass_batches += 1
 
                 yield X_batch
-                # pass
 
                 if max_batches is not None and produced_batches >= max_batches:
                     break
-
-            print(
-                f"[get_minibatch_dense] pass={pass_id + 1} done, "
-                f"pass_batches={pass_batches}, "
-                f"total_produced={produced_batches}"
-            )
 
             pass_id += 1
 
             # 防止异常情况下空 pass 无限循环
             if pass_batches == 0:
-                print("[get_minibatch_dense] pass produced 0 batch, stop")
+                logger.debug("[get_minibatch_dense] pass produced 0 batch, stop")
                 break
 
 

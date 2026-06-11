@@ -346,7 +346,6 @@ def rank_genes_groups(
 
     method = "t-test"
 
-    print(f"\n==== rank_genes_groups (method={method}, reference={reference}) ====")
     start = datetime.now()
 
     conn = atlas.connection
@@ -422,8 +421,6 @@ def rank_genes_groups(
         if gene_count == 0:
             raise ValueError("候选基因集合为空，请检查 mask_var 设置")
 
-        print(f"-> candidate genes = {gene_count:,}")
-
         # -------------------------------------------------
         # 2. group 信息
         # -------------------------------------------------
@@ -498,12 +495,6 @@ def rank_genes_groups(
             if len(group_list) == 0:
                 raise ValueError("去掉 reference 后 groups 为空")
 
-        print(f"-> groupby = {groupby}")
-        print(f"-> groups = {group_list}")
-        print(f"-> reference = {reference}")
-        print(f"-> input_is_log = {input_is_log}")
-        print(f"-> lfc_eps = {lfc_eps}")
-
         # -------------------------------------------------
         # 3. 一次性聚合 group × gene 统计
         # -------------------------------------------------
@@ -563,7 +554,6 @@ def rank_genes_groups(
         result_list = []
 
         for grp in group_list:
-            print(f"-> computing group {grp} ...")
 
             if reference == "rest":
                 df = conn.execute("""
@@ -776,13 +766,8 @@ def rank_genes_groups(
 
             conn.unregister("_rgg_result_py")
 
-            print(f"-> result written to table: {add_table}")
 
-        print("rank_genes_groups 完成")
-        print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
-
-        if return_df:
-            return result_df
+        print("rank_genes_groups 完成, 耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
         return None
 

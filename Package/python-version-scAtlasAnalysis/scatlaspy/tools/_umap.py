@@ -5,7 +5,8 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 from ..data import Atlas
-
+import logging
+logger = logging.getLogger('Atlas')
 
 # 评估函数：KNN overlap
 def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
@@ -272,7 +273,6 @@ def umap(
         绘制已经计算好的 UMAP embedding。
     """
 
-    print("\n==== sap.tl.umap ====")
     start = datetime.now()
     conn = atlas.connection
 
@@ -324,8 +324,6 @@ def umap(
 
     X_fit = fit_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
 
-    print(f"[UMAP] fit sample shape = {X_fit.shape}")
-
     # 拟合 UMAP 模型
     reducer = umap_lib.UMAP(
         n_components=n_components,
@@ -336,12 +334,9 @@ def umap(
         n_jobs=n_jobs
     )
 
-    print("[UMAP] Fitting reducer...")
     reducer.fit(X_fit)
 
     # 训练后评估 UMAP embedding 质量
-    print("[UMAP] Evaluating embedding quality ...")
-
     X_fit_umap = reducer.transform(X_fit).astype(np.float32)
 
     # 只在子样本上评估，避免 eval_n × eval_n 距离矩阵爆内存
@@ -358,8 +353,6 @@ def umap(
     X_eval = X_fit[eval_idx]
     X_eval_umap = X_fit_umap[eval_idx]
 
-    print(f"[UMAP] eval sample shape = {X_eval.shape}")
-
     eval_k = min(n_neighbors, eval_n - 1)
 
     trustworthiness_score = trustworthiness(
@@ -374,23 +367,23 @@ def umap(
         k=eval_k
     )
 
-    print(f"[UMAP] trustworthiness = {trustworthiness_score:.4f}")
-    print(f"[UMAP] knn_overlap     = {knn_overlap_score:.4f}")
+    logger.info(f"[UMAP] trustworthiness = {trustworthiness_score:.4f}")
+    logger.info(f"[UMAP] knn_overlap     = {knn_overlap_score:.4f}")
 
     # 简单自动评价
     if trustworthiness_score < 0.80:
-        print(" UMAP局部结构保持较弱，建议增大 fit_sample_n / 调整 n_neighbors / 检查 PCA")
+        logger.info(" UMAP局部结构保持较弱，建议增大 fit_sample_n / 调整 n_neighbors / 检查 PCA")
     elif trustworthiness_score < 0.90:
-        print(" UMAP局部结构保持正常")
+        logger.info(" UMAP局部结构保持正常")
     else:
-        print(" UMAP局部结构保持很好")
+        logger.info(" UMAP局部结构保持很好")
 
     if knn_overlap_score < 0.20:
-        print(" KNN重叠率偏低，低维空间近邻和PCA空间差异较大")
+        logger.info(" KNN重叠率偏低，低维空间近邻和PCA空间差异较大")
     elif knn_overlap_score < 0.40:
-        print(" KNN重叠率正常，单细胞UMAP中常见")
+        logger.info(" KNN重叠率正常，单细胞UMAP中常见")
     else:
-        print(" KNN重叠率较高，局部邻域保持很好")
+        logger.info(" KNN重叠率较高，局部邻域保持很好")
 
     # 建输出表
     conn.execute(f"DROP TABLE IF EXISTS {add_table}")
@@ -467,7 +460,6 @@ def umap(
 
     # 全量分块 transform
     total_n = conn.execute("SELECT COUNT(*) FROM obsm_X_pca").fetchone()[0]
-    print(f"[UMAP] total cells = {total_n}")
 
     offset = 0
 
@@ -499,7 +491,4 @@ def umap(
 
         print(f"[UMAP] transformed {offset}/{total_n}")
 
-    print("[UMAP] Done")
-    print(f"耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
-
-    return reducer
+    print(f"UMAP Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")

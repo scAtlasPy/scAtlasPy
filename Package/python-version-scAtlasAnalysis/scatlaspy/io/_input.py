@@ -5,6 +5,7 @@ import logging
 import h5py
 import pyarrow as pa
 import time
+from datetime import datetime
 import gc
 import numpy as np
 import pandas as pd
@@ -20,7 +21,8 @@ if TYPE_CHECKING:   # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  �
 StoreType = Literal["count", "log"]
 
 # 获取日志记录器
-logger = logging.getLogger('Atlas')
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
 
 
 # 统一的 h5ad 导入接口
@@ -104,6 +106,7 @@ def load_h5ad(
         不同 ``load_type`` 对应的底层函数返回值可能不同；
         有些函数返回导入统计信息，有些函数只执行导入流程而不显式返回结果。
     """
+    start_time = datetime.now()
 
     # =====================================================
     # 1. 参数检查
@@ -146,8 +149,7 @@ def load_h5ad(
     # =====================================================
     if load_type == "list_random":
 
-        print("==== load_h5ad unified interface ====")
-        print("[INFO] load_type = list_random")
+        logger.info("[INFO] load_type = list_random")
 
         return _load_h5ad_list_random(
             h5ad_paths=h5ad_path,
@@ -178,8 +180,7 @@ def load_h5ad(
     # =====================================================
     if load_type == "order":
 
-        print("==== load_h5ad unified interface ====")
-        print("[INFO] load_type = order")
+        logger.info("[INFO] load_type = order")
 
         return _load_h5ad_order(
             h5ad_path=h5ad_path,
@@ -194,8 +195,7 @@ def load_h5ad(
     # =====================================================
     if load_type == "random":
 
-        print("==== load_h5ad unified interface ====")
-        print("[INFO] load_type = random")
+        logger.info("[INFO] load_type = random")
 
         return _load_h5ad_random(
             h5ad_path=h5ad_path,
@@ -204,6 +204,9 @@ def load_h5ad(
             blocks_per_pool=blocks_per_pool,
             store_type=store_type,
         )
+
+    print(f"load_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    return None
 
 
 ''' 方法1 ： 随机读取 , 多个大文件, 只支持 h5ad格式 '''
@@ -284,7 +287,7 @@ def _load_h5ad_list_random(
 
     rng = np.random.default_rng()
 
-    #  1️⃣ 连接数据库
+    # 连接数据库
     conn = atlas.connect("r+")
     atlas.connection = conn
 
@@ -296,17 +299,9 @@ def _load_h5ad_list_random(
 
     var_written = False
 
-    print("\n==== _load_h5ad_fast_random ====")
     print(f"[INFO] 文件数量: {file_num:,}")
-    print(f"[INFO] cells_per_block: {cells_per_block:,}")
-    print(f"[INFO] blocks_per_pool: {blocks_per_pool:,}")
-    print(f"[INFO] store_type: {store_type}")  # ✅ 新增
-    print("[INFO] 策略：全局 block 索引池随机打乱，每次读取 blocks_per_pool 个 block 后 cell_pool 整体随机写入")
-    print("[INFO] 注意：不再做单个 block 内部 cell 随机，只做 cell_pool 整体随机")
+    print(f"[INFO] store_type: {store_type}")
 
-    # =====================================================
-    # ✅ 修改 3：打开所有 h5ad，并构建全局 block 索引池
-    # =====================================================
     file_states = []
 
     ref_var_names = None
@@ -318,30 +313,25 @@ def _load_h5ad_list_random(
     try:
         for file_idx, h5ad_path in enumerate(h5ad_paths):
 
-            print("\n" + "=" * 80)
-            print(f"[FILE {file_idx + 1}/{file_num}] {h5ad_path}")
-
             adata_backed = sc.read_h5ad(h5ad_path, backed="r")
 
             n_cells = adata_backed.n_obs
             n_genes = adata_backed.n_vars
 
-            print(f"[INFO] 当前文件维度: {n_cells:,} × {n_genes:,}")
+            print(f"[INFO] 当前文件维度 : {n_cells:,} × {n_genes:,}")
 
-            # =====================================================
-            # ✅ 新增：每个文件单独检测 X 是 count 还是 log
-            # =====================================================
+            # 每个文件单独检测 X 是 count 还是 log
             source_store_type = _detect_x_store_type_from_backed(
                 adata_backed,
                 sample_n=5000,
             )
 
-            print(f"[INFO] 当前文件 X 判断为: {source_store_type}")
+            logger.info(f"[INFO] 当前文件 X 判断为: {source_store_type}")
 
             if source_store_type == store_type:
-                print("[INFO] 当前文件 X 不需要转换，直接写入。")
+                logger.info("[INFO] 当前文件 X 不需要转换，直接写入。")
             else:
-                print(f"[INFO] 当前文件 X 将在读取 block 后转换: {source_store_type} -> {store_type}")
+                logger.info(f"[INFO] 当前文件 X 将在读取 block 后转换: {source_store_type} -> {store_type}")
 
             # ---------------- 检查 gene 数量和顺序 ----------------
             cur_var_names = adata_backed.var.index.astype(str).to_numpy()
@@ -389,8 +379,6 @@ def _load_h5ad_list_random(
                 }
             )
 
-            print(f"[INFO] batch block 数量: {len(block_starts):,}")
-
         # 全局 block 索引池统一随机打乱
         total_blocks = len(all_block_refs)
 
@@ -398,11 +386,6 @@ def _load_h5ad_list_random(
             raise ValueError("所有 h5ad 文件的 cell 数量为 0，无法导入")
 
         rng.shuffle(all_block_refs)
-
-        print("\n" + "=" * 80)
-        print(f"[INFO] 全局 block 总数: {total_blocks:,}")
-        print(f"[INFO] 每次 flush 读取 block 数: {blocks_per_pool:,}")
-        print(f"[INFO] 预计 flush 次数: {(total_blocks + blocks_per_pool - 1) // blocks_per_pool:,}")
 
         # 动态建表：只用第一个文件建表
         first_backed = file_states[0]["adata_backed"]
@@ -434,7 +417,7 @@ def _load_h5ad_list_random(
                 当前 flush 的编号，用于日志输出。
 
             Returns
--------
+            -------
             result
                 函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -523,17 +506,6 @@ def _load_h5ad_list_random(
 
             t_write = time.time() - t1
 
-            print(
-                f"\n[flush {flush_i}] "
-                f"pool_blocks={len(cell_pool):,}, "
-                f"pool_cells={total_pool_cells:,}, "
-                f"pool_nnz={total_pool_nnz:,}, "
-                f"shuffle={t_shuffle:.2f}s, "
-                f"write={t_write:.2f}s, "
-                f"total_cells={global_cell_id:,}, "
-                f"total_nnz={global_data_id:,}"
-            )
-
             # 6. 清理
             for obj_name in [
                 "X_list",
@@ -557,7 +529,7 @@ def _load_h5ad_list_random(
         processed_blocks = 0
         flush_counter = 0
 
-        pbar = tqdm(total=total_blocks, desc="Global block-shuffle import")
+        pbar = tqdm(total=total_blocks, desc="读取进度")
 
         # 事务：多个 flush 共用事务
         conn.execute("BEGIN TRANSACTION")
@@ -607,16 +579,6 @@ def _load_h5ad_list_random(
                             block_nnz = adata.X.nnz
                         else:
                             block_nnz = np.count_nonzero(adata.X)
-
-                        print(
-                            f"\n[read block {processed_blocks}/{total_blocks}] "
-                            f"file={state['file_idx'] + 1}, "
-                            f"range=[{block_start:,}, {block_end:,}), "
-                            f"cells={adata.n_obs:,}, "
-                            f"nnz={block_nnz:,}, "
-                            f"read={t_read:.2f}s, "
-                            f"pool_blocks={len(cell_pool):,}"
-                        )
 
                 # 这一组 block 读完后，整体 shuffle + 写入
                 if len(cell_pool) > 0:
@@ -675,15 +637,6 @@ def _load_h5ad_list_random(
         except Exception:
             pass
         gc.collect()
-
-
-        print("\n✔ 多文件全部成功导入 DuckDB（global block shuffle + cell_pool 随机）")
-        print(f"  - files: {file_num:,}")
-        print(f"  - cells: {global_cell_id:,}")
-        print(f"  - genes: {ref_n_genes:,}")
-        print(f"  - nnz:   {global_data_id:,}")
-        print(f"  - blocks:{total_blocks:,}")
-        print(f"  - flush: {flush_counter:,}")
 
         return {
             "files": file_num,
@@ -806,13 +759,13 @@ def _load_h5ad_random(
         sample_n=5000,
     )
 
-    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
-    print(f"[INFO] 目标存储类型 store_type = {store_type}")
+    logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
+    logger.info(f"[INFO] 目标存储类型 store_type = {store_type}")
 
     if source_store_type == store_type:
-        print("[INFO] X 数据不需要转换，直接写入。")
+        logger.info("[INFO] X 数据不需要转换，直接写入。")
     else:
-        print(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
+        logger.info(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
 
     # 5 个 block 合并后再统一随机
     block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
@@ -824,12 +777,7 @@ def _load_h5ad_random(
     _create_hys_tables(conn)
 
     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + shuffle-window 随机读取")
-    print(f"[INFO] cells_per_block = {cells_per_block:,}")
-    print(f"[INFO] blocks_per_pool = {blocks_per_pool:,}")
-    print(f"[INFO] batch block 数量 = {len(block_starts):,}")
-    print(f"[INFO] commit_every = {commit_every:,} batches")
-    print(f"[INFO] gc_every = {gc_every:,} batches")
+    print(f"[INFO] store_type = {store_type}")
 
     # 窗口缓存: 每次攒够 blocks_per_pool 个 batch 再统一随机写入
     window_adatas = []
@@ -843,7 +791,7 @@ def _load_h5ad_random(
         for block_i, block_start in enumerate(
             tqdm(
                 block_starts,
-                desc="Shuffle-window 随机读取",
+                desc="读取进度",
             )
         ):
             block_end = min(int(block_start) + cells_per_block, n_cells)
@@ -864,7 +812,7 @@ def _load_h5ad_random(
             window_batch_count += 1
 
             if (block_i + 1) % 20 == 0 or block_i == 0:
-                print(
+                logger.info(
                     f"\n[read block {block_i}] "
                     f"cells={adata.n_obs:,}, "
                     f"nnz={block_nnz:,}, "
@@ -901,16 +849,6 @@ def _load_h5ad_random(
                 total_batch_counter += window_batch_count
                 window_counter += 1
 
-                print(
-                    f"\n[write window {window_counter}] "
-                    f"batches={window_batch_count}, "
-                    f"cells={window_cells:,}, "
-                    f"nnz={window_nnz:,}, "
-                    f"write={t_write:.2f}s, "
-                    f"total_cells={global_cell_id:,}, "
-                    f"total_nnz={global_data_id:,}"
-                )
-
                 # 清空 window
                 for x in window_adatas:
                     del x
@@ -921,12 +859,12 @@ def _load_h5ad_random(
                 if total_batch_counter % commit_every == 0:
                     conn.execute("COMMIT")
                     conn.execute("BEGIN TRANSACTION")
-                    print(f"[COMMIT] processed_batches={total_batch_counter:,}")
+                    logger.info(f"[COMMIT] processed_batches={total_batch_counter:,}")
 
                 # 每 gc_every 个 batch gc 一次
                 if total_batch_counter % gc_every == 0:
                     gc.collect()
-                    print(f"[GC] processed_batches={total_batch_counter:,}")
+                    logger.info(f"[GC] processed_batches={total_batch_counter:,}")
 
         # 处理最后不足 5 个 batch 的剩余 window
         if window_batch_count > 0:
@@ -956,16 +894,6 @@ def _load_h5ad_random(
 
             total_batch_counter += window_batch_count
             window_counter += 1
-
-            print(
-                f"\n[write final window {window_counter}] "
-                f"batches={window_batch_count}, "
-                f"cells={window_cells:,}, "
-                f"nnz={window_nnz:,}, "
-                f"write={t_write:.2f}s, "
-                f"total_cells={global_cell_id:,}, "
-                f"total_nnz={global_data_id:,}"
-            )
 
             for x in window_adatas:
                 del x
@@ -1027,11 +955,6 @@ def _load_h5ad_random(
     gc.collect()
 
     t_end = time.time()
-    print( f"total time: {t_end-t_start:.2f} seconds ")
-
-    print("✔ 全部数据成功导入 DuckDB（shuffle-window 随机导入）")
-    print(f"  - cells: {global_cell_id:,}")
-    print(f"  - nnz:   {global_data_id:,}")
 
 
 ''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
@@ -1111,23 +1034,19 @@ def _load_h5ad_order(
         sample_n=5000,
     )
 
-    print(f"[INFO] 文件中 X 判断为: {source_store_type}")
-    print(f"[INFO] 目标存储类型 store_type = {store_type}")
+    logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
+    logger.info(f"[INFO] 目标存储类型 store_type = {store_type}")
 
     if source_store_type == store_type:
-        print("[INFO] X 数据不需要转换，直接写入。")
+        logger.info("[INFO] X 数据不需要转换，直接写入。")
     else:
-        print(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
+        logger.info(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
 
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
     print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print("[INFO] 使用 scanpy backed + mega-batch + 全局游标模式")
-    print(f"[INFO] cells_per_block = {cells_per_block:,}")
-    print(f"[INFO] mega_batch_size = {mega_batch_size:,}")
-    print(f"[INFO] blocks_per_pool = {blocks_per_pool:,}")
     print(f"[INFO] store_type = {store_type}")
 
     mini_batch_counter = 0
@@ -1139,7 +1058,7 @@ def _load_h5ad_order(
         for mega_i, mega_start in enumerate(
             tqdm(
                 range(0, n_cells, mega_batch_size),
-                desc="Mega-batch（磁盘顺序读取）",
+                desc="读取进度",
             )
         ):
             mega_end = min(mega_start + mega_batch_size, n_cells)
@@ -1208,15 +1127,6 @@ def _load_h5ad_order(
 
                 del adata
 
-            print(
-                f"\n[mega {mega_i}] "
-                f"cells={mega.n_obs:,}, "
-                f"nnz={mega_nnz:,}, "
-                f"read={t_read:.2f}s, "
-                f"total_cells={global_cell_id:,}, "
-                f"total_nnz={global_data_id:,}"
-            )
-
             del mega
 
             if (mega_i + 1) % gc_every == 0:
@@ -1241,11 +1151,6 @@ def _load_h5ad_order(
         adata_backed.file.close()
     except Exception:
         pass
-
-    print("✔ 全部数据成功导入 DuckDB（顺序导入，含 obsm / varm）")
-    print(f"  - cells: {global_cell_id:,}")
-    print(f"  - nnz:   {global_data_id:,}")
-    print(f"  - store_type: {store_type}")
 
 
 ''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
@@ -1277,10 +1182,10 @@ def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
 
         sap.io.load_multi_format(...)
     """
-    print("小文件读取 , 开始导入数据...")
+    start_time = datetime.now()
     adata = _read_smart(file_path)
     load_anndata(adata, atlas)
-    print("✔ 全部数据成功导入 DuckDB ")
+    print(f"load_multi_format Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 
 # 将计算结果写入数据库表
@@ -1470,12 +1375,12 @@ def _detect_x_store_type_from_backed(
     q95 = float(np.percentile(values, 95))
     frac_le_10 = float(np.mean(values <= 10))
 
-    print("[INFO] X scale 预检测结果:")
-    print(f"  - sample_cells = {n:,}")
-    print(f"  - nonzero_n    = {values.size:,}")
-    print(f"  - max          = {vmax:.4f}")
-    print(f"  - q95          = {q95:.4f}")
-    print(f"  - frac <= 10   = {frac_le_10:.4f}")
+    logger.info("[INFO] X scale 预检测结果:")
+    logger.info(f"  - sample_cells = {n:,}")
+    logger.info(f"  - nonzero_n    = {values.size:,}")
+    logger.info(f"  - max          = {vmax:.4f}")
+    logger.info(f"  - q95          = {q95:.4f}")
+    logger.info(f"  - frac <= 10   = {frac_le_10:.4f}")
 
     del adata_sample
     gc.collect()
@@ -1605,14 +1510,14 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
 
     with h5py.File(h5ad_path, "r") as f:
         if "X" not in f:
-            print("[INFO] h5ad.X format = None（文件中没有 X）")
+            logger.info("[INFO] h5ad.X format = None（文件中没有 X）")
             return None
 
         X = f["X"]
 
         # dense matrix
         if isinstance(X, h5py.Dataset):
-            print("[INFO] h5ad.X format = dense")
+            logger.info("[INFO] h5ad.X format = dense")
             return "dense"
 
         # sparse matrix group
@@ -1623,22 +1528,22 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
                 encoding_type = encoding_type.decode("utf-8")
 
             if encoding_type == "csr_matrix":
-                print("[INFO] h5ad.X format = CSR")
+                logger.info("[INFO] h5ad.X format = CSR")
                 return "csr"
 
             elif encoding_type == "csc_matrix":
-                print("[INFO] h5ad.X format = CSC")
+                logger.info("[INFO] h5ad.X format = CSC")
                 return "csc"
 
             elif encoding_type == "coo_matrix":
-                print("[INFO] h5ad.X format = COO")
+                logger.info("[INFO] h5ad.X format = COO")
                 return "coo"
 
             else:
-                print(f"[INFO] h5ad.X format = unknown ({encoding_type})")
+                logger.info(f"[INFO] h5ad.X format = unknown ({encoding_type})")
                 return encoding_type
 
-        print("[INFO] h5ad.X format = unknown")
+        logger.info("[INFO] h5ad.X format = unknown")
         return "unknown"
 
 
@@ -2336,18 +2241,19 @@ def load_anndata(adata:AnnData, atlas:Atlas):
 
         sap.io.load_anndata(...)
     """
+
     try:
         logger.info("准备数据表...")
 
         if hasattr(adata, 'obs'):
             _add_obs(adata, atlas)  # 细胞表数据（对应obs）,
         else:
-            print("Skipping obs layer")
+            logger.info("Skipping obs layer")
 
         if hasattr(adata, 'var'):
             _add_var(adata, atlas)  # 基因表数据（对应var）
         else:
-            print("Skipping var layer")
+            logger.info("Skipping var layer")
 
         if hasattr(adata, 'X'):
             start_time = time.time()
@@ -2355,17 +2261,17 @@ def load_anndata(adata:AnnData, atlas:Atlas):
             end_time = time.time()
             logger.info(" X表的导入用时为： " + str(end_time - start_time))
         else:
-            print("Skipping X layer")
+            logger.info("Skipping X layer")
 
         if hasattr(adata, 'obsm'):
             _add_obsm(adata,atlas)
         else:
-            print("Skipping obsm layer")
+            logger.info("Skipping obsm layer")
 
         if hasattr(adata, 'varm'):
             _add_varm(adata,atlas)
         else:
-            print("Skipping varm layer")
+            logger.info("Skipping varm layer")
 
         # 显示表结构
         logger.debug("数据库表结构:")
@@ -2653,7 +2559,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         global_data_counter = np.int64(0)
         global_indptr_offset = np.int64(0)
 
-        for chunk_idx in tqdm(range(total_chunks), desc="导入 X_HyS chunks"):
+        for chunk_idx in tqdm(range(total_chunks), desc="读取进度"):
             start = chunk_idx * chunk_size
             end = min(start + chunk_size, n_cells)
             size = end - start
@@ -2720,7 +2626,6 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         logger.info(
             f"导入完成：cells={n_cells:,}, nnz={global_data_counter:,}"
         )
-        print(f"✔ 导入完成：cells={n_cells:,}, nnz={global_data_counter:,}")
 
         return True
 
@@ -2832,7 +2737,7 @@ def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name
         atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
         logger.info("var表已更新")
 
-    logger.info("清洗基因名 已完成!")
+    print("gene_names_duplicated Done")
     return True
 
 # 示例

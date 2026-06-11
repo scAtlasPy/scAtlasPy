@@ -4,7 +4,8 @@ import numpy as np
 from tqdm import tqdm
 import pandas as pd
 import time
-
+import logging
+logger = logging.getLogger('Atlas')
 
 # 流式 PCA ；支持 minibatch 训练 + 推理
 class StreamingPCA:
@@ -114,7 +115,6 @@ class StreamingPCA:
         );
         """
         atlas.connection.execute(sql)
-        print("obsm_X_pca 新建完成")
 
 
     # 新建 varm_PCs 表
@@ -158,7 +158,6 @@ class StreamingPCA:
         );
         """
         atlas.connection.execute(sql)
-        print("varm_PCs 新建完成")
 
 
     # 新建 uns_pca_stats 表
@@ -198,7 +197,6 @@ class StreamingPCA:
         );
         """
         atlas.connection.execute(sql)
-        print("uns_pca_stats 新建完成")
 
 
     # 写 obsm_X_pca 表
@@ -366,9 +364,6 @@ class StreamingPCA:
 
             sap.tl.fit(...)
         """
-        print("[PCA] Start fitting...")
-        print(f"[PCA] fit_batches = {self.fit_batches}")
-        print(f"[PCA] buffer_batch_num = {self.buffer_batch_num}")
 
         batch_count = 0
 
@@ -379,14 +374,14 @@ class StreamingPCA:
                     max_batches=self.fit_batches,
                 ),
                 total=self.fit_batches,
-                desc="[PCA] partial_fit batches"
+                desc="PCA"
         ):
             self.ipca.partial_fit(X_batch)
 
             batch_count += 1
 
             if batch_count % 10 == 0:
-                print(f"[PCA] partial_fit batch = {batch_count}/{self.fit_batches}")
+                logger.info(f"[PCA] partial_fit batch = {batch_count}/{self.fit_batches}")
 
         if batch_count == 0:
             raise RuntimeError("[PCA] 没有获得任何 minibatch，无法训练 PCA")
@@ -396,31 +391,28 @@ class StreamingPCA:
         self.explained_variance_ = self.ipca.explained_variance_.astype(np.float32)
         self.explained_variance_ratio_ = self.ipca.explained_variance_ratio_.astype(np.float32)
 
-        print("[PCA] Fit done")
-        print(f"[PCA] actual fitted batches = {batch_count}")
-
         cum_ratio = np.cumsum(self.explained_variance_ratio_)
 
-        print("[PCA] 累计解释方差比例（前 {} 个主成分）：{:.4f}".format(
+        logger.info("[PCA] 累计解释方差比例（前 {} 个主成分）：{:.4f}".format(
             len(self.explained_variance_ratio_),
             self.explained_variance_ratio_.sum()
         ))
 
-        print("[PCA] 前 10 个主成分的累计解释方差比例：")
-        print(cum_ratio[:10])
+        logger.info("[PCA] 前 10 个主成分的累计解释方差比例：")
+        logger.info(cum_ratio[:10])
 
-        print("[PCA] 最终累计解释方差比例：{:.4f}".format(cum_ratio[-1]))
+        logger.info("[PCA] 最终累计解释方差比例：{:.4f}".format(cum_ratio[-1]))
 
         total_ratio = cum_ratio[-1]
 
         if total_ratio < 0.1:
-            print(" PCA解释比例较低，可能需要检查数据或增加主成分数")
+            logger.info(" PCA解释比例较低，可能需要检查数据或增加主成分数")
         elif total_ratio < 0.2:
-            print(" PCA解释比例一般（单细胞中常见）")
+            logger.info(" PCA解释比例一般（单细胞中常见）")
         elif total_ratio < 0.4:
-            print(" PCA解释比例正常")
+            logger.info(" PCA解释比例正常")
         else:
-            print(" PCA解释比例较高，结构较明显")
+            logger.info(" PCA解释比例较高，结构较明显")
 
         return self
 
@@ -454,7 +446,6 @@ class StreamingPCA:
 
             sap.tl.transform(...)
         """
-        print("[PCA] Start transforming...")
 
         cell_offset = 0  # 关键：全局递增
 
@@ -468,8 +459,6 @@ class StreamingPCA:
                 X_pca,
                 cell_offset
             )
-
-        print("[PCA] Transform done")
 
 
     # 主函数
@@ -506,7 +495,6 @@ class StreamingPCA:
 
             sap.tl.fit_transform(...)
         """
-        print("[PCA] Fit + Transform")
 
         # 训练
         self.fit(atlas)
@@ -607,8 +595,6 @@ class StreamingPCA:
         # 转置回 PCA 原始格式；(gene, pc) -> (pc, gene)
         components_ = pcs.T.astype(np.float32)
 
-        print(f"[Load] components_ shape = {components_.shape}")
-
         return components_
 
 
@@ -658,9 +644,9 @@ class StreamingPCA:
         # 对比信息
         components = self.load_components(atlas)
         if np.array_equal(components, self.components_):
-            print(" components 提取正确")
+            logger.info(" components 提取正确")
         if np.allclose(components, self.components_):
-            print(" components 提取正确")
+            logger.info(" components 提取正确")
 
 
 # 流式 PCA 入口
@@ -711,8 +697,6 @@ def pca(
     """
     t_start = time.time()
 
-    print("\n==== sap.tl.pca ====")
-
     pca_runner = StreamingPCA(
         n_components=n_components,
         fit_batches=fit_batches,
@@ -722,6 +706,4 @@ def pca(
     pca_runner.run(atlas)
 
     t_end = time.time()
-    print(f"[PCA] total time = {t_end - t_start:.2f} seconds")
-
-    return pca_runner
+    print(f" PCA Done, total time = {t_end - t_start:.2f} seconds")

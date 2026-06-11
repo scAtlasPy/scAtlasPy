@@ -1,6 +1,6 @@
 from _duckdb import DuckDBPyConnection
 from ..data import Atlas
-from typing import Any
+from tqdm import tqdm
 from typing import Literal
 from typing import Optional
 import logging
@@ -130,8 +130,8 @@ def normalize_total(
 
         sap.pp.normalize_total(...)
     """
-    print("==== normalize_total_streaming_cell_chunk ====")
-    start = datetime.now()
+
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -153,16 +153,12 @@ def normalize_total(
         raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
 
     # 2. 删除源表旧 normalize 字段
-    print("Step 1: drop old normalize column")
-
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
     # 3. 创建目标表
-    print("Step 2: create target table")
-
     conn.execute("DROP TABLE IF EXISTS X_HyS_data_norm")
 
     conn.execute("""
@@ -182,22 +178,23 @@ def normalize_total(
     """).fetchone()
 
     if min_cell is None:
-        print("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    print(f"cell_id range = {min_cell:,} ~ {max_cell:,}")
-    print(f"chunk_cells = {chunk_cells:,}")
-    print(f"chunks = {n_chunks:,}")
-
     # 5. cell 分块：小 _cell_sum_chunk + 写入目标表
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="normalize_total",
+        unit="chunk",
+    )
+
+    for i in pbar:
 
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
-
-        print(f"  -> chunk {i + 1}/{n_chunks}: cell [{c_start:,}, {c_end:,}]")
 
         # 只计算当前 cell chunk 的 sum
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
@@ -230,8 +227,6 @@ def normalize_total(
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
     # 6. 替换原表
-    print("Step 4: replace table")
-
     conn.execute("DROP TABLE X_HyS_data")
     conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
 
@@ -243,8 +238,7 @@ def normalize_total(
         collect=True,
     )
 
-    print("normalize_total_streaming_cell_chunk 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"normalize_total Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # atlas.connection.execute("CHECKPOINT")
 # atlas.connection.close()
@@ -300,8 +294,7 @@ def normalize_total_scale_factor(
         sap.pp.normalize_total_scale_factor(...)
     """
 
-    print("==== normalize_total (scale_factor only, CHUNKED) ====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -340,22 +333,23 @@ def normalize_total_scale_factor(
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        print("obs 为空，跳过")
+        logger.info("obs 为空，跳过")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    print(f"cell_id range = {min_cell:,} ~ {max_cell:,}")
-    print(f"chunk_cells = {chunk_cells:,}")
-    print(f"chunks = {n_chunks:,}")
-
     # 3. 分块计算 total + 写回 obs
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="normalize_total_scale_factor",
+        unit="chunk",
+    )
+
+    for i in pbar:
 
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
-
-        print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
         # 只计算当前 chunk 的 cell sum
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
@@ -394,8 +388,7 @@ def normalize_total_scale_factor(
         collect=True,
     )
 
-    print(f"normalize_total 完成，target_sum={target_sum}")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"normalize_total_scale_factor Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   obs 表
@@ -445,9 +438,7 @@ def log1p(
         sap.pp.log1p(...)
     """
 
-    logger.info("开始执行 log1p (chunked)...")
-    print("==== log1p (chunked) ====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -488,18 +479,22 @@ def log1p(
     """).fetchone()
 
     if min_id is None:
-        print("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="log1p",
+        unit="chunk",
+    )
+
+    for i in pbar:
         start_id = min_id + i * chunk_ids
         end_id = start_id + chunk_ids - 1
-
-        print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
             UPDATE X_HyS_data
@@ -516,9 +511,7 @@ def log1p(
         collect=True,
     )
 
-    # 5. 结束
-    print("log1p (chunked) 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -568,9 +561,7 @@ def expm1(
         sap.pp.expm1(...)
     """
 
-    logger.info("开始执行 expm1 (chunked)...")
-    print("==== expm1 (chunked) ====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -614,18 +605,23 @@ def expm1(
     """).fetchone()
 
     if min_id is None:
-        print("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="expm1",
+        unit="chunk",
+    )
+
+    for i in pbar:
+
         start_id = min_id + i * chunk_ids
         end_id = start_id + chunk_ids - 1
-
-        print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
             UPDATE X_HyS_data
@@ -642,9 +638,7 @@ def expm1(
         collect=True,
     )
 
-    # 5. 结束
-    print("expm1 (chunked) 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"expm1 Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -704,8 +698,7 @@ def normalize_and_log1p(
         sap.pp.normalize_and_log1p(...)
     """
 
-    print("==== normalize_and_log1p (Scanpy-equivalent) ====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
     try:
@@ -756,18 +749,24 @@ def normalize_and_log1p(
     """).fetchone()
 
     if min_id is None:
-        print("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"log1p 分 {n_chunks} 个 id chunk")
 
     # 5. 分块 UPDATE
-    for i in range(n_chunks):
+    # cell-wise QC：分块处理
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="normalize_and_log1p",
+        unit="chunk",
+    )
+
+    for i in pbar:
+
         start_id = min_id + i * chunk_ids
         end_id   = start_id + chunk_ids - 1
-
-        print(f"  -> chunk {i+1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(f"""
             UPDATE X_HyS_data AS x
@@ -785,9 +784,7 @@ def normalize_and_log1p(
         collect=True,
     )
 
-    # 6. 结束
-    print("normalize_and_log1p 完成")
-    print("总耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"normalize_and_log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -811,7 +808,7 @@ def highly_variable_genes(
         obs_filter_col: str = "filter_cells",
         var_filter_col: str = "filter_genes",
         inplace: bool = True,
-):
+) -> None:
     """识别高变基因。
 
     通过 ``flavor`` 参数选择不同的高变基因筛选方法。
@@ -871,8 +868,10 @@ def highly_variable_genes(
         其他情况下返回 ``None``。
     """
 
+    start_time = datetime.now()
+
     if flavor in ["cv", "var"]:
-        return _highly_variable_genes_basic(
+         _highly_variable_genes_basic(
             atlas=atlas,
             flavor=flavor,
             n_top_genes=n_top_genes,
@@ -881,7 +880,7 @@ def highly_variable_genes(
         )
 
     elif flavor == "seurat":
-        return _highly_variable_genes_seurat(
+        _highly_variable_genes_seurat(
             atlas=atlas,
             n_top_genes=n_top_genes,
             add_var_col=add_var_col,
@@ -902,6 +901,10 @@ def highly_variable_genes(
             f"不支持的 flavor: {flavor}. "
             "可选值为: 'seurat', 'cv', 'var'"
         )
+
+    print(f"highly_variable_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    return None
+
 
 def _highly_variable_genes_basic(
                         atlas: Atlas,
@@ -945,9 +948,6 @@ def _highly_variable_genes_basic(
 
         sap.pp.highly_variable_genes(...)
     """
-
-    print("==== highly_variable_genes (CSR + DuckDB, all-cells stats) ====")
-    start = datetime.now()
 
     conn = atlas.connection
     try:
@@ -997,7 +997,6 @@ def _highly_variable_genes_basic(
         raise ValueError("obs 为空，无法计算 highly_variable_genes")
 
     # 计算每个 gene 的全细胞 mean / var / std ; 不补 0，直接用 sum / sumsq / N_cells 推导
-    print("Step 1: 计算 gene-level 统计量（全细胞含0）")
 
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_stats AS
@@ -1050,7 +1049,6 @@ def _highly_variable_genes_basic(
     """)
 
     # 把统计量和 score 写回 var，后续画图直接复用
-    print("Step 1.5: 写入 var.hvg_mean / hvg_var / hvg_std / hvg_score")
 
     conn.execute("""
         UPDATE var
@@ -1083,7 +1081,6 @@ def _highly_variable_genes_basic(
 
     # 选 top genes
     if n_top_genes is not None:
-        print(f"Step 2: 选取 top {n_top_genes} genes")
 
         conn.execute(f"""
             CREATE OR REPLACE TEMP TABLE _hvg AS
@@ -1093,7 +1090,6 @@ def _highly_variable_genes_basic(
             LIMIT {int(n_top_genes)}
         """)
     else:
-        print("Step 2: n_top_genes=None，全部标记为 True")
 
         conn.execute("""
             CREATE OR REPLACE TEMP TABLE _hvg AS
@@ -1102,7 +1098,6 @@ def _highly_variable_genes_basic(
         """)
 
     # 在 var 表中写入布尔结果
-    print(f"Step 3: 写入 var.{add_var_col}")
 
     conn.execute(f"""
         ALTER TABLE var
@@ -1129,9 +1124,6 @@ def _highly_variable_genes_basic(
         collect=True,
     )
 
-    # 结束
-    print("highly_variable_genes 完成（全细胞含0统计版）")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
 # 运行结果
 #   var 表
@@ -1220,10 +1212,6 @@ def _highly_variable_genes_seurat(
         sap.pp._highly_variable_genes_seurat(...)
     """
 
-
-    print("==== _highly_variable_genes_seurat (Scanpy-like) ====")
-    start = datetime.now()
-
     conn = atlas.connection
 
     if conn is None:
@@ -1252,7 +1240,7 @@ def _highly_variable_genes_seurat(
             对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
 
         Returns
--------
+        -------
         quoted_name
             加双引号后的 SQL 标识符。
 
@@ -1313,19 +1301,19 @@ def _highly_variable_genes_seurat(
     has_var_filter = var_filter_col in var_cols
 
     if use_filtered:
-        print("[INFO] use_filtered=True")
+        logger.info("[INFO] use_filtered=True")
 
         if has_obs_filter:
-            print(f"[INFO] 使用 obs.{obs_filter_col}=TRUE 的 cells")
+            logger.info(f"[INFO] 使用 obs.{obs_filter_col}=TRUE 的 cells")
         else:
-            print(f"[WARN] obs 中不存在 {obs_filter_col}，将使用全部 cells")
+            logger.info(f"[WARN] obs 中不存在 {obs_filter_col}，将使用全部 cells")
 
         if has_var_filter:
-            print(f"[INFO] 使用 var.{var_filter_col}=TRUE 的 genes")
+            logger.info(f"[INFO] 使用 var.{var_filter_col}=TRUE 的 genes")
         else:
-            print(f"[WARN] var 中不存在 {var_filter_col}，将使用全部 genes")
+            logger.info(f"[WARN] var 中不存在 {var_filter_col}，将使用全部 genes")
     else:
-        print("[INFO] use_filtered=False，使用全部 cells / genes")
+        logger.info("[INFO] use_filtered=False，使用全部 cells / genes")
 
     # -------------------------------------------------
     # 4. 构建临时 keep 表
@@ -1377,10 +1365,6 @@ def _highly_variable_genes_seurat(
     if n_genes == 0:
         raise ValueError("用于 HVG 的 gene 数量为 0")
 
-    print(f"[INFO] HVG cells = {n_cells:,}")
-    print(f"[INFO] HVG genes = {n_genes:,}")
-    print(f"[INFO] use_data = {use_data}")
-
     # -------------------------------------------------
     # 5. SQL 聚合 gene-level sum / sumsq
     #
@@ -1394,7 +1378,6 @@ def _highly_variable_genes_seurat(
     #     sum_x
     #     sum_x2
     # -------------------------------------------------
-    print("Step 1: SQL 聚合 gene-level sum / sumsq（expm1 后）")
 
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_sum AS
@@ -1433,7 +1416,6 @@ def _highly_variable_genes_seurat(
     # -------------------------------------------------
     # 6. Python 小表计算 mean / variance / dispersion
     # -------------------------------------------------
-    print("Step 2: Python 计算 means / dispersions")
 
     sum_x = gene_df["sum_x"].to_numpy(dtype=np.float64)
     sum_x2 = gene_df["sum_x2"].to_numpy(dtype=np.float64)
@@ -1472,7 +1454,6 @@ def _highly_variable_genes_seurat(
     # -------------------------------------------------
     # 7. mean 分箱：Scanpy seurat 使用 pd.cut(means, bins=n_bins)
     # -------------------------------------------------
-    print("Step 3: mean 分箱")
 
     work = gene_df[[
         "atlas_gene_id",
@@ -1505,7 +1486,6 @@ def _highly_variable_genes_seurat(
     #     avg = 0
     # 这样 normalized dispersion = dispersion / dispersion = 1
     # -------------------------------------------------
-    print("Step 4: bin 内标准化 dispersions_norm")
 
     disp_stats = work.groupby("mean_bin", observed=True)["dispersions"].agg(
         avg="mean",
@@ -1543,7 +1523,6 @@ def _highly_variable_genes_seurat(
     # - 选 normalized dispersion 最高的 n_top_genes
     # - ties 可能导致数量略多；这里为了工程可控，严格选 top N
     # -------------------------------------------------
-    print("Step 5: 选择 highly variable genes")
 
     work["highly_variable_rank"] = np.nan
     work[add_var_col] = False
@@ -1574,8 +1553,6 @@ def _highly_variable_genes_seurat(
 
         work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
         work[add_var_col] = work["atlas_gene_id"].isin(top_ids)
-
-        print(f"[INFO] n_top_genes={n_top_genes}，cutoffs 已忽略")
 
     else:
         # Scanpy cutoff 模式：nan_to_num 后判断范围
@@ -1608,12 +1585,6 @@ def _highly_variable_genes_seurat(
         ))
 
         work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
-
-        print(
-            f"[INFO] cutoff 模式: "
-            f"min_mean={min_mean}, max_mean={max_mean}, "
-            f"min_disp={min_disp}, max_disp={max_disp}"
-        )
 
     # -------------------------------------------------
     # 10. 合并回 gene_df
@@ -1648,13 +1619,11 @@ def _highly_variable_genes_seurat(
     gene_df[add_var_col] = gene_df[add_var_col].fillna(False).astype(bool)
 
     hvg_count = int(gene_df[add_var_col].sum())
-    print(f"[INFO] selected HVGs = {hvg_count:,}")
 
     # -------------------------------------------------
     # 11. 写回 var
     # -------------------------------------------------
     if inplace:
-        print("Step 6: 写回 var")
 
         conn.execute(f"""
             ALTER TABLE var
@@ -1690,7 +1659,7 @@ def _highly_variable_genes_seurat(
             "dispersions_norm",
         ]].copy()
 
-        # ✅ 修改 A：先清空全量 var 的旧结果，避免 use_filtered=True 时旧 TRUE 残留
+        # 先清空全量 var 的旧结果，避免 use_filtered=True 时旧 TRUE 残留
         conn.execute(f"""
             UPDATE var
             SET
@@ -1750,9 +1719,6 @@ def _highly_variable_genes_seurat(
             pass
 
     gc.collect()
-
-    print("_highly_variable_genes_seurat 完成")
-    print("耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
     if not inplace:
         return gene_df
@@ -1814,15 +1780,13 @@ def scale(
         sap.pp.scale(...)
     """
 
-    print("\n==== scale_ultra_safe_update_by_id_chunk_direct_zero_aware ====")
-    start_all = datetime.now()
+    start_time = datetime.now()
     conn = atlas.connection
 
     # 0. 并行
     try:
         n_threads = 4
         conn.execute(f"PRAGMA threads={n_threads}")
-        print(f"-> DuckDB threads = {n_threads}")
     except Exception:
         pass
 
@@ -1859,11 +1823,9 @@ def scale(
     conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_var_col} REAL """)
 
     # 3. 准备目标 gene 集合
-    print("-> 准备 target genes ...")
     conn.execute("DROP TABLE IF EXISTS _target_genes")
 
     if use_hvg:
-        print("-> 使用 HVG gene 子集")
         conn.execute(f"""
             CREATE TEMP TABLE _target_genes AS
             SELECT atlas_gene_id
@@ -1882,11 +1844,8 @@ def scale(
     """).fetchone()[0]
 
     if n_genes == 0:
-        print("无 gene，退出")
         conn.execute("DROP TABLE IF EXISTS _target_genes")
         return
-
-    print(f"-> Total target genes: {n_genes}")
 
     # 获取全细胞数量
     n_cells = conn.execute("""
@@ -1897,10 +1856,7 @@ def scale(
         conn.execute("DROP TABLE IF EXISTS _target_genes")
         raise ValueError("obs 为空，无法计算 scale")
 
-    print(f"-> Total cells for zero-aware scaling: {n_cells:,}")
-
     # 4. 一次性计算所有目标 gene 的 mean/std
-    print("-> 计算 _gene_stat（一次，全局，含 0 统计）...")
     t0 = datetime.now()
 
     conn.execute("DROP TABLE IF EXISTS _gene_stat")
@@ -1927,12 +1883,7 @@ def scale(
         GROUP BY x.atlas_gene_id
     """)
 
-    print("   _gene_stat 完成，耗时: {:.2f} 秒".format(
-        (datetime.now() - t0).total_seconds()
-    ))
-
     # 5. 更新 var：记录 0 值 的缩放因子 -> z-score
-    print("-> 更新 var ...")
     t0 = datetime.now()
 
     conn.execute("BEGIN")
@@ -1960,39 +1911,36 @@ def scale(
         conn.execute("ROLLBACK")
         raise
 
-    print("   var 更新完成，耗时: {:.2f} 秒".format(
-        (datetime.now() - t0).total_seconds()
-    ))
-
     # 6. 获取 id 范围
-    print("-> 获取 id 范围 ...")
     min_id, max_id, total_rows = conn.execute("""
         SELECT MIN(id), MAX(id), COUNT(*)
         FROM X_HyS_data
     """).fetchone()
 
-    print(f"-> X_HyS_data rows: {total_rows}")
-    print(f"-> id range: {min_id} ~ {max_id}")
-    print(f"-> chunk_ids: {chunk_ids}")
-
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"-> Total id chunks: {n_chunks}")
 
     # 7. 按 id 分块直接 UPDATE
-    print("-> 开始按 id 分块直接回写 ...")
 
     done_chunks = 0
     update_start_all = datetime.now()
 
-    for chunk_idx in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="scale",
+        unit="chunk",
+    )
+
+    for chunk_idx in pbar:
+
         chunk_start = min_id + chunk_idx * chunk_ids
         chunk_end = min(chunk_start + chunk_ids - 1, max_id)
 
         t0 = datetime.now()
-        print(
-            f"\n[Chunk {chunk_idx + 1}/{n_chunks}] "
-            f"id: {chunk_start} ~ {chunk_end}"
-        )
+        # print(
+        #     f"\n[Chunk {chunk_idx + 1}/{n_chunks}] "
+        #     f"id: {chunk_start} ~ {chunk_end}"
+        # )
 
         conn.execute("BEGIN")
         try:
@@ -2033,16 +1981,7 @@ def scale(
         remain_chunks = n_chunks - done_chunks
         eta_seconds = avg_chunk_seconds * remain_chunks
 
-        print(
-            "   本块完成，耗时: {:.2f} 秒 | 进度: {}/{} | 预计剩余: {:.2f} 分钟".format(
-                chunk_seconds, done_chunks, n_chunks, eta_seconds / 60
-            )
-        )
-
-    # 8. 清理临时表
-    print("\n-> 清理临时表 ...")
-
-    # 清理内存
+    # 8. 清理内存
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_target_genes", "_gene_stat"],
@@ -2050,10 +1989,7 @@ def scale(
         collect=True,
     )
 
-    print("\n==== scale_ultra_safe_update_by_id_chunk_direct_zero_aware 完成 ====")
-    print("总耗时: {:.2f} 秒".format(
-        (datetime.now() - start_all).total_seconds()
-    ))
+    print(f"scale Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -2101,9 +2037,7 @@ def sqrt(
         sap.pp.sqrt(...)
     """
 
-    logger.info("开始执行 sqrt (chunked)...")
-    print("==== sqrt (chunked) ====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -2153,18 +2087,26 @@ def sqrt(
     ).fetchone()
 
     if min_id is None:
-        print("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data 为空，跳过")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-    print(f"共 {n_chunks} 个 chunk")
 
     # 4. 分块 UPDATE
-    for i in range(n_chunks):
+    # cell-wise QC：分块处理
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="sqrt",
+        unit="chunk",
+    )
+
+    for i in pbar:
+
         start_id = min_id + i * chunk_ids
         end_id = start_id + chunk_ids - 1
 
-        print(f"  -> chunk {i + 1}/{n_chunks}: id [{start_id}, {end_id}]")
+        # print(f"  -> chunk {i + 1}/{n_chunks}: id [{start_id}, {end_id}]")
 
         conn.execute(
             f"""
@@ -2183,10 +2125,7 @@ def sqrt(
         collect=True,
     )
 
-    # 5. 结束
-    elapsed = (datetime.now() - start).total_seconds()
-    print("sqrt (chunked) 完成")
-    print(f"耗时: {elapsed:.2f} 秒")
+    print(f"sqrt Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表

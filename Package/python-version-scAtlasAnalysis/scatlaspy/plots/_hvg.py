@@ -78,7 +78,7 @@ def _highly_variable_genes_plot(
 
         sap.pl.highly_variable_genes_plot(...)
     """
-    print("\n==== highly_variable_genes_plot ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -209,9 +209,6 @@ def _highly_variable_genes_plot(
     plt.tight_layout(pad=1.0)
     plt.show()
 
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
-
 
 # 高变基因（HVG, Highly Variable Genes）选择图 ： seurat 版本
 def _highly_variable_genes_plot_seurat(
@@ -257,7 +254,7 @@ def _highly_variable_genes_plot_seurat(
 
         sap.pl.highly_variable_genes_plot_seurat(...)
     """
-    print("\n==== highly_variable_genes_plot_like_seurat ====")
+
     start = datetime.now()
 
     conn = atlas.connection
@@ -344,9 +341,6 @@ def _highly_variable_genes_plot_seurat(
         raise ValueError(
             "var.means 全为空，无法绘图。请先运行 highly_variable_genes_seurat(atlas)。"
         )
-
-    print(f"[INFO] genes for plot = {len(df):,}")
-    print(f"[INFO] HVGs = {int(df['is_hvg'].sum()):,}")
 
     # 非 HVG 可选抽样
     if sample_other is not None:
@@ -461,11 +455,8 @@ def _highly_variable_genes_plot_seurat(
 
     if save is not None:
         plt.savefig(save, dpi=300, bbox_inches="tight")
-        print(f"[INFO] figure saved to: {save}")
 
     plt.show()
-
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
 
 
 # 高变基因（HVG, Highly Variable Genes）选择图

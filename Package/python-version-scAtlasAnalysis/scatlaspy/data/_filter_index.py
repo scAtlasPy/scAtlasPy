@@ -2,6 +2,11 @@ import duckdb
 from os import PathLike, fspath
 from tqdm import tqdm
 from datetime import datetime
+import logging
+
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
+
 
 class FilterIndexBuilder:
 
@@ -105,7 +110,6 @@ class FilterIndexBuilder:
 
             sap.run(...)
         """
-        print("开始流程")
 
         start = datetime.now()
 
@@ -118,11 +122,7 @@ class FilterIndexBuilder:
 
         self.conn.close()
 
-        print(" build_read_index ，耗时: {:.2f} 秒".format(
-            (datetime.now() - start).total_seconds()
-        ))
-
-        print("全流程完成")
+        print(f"build_read_index Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
 
 
     # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
@@ -142,7 +142,6 @@ class FilterIndexBuilder:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-        print("Step 1. 重排 obs： 过滤细胞 + 生成 filter_cell_id ")
 
         # 删除旧列
         self.conn.execute(""" ALTER TABLE obs DROP COLUMN IF EXISTS filter_cell_id """)
@@ -153,10 +152,10 @@ class FilterIndexBuilder:
         # 如果 self.cell_condition is None，则不过滤 cell
         if self.cell_condition is None:
             where_sql = "TRUE"
-            print("  -> 不使用 cell 过滤，保留全部 cells")
+            logger.info("  -> 不使用 cell 过滤，保留全部 cells")
         else:
             where_sql = f"{self.cell_condition}=TRUE"
-            print(f"  -> 使用 cell 条件: {where_sql} 过滤")
+            logger.info(f"  -> 使用 cell 条件: {where_sql} 过滤")
 
         # 只对满足条件的 cell 重新编号
         self.conn.execute(f"""
@@ -171,8 +170,6 @@ class FilterIndexBuilder:
         ) AS sub
         WHERE obs.atlas_cell_id = sub.atlas_cell_id
         """)
-
-        print(" obs 重排完成")
 
 
     # 2.重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
@@ -192,7 +189,6 @@ class FilterIndexBuilder:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-        print("Step 2. 重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id")
 
         # 删除旧列 + 新增列
         self.conn.execute(""" ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id """)
@@ -204,16 +200,16 @@ class FilterIndexBuilder:
 
         if self.gene_condition is not None:
             conditions.append(f"({self.gene_condition})=TRUE")
-            print(f"  -> 使用 gene 条件: {self.gene_condition}=TRUE")
+            logger.info(f"  -> 使用 gene 条件: {self.gene_condition}=TRUE")
         else:
-            print("  -> 不使用 gene 过滤条件")
+            logger.info("  -> 不使用 gene 过滤条件")
 
         # 如果启用 HVG，则叠加 highly_variable_genes
         if self.use_hvg:
             conditions.append("highly_variable_genes=TRUE")
-            print("  -> 使用 HVG gene 子集")
+            logger.info("  -> 使用 HVG gene 子集")
         else:
-            print("  -> 不使用 HVG 过滤，保留全部 genes")
+            logger.info("  -> 不使用 HVG 过滤，保留全部 genes")
 
         condition = " AND ".join(conditions) if conditions else "TRUE"
 
@@ -230,8 +226,6 @@ class FilterIndexBuilder:
         ) AS sub
         WHERE var.atlas_gene_id = sub.atlas_gene_id
         """)
-
-        print(f" var 重排完成（use_hvg={self.use_hvg}）")
 
 
     # 3.重建新表：X_HyS_data_filtered
@@ -251,7 +245,6 @@ class FilterIndexBuilder:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-        print("Step 3. 重建新表：X_HyS_data_filtered")
 
         conn = self.conn
 
@@ -303,15 +296,15 @@ class FilterIndexBuilder:
         """).fetchone()
 
         if min_id is None:
-            print(" X_HyS_data 是空表，跳过")
+            logger.debug(" X_HyS_data 是空表，跳过")
             return
 
         total_rows = max_id - min_id + 1
         current = min_id
 
-        print(f"rowid 范围: {min_id:,} ~ {max_id:,}")
-        print(f"总扫描行数: {total_rows:,}")
-        print(f"chunk_size = {self.chunk_size:,}")
+        logger.debug(f"rowid 范围: {min_id:,} ~ {max_id:,}")
+        logger.debug(f"总扫描行数: {total_rows:,}")
+        logger.debug(f"chunk_size = {self.chunk_size:,}")
 
         pbar = tqdm(
             total=total_rows,
@@ -346,8 +339,6 @@ class FilterIndexBuilder:
 
         pbar.close()
 
-        print(" 计算 tid ...")
-
         # 计算 tid
         conn.execute(f"""
             UPDATE X_HyS_data_filtered
@@ -359,7 +350,7 @@ class FilterIndexBuilder:
             FROM X_HyS_data_filtered
         """).fetchone()[0]
 
-        print(f" X_HyS_data_filtered 构建完成！nnz = {final_nnz:,}")
+        logger.info(f" X_HyS_data_filtered 构建完成！nnz = {final_nnz:,}")
 
         # 清理临时表
         conn.execute("DROP TABLE IF EXISTS _obs_keep")
@@ -382,8 +373,6 @@ class FilterIndexBuilder:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
-
-        print(" 4.重建新表：X_HyS_indptr_filtered ")
 
         conn = self.conn
 
@@ -411,8 +400,6 @@ class FilterIndexBuilder:
         ORDER BY obs.filter_cell_id
         """)
 
-        print(" cell_nnz 补齐完成")
-
         # 3. 生成 prefix sum ；这里 indptr 存的是每个 cell 的结束位置 end_ptr
         conn.execute("""
         CREATE OR REPLACE TABLE X_HyS_indptr_filtered AS
@@ -426,4 +413,3 @@ class FilterIndexBuilder:
         conn.execute("DROP TABLE IF EXISTS cell_nnz_raw")
         conn.execute("DROP TABLE IF EXISTS cell_nnz")
 
-        print(" X_HyS_indptr_filtered 构建完成（已从 obs 补齐空 cell）")

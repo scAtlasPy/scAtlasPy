@@ -7,6 +7,7 @@ from typing import Optional
 import logging
 import math
 import gc
+from tqdm import tqdm
 
 
 def _cleanup_qc_after_step(
@@ -64,7 +65,7 @@ def _cleanup_qc_after_step(
 
 # 获取日志记录器
 logger = logging.getLogger('Atlas')
-
+logger.addHandler(logging.NullHandler())
 
 ''' 过滤细胞 '''
 def filter_cells(
@@ -116,18 +117,15 @@ def filter_cells(
 
         sap.pp.filter_cells(...)
     """
-
-    print("开始过滤细胞...（CHUNKED / BIG-DATA SAFE）")
-    start = datetime.now()
-
+    
+    start_time = datetime.now()
     conn = atlas.connection
-
 
     # 0. DuckDB 参数
     try:
         th = os.cpu_count() or 1
         conn.execute(f"PRAGMA threads={th}")
-        print(f"DuckDB threads = {th}")
+
     except Exception:
         pass
 
@@ -139,9 +137,7 @@ def filter_cells(
     """)
 
     total_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
-    print(f"总细胞数 = {total_cells:,}")
 
-    print("初始化 obs 过滤字段为 FALSE ...")
     conn.execute(f"""
         UPDATE obs
         SET {add_data} = FALSE
@@ -169,26 +165,25 @@ def filter_cells(
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        print("obs 为空，跳过。")
+        logger.info("obs 为空，跳过。")
         return
 
     n_chunks = (max_cell - min_cell + chunk_cells) // chunk_cells
 
-    print(f"cell_id 范围: {min_cell:,} ~ {max_cell:,}")
-    print(f"chunk_cells = {chunk_cells:,}")
-    print(f"预计分块数 = {n_chunks:,}")
-
     keep_total = 0
 
     # 4. 分块聚合 + 分块写回
-    print("开始分块统计并写回 obs ...")
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="filter_cells",
+        unit="chunk",
+    )
 
-    for i in range(n_chunks):
+    for i in pbar:
 
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
-
-        print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
         # 只创建当前 chunk 的临时表，不再创建全量 keep_cells
         conn.execute("DROP TABLE IF EXISTS keep_cells_chunk")
@@ -230,9 +225,8 @@ def filter_cells(
     # 5. 统计结果
     removed = total_cells - keep_total
 
-    print(f"保留细胞 = {keep_total:,}")
-    print(f"过滤细胞 = {removed:,} ({removed / total_cells * 100:.2f}%)")
-    print("总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"filter_cells Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    print(f"保留细胞 = {keep_total} / {total_cells} , ({keep_total / total_cells * 100:.2f}%)")
 
     # 内存清理
     _cleanup_qc_after_step(
@@ -297,7 +291,6 @@ def filter_genes(
         sap.pp.filter_genes(...)
     """
 
-    print("==== 开始基因过滤（SQL FAST）====")
     start_time = datetime.now()
 
     conn = atlas.connection
@@ -306,7 +299,6 @@ def filter_genes(
     try:
         th = os.cpu_count() or 1
         conn.execute(f"PRAGMA threads={th}")
-        print(f"DuckDB 多线程: {th}")
     except Exception:
         pass
 
@@ -314,8 +306,6 @@ def filter_genes(
     n_genes = conn.execute("""
         SELECT COUNT(*) FROM var
     """).fetchone()[0]
-
-    print(f"检测到基因数量: {n_genes:,}")
 
     # 2. 添加过滤字段
     conn.execute(f"""
@@ -341,7 +331,6 @@ def filter_genes(
     condition = " AND ".join(conds) if conds else "TRUE"
 
     # 4. 聚合 X_HyS_data
-    print("开始聚合 X_HyS_data ...")
 
     conn.execute("DROP TABLE IF EXISTS gene_filter_stats_tmp")
 
@@ -357,7 +346,6 @@ def filter_genes(
     """)
 
     # 5. 纯 SQL 写回 var
-    print("写回 var.filter_genes ...")
 
     conn.execute(f"""
         UPDATE var
@@ -388,8 +376,8 @@ def filter_genes(
 
     conn.execute("DROP TABLE IF EXISTS gene_filter_stats_tmp")
 
-    print(f"过滤完成: 保留基因 {keep_count:,} / 总 {n_genes:,}")
-    print("总耗时: {:.2f} 秒".format((datetime.now() - start_time).total_seconds()))
+    print(f"filter_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    print(f"保留基因 = {keep_count} / {n_genes} , ({keep_count / n_genes * 100:.2f}%)")
 
     # 函数结束后兜底清理
     _cleanup_qc_after_step(
@@ -440,8 +428,7 @@ def calculate_cell_total_counts(
         sap.pp.calculate_cell_total_counts(...)
     """
 
-    print("==== DuckDB CSR 原生计算每个细胞的总 UMI（CHUNKED）====")
-    start = datetime.now()
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -449,7 +436,6 @@ def calculate_cell_total_counts(
     try:
         th = os.cpu_count() or 1
         conn.execute(f"PRAGMA threads={th}")
-        print(f"DuckDB threads = {th}")
     except Exception:
         pass
 
@@ -473,26 +459,26 @@ def calculate_cell_total_counts(
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        print("obs 为空，跳过。")
+        logger.info("obs 为空，跳过。")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    print(f"cell_id 范围: {min_cell:,} ~ {max_cell:,}")
-    print(f"chunk_cells = {chunk_cells:,}")
-    print(f"预计分块数 = {n_chunks:,}")
-
     total_updated_cells = 0
 
     # Step 2：分块聚合 + 分块写回
-    print("开始分块统计每个细胞 total UMI ...")
 
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="cell_total_counts",
+        unit="chunk",
+    )
+
+    for i in pbar:
 
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
-
-        print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
         # 只创建当前 chunk 的小临时表
         conn.execute("DROP TABLE IF EXISTS cell_total_counts_chunk")
@@ -524,8 +510,7 @@ def calculate_cell_total_counts(
         # 每个 chunk 后立即清理
         conn.execute("DROP TABLE IF EXISTS cell_total_counts_chunk")
 
-    print(f"已计算细胞数 = {total_updated_cells:,}")
-    print("完成，总耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"calculate_cell_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
     # 内存清理
     _cleanup_qc_after_step(
@@ -575,8 +560,8 @@ def calculate_gene_total_counts(
 
         sap.pp.calculate_gene_total_counts(...)
     """
-    logger.info("开始使用 CSR 计算每个基因的总表达值和平均表达值")
-    start = datetime.now()
+
+    start_time = datetime.now()
 
     conn = atlas.connection
 
@@ -584,7 +569,7 @@ def calculate_gene_total_counts(
     try:
         th = os.cpu_count() or 1
         conn.execute(f"PRAGMA threads={th}")
-        logger.info(f"DuckDB threads = {th}")
+
     except:
         pass
 
@@ -598,11 +583,8 @@ def calculate_gene_total_counts(
 
     # 细胞总数（用于 mean）
     total_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
-    logger.info(f"总细胞数 = {total_cells:,}")
 
     # Step 1: CSR 聚合（一次扫描）
-    logger.info("聚合 X_HyS_data（按 atlas_gene_id）...")
-
     conn.execute("DROP TABLE IF EXISTS gene_stats_tmp")
     conn.execute("""
         CREATE TEMP TABLE gene_stats_tmp AS
@@ -614,7 +596,6 @@ def calculate_gene_total_counts(
     """)
 
     # Step 2: 写回 var（atlas_gene_id == atlas_gene_id）
-    logger.info("更新 var 表...")
 
     conn.execute(f"""
         UPDATE var
@@ -626,7 +607,6 @@ def calculate_gene_total_counts(
     """)
 
     # Step 3: 零表达基因补零（CSR 中不存在）
-    logger.info("处理完全零表达的基因...")
 
     conn.execute(f"""
         UPDATE var
@@ -646,8 +626,7 @@ def calculate_gene_total_counts(
         collect=True,
     )
 
-    logger.info("基因表达统计完成")
-    logger.info("耗时 {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+    print(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 # var 表  新增字段
@@ -691,8 +670,8 @@ def calculate_qc_metrics(
 
         sap.pp.calculate_qc_metrics(...)
     """
-    print("==== calculate_qc_metrics (CHUNK CELL + ONE-PASS GENE) ====")
-    start = datetime.now()
+
+    start_time = datetime.now()
     conn = atlas.connection
 
     if qc_vars is None:
@@ -704,8 +683,6 @@ def calculate_qc_metrics(
     try:
         th = os.cpu_count() or 8
         conn.execute(f"PRAGMA threads={th}")
-        conn.execute("PRAGMA memory_limit='8GB'")
-        print(f"DuckDB threads = {th}")
     except Exception:
         pass
 
@@ -771,22 +748,23 @@ def calculate_qc_metrics(
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        print("obs 为空，跳过。")
+        logger.info("obs 为空，跳过。")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    print(f"Cells: {max_cell - min_cell + 1:,}")
-    print(f"Chunk size: {chunk_cells:,}")
-    print(f"Chunks: {n_chunks:,}")
-
     # cell-wise QC：分块处理
-    for i in range(n_chunks):
+    pbar = tqdm(
+        range(n_chunks),
+        total=n_chunks,
+        desc="calculate_qc_metrics",
+        unit="chunk",
+    )
+
+    for i in pbar:
 
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
-
-        print(f"[Chunk {i + 1}/{n_chunks}] cells {c_start:,} ~ {c_end:,}")
 
         qc_sum_expr = []
         for qc_key in qc_vars.keys():
@@ -840,7 +818,6 @@ def calculate_qc_metrics(
         conn.execute("DROP TABLE IF EXISTS _cell_chunk")
 
     # gene-wise QC：循环外一次性计算
-    print("计算 gene-wise QC ...")
 
     conn.execute("""
         ALTER TABLE var
@@ -890,8 +867,7 @@ def calculate_qc_metrics(
         collect=True,
     )
 
-    print("✅ QC 完成")
-    print("耗时:", (datetime.now() - start).total_seconds())
+    print(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 # var 表  新增字段

@@ -255,7 +255,7 @@ def pca(
 
         sap.pl.pca(...)
     """
-    print("\n==== pca plot ====")
+
     start = datetime.now()
     conn = atlas.connection
 
@@ -383,8 +383,6 @@ def pca(
         # color 是 obs 表列名
         if color in obs_cols:
 
-            print(f"[COLOR] obs column: {color}")
-
             conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
 
             obs_color_df = conn.execute(f"""
@@ -416,8 +414,6 @@ def pca(
             """, [color]).fetchone()
 
             if gene_row is not None:
-
-                print(f"[COLOR] gene expression: {color}")
 
                 if use_data not in x_cols:
                     raise ValueError(
@@ -687,8 +683,6 @@ def pca(
 
     plt.show()
 
-    print(f"Done in {(datetime.now() - start).total_seconds():.2f}s")
-
     if return_df:
         return plot_df
 
@@ -839,7 +833,6 @@ def pca_variance_ratio(
 
         # 保存图像
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
-        print(f"[pca_variance_ratio] 图像已保存到: {save_path}")
 
     # 6. 显示或关闭图像
     # 如果 show=None，则默认显示图像
@@ -987,7 +980,6 @@ def pca_variance_ratio_cumsum(
             raise ValueError("save 只支持 bool 或 str。")
 
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
-        print(f"[pca_variance_ratio_cumsum] 图像已保存到: {save_path}")
 
     # 6. 显示或关闭图像
     if show is None:
