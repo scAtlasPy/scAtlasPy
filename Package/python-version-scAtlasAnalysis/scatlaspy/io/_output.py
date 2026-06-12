@@ -19,37 +19,35 @@ def write_h5ad(
     atlas: Atlas,
     out_h5ad_path: PathLike[str] | str,
     *,
-    batch_cells: int = 1_000_000, 
+    batch_cells: int = 1_000_000,
 ):
     """将 Atlas 数据库导出为 h5ad 文件。
 
-    该函数从 Atlas 的 ``obs``、``var``、``X_HyS_indptr``、``X_HyS_data``、``obsm_*`` 和
-    ``varm_*`` 表中重建 AnnData/HDF5 结构。
-
-    表达矩阵会按 ``batch_cells`` 分块写出，避免一次性将全量稀疏矩阵加载到内存。
+    该函数从 Atlas 数据库读取 ``obs``、``var``、表达矩阵和可用的 embedding 结果，并写出为标准 AnnData ``.h5ad`` 文件，方便继续在 Scanpy 或其他工具中分析。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     out_h5ad_path
-        导出的 h5ad 文件保存路径。
-
+        输出 ``.h5ad`` 文件路径。
     batch_cells
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+        导出表达矩阵时每批处理的细胞数。
 
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库或当前图形窗口。
 
     Examples
     --------
-    调用该函数：::
+    导出当前数据库::
 
-        sap.io.write_h5ad(...)
-    """
+        sap.io.write_h5ad(atlas, r"F:\\data\\pbmc_export.h5ad")
+
+    使用对象式 API 并降低单批内存占用::
+
+        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)"""
 
     start_time = datetime.now()
 
@@ -263,36 +261,31 @@ def get_obs_df(
     atlas: Atlas,
     columns: list[str] | str | None = None,
 ):
-    """将 Atlas 的 ``obs`` 表导出为 pandas DataFrame。
+    """读取 Atlas 数据库中的 obs 表。
 
-    该函数读取 ``obs`` 表中的指定列或全部列，并返回普通 pandas DataFrame。
-
-    它适合快速检查细胞元数据、过滤标记、聚类标签、细胞类型注释或 QC 指标。
+    该函数把 ``obs`` 表中的全部列或指定列读取为 DataFrame，适合快速检查细胞元数据、导出统计结果或与外部分析结果合并。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     columns
-        需要导出的 ``obs`` 列名列表；为 ``None`` 时导出全部列。
+        需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
 
     Returns
     -------
-    result
-        导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    pandas.DataFrame
+        包含查询、统计或绘图所需数据的表格。
 
     Examples
     --------
-    调用该函数：::
+    读取全部 obs 信息::
 
-        sap.io.get_obs_df(...)
-    """
+        obs = sap.io.get_obs_df(atlas)
+
+    只读取聚类和自动注释列::
+
+        obs = sap.io.get_obs_df(atlas, columns=["kmeans", "cell_type_auto"])"""
 
     start_time = datetime.now()
 
@@ -369,45 +362,42 @@ def get_anndata(
     include_obsm: bool = True,
     include_varm: bool = True,
 ):
-    """将 Atlas 数据库导出为 AnnData 对象。
+    """从 Atlas 数据库构建 AnnData 对象。
 
-    该函数从 Atlas 表中重建 ``obs``、``var`` 和 CSR 表达矩阵，并可选择导出 ``obsm`` 与 ``varm``。
-
-    可以通过 ``atlas_cell_ids`` 导出细胞子集，通过 ``use_data`` 指定使用哪个表达字段作为 AnnData 的 ``X``。
+    该函数按指定细胞 ID、表达矩阵表和可选 embedding 结果，从 Atlas 数据库中构建内存 AnnData。适合抽样导出、局部分析或与 Scanpy 工作流衔接。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     atlas_cell_ids
-        需要导出的 Atlas 细胞 ID 子集。
-
+        需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
     use_data
-        ``X_HyS_data`` 中用作 AnnData ``X`` 的表达字段。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     include_obsm
-        是否导出 ``obsm_*`` 表。
-
+        是否把 ``obsm_*`` 结果表写入返回的 AnnData。
     include_varm
-        是否导出 ``varm_*`` 表。
+        是否把 ``varm_*`` 结果表写入返回的 AnnData。
 
     Returns
     -------
-    result
-        导出的对象、读取后的 AnnData/DataFrame，或文件写入结果。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    AnnData
+        从 Atlas 数据库构建的 AnnData 对象。
 
     Examples
     --------
-    调用该函数：::
+    导出指定细胞::
 
-        sap.io.get_anndata(...)
-    """
+        cell_ids = [0, 1, 2, 3]
+        adata = sap.io.get_anndata(atlas, cell_ids, use_data="data_log1p")
+
+    导出过滤后的前 5000 个细胞并包含 UMAP/PCA::
+
+        cell_ids = atlas.query(
+            "SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000"
+        )["atlas_cell_id"].tolist()
+        adata = atlas.get_anndata(cell_ids, include_obsm=True, include_varm=True)"""
 
 
 

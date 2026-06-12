@@ -11,37 +11,40 @@ logger = logging.getLogger('Atlas')
 # MiniBatchKMeans
 class StreamingKMeans:
 
-    """基于 PCA embedding 的流式 MiniBatchKMeans 聚类器。
+    """?? PCA embedding ??? MiniBatchKMeans ????
 
-    该类属于KMeans 聚类模块，用于封装该模块中的参数、数据库连接和中间状态。
-
-    基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
-
-    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
-
-    当前实现中会访问或生成的关键表包括：``kmeans_centers``、``obs``、``varm_PCs``。
+    ???? Atlas ?? PCA loadings ????? minibatch????????? PCA
+    ????? ``MiniBatchKMeans.partial_fit`` ???????????????
+    ``obs`` ????????? ``sap.tl.kmeans`` ??????
 
     Parameters
     ----------
     n_components
-        输出维度或 PCA 主成分数量。
-
+        ??? PCA ????????? ``varm_PCs`` ???? PC ?????
     n_clusters
-        KMeans 聚类数量。
-
+        K-means ????
     batch_size
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
+        ?? minibatch ??????
     fit_batches
-        用于流式拟合模型的 minibatch 数量上限。
-
+        ???? MiniBatchKMeans ? minibatch ?????
     buffer_batch_num
-        shuffle buffer 中缓存的 minibatch 数量。
+        ``multi-pass`` ??? shuffle buffer ???? batch ???
 
     Notes
     -----
-    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
-    """
+    ???? ``sap.tl.kmeans`` ??????????????????? PCA ????????
+
+    Examples
+    --------
+    ????? API ??::
+
+        sap.tl.pca(atlas, n_components=50)
+        sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
+
+    ??????????????????::
+
+        model = StreamingKMeans(n_components=30, n_clusters=20, batch_size=4096)
+        model.run(atlas, use_obs_col="kmeans_20", write_to_obs=True)"""
     def __init__(
             self,
             n_components: int=50,
@@ -538,59 +541,52 @@ def kmeans(
         write_to_obs: bool = True,
 ):
 
-    """在 PCA embedding 上运行 MiniBatch KMeans 聚类。
+    """基于 PCA embedding 进行 MiniBatch K-means 聚类。
 
-    该函数读取 ``varm_PCs`` 中保存的 PCA loadings，通过 Atlas minibatch 计算每批细胞的 PCA 坐标，并使用
-    ``MiniBatchKMeans`` 进行流式训练和预测。
-
-    聚类标签可以写入独立的 ``use_cluster_table``，也可以同步写回 ``obs`` 表的 ``use_obs_col`` 列，供 UMAP
-    和聚类大小图使用。
+    该函数读取 ``obsm_X_pca`` 中的 PCA 坐标，拟合 MiniBatchKMeans 模型，并将聚类标签写入 ``obs`` 或聚类统计表。适合在大规模细胞数据上快速生成粗粒度 cluster。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     n_components
-        输出维度或 PCA 主成分数量。
-
+        输出维度或参与计算的主成分数量。
     n_clusters
-        KMeans 聚类数量。
-
+        K-means 聚类数。
     batch_size
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
+        每个小批量包含的细胞数量。较大值通常更快，但会增加内存占用。
     fit_batches
-        用于流式拟合模型的 minibatch 数量上限。
-
+        用于拟合模型的小批量数量。较大值通常更稳定，但计算时间更长。
     buffer_batch_num
-        shuffle buffer 中缓存的 minibatch 数量。
-
+        预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
     use_obs_col
-        ``obs`` 中用于写入或读取结果的列名。
-
+        读取或写入 ``obs`` 的列名。
     use_cluster_table
-        保存细胞聚类标签的数据库表名。
-
+        保存聚类统计结果的数据库表名。
     write_to_obs
-        是否将结果同步写入 ``obs`` 表。
+        是否把结果写回 ``obs`` 表。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+    Any
+        函数返回底层实现产生的结果。
 
     Examples
     --------
-    调用该函数：::
+    使用前 30 个主成分聚成 20 类::
 
-        sap.tl.kmeans(...)
-    """
+        sap.tl.pca(atlas, n_components=50)
+        sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
+
+    写入自定义 obs 列，并保存 cluster 统计表::
+
+        sap.tl.kmeans(
+            atlas,
+            n_clusters=50,
+            use_obs_col="kmeans_50",
+            use_cluster_table="obs_cluster_kmeans_50",
+        )"""
+
     t_start = time.time()
 
     conn = atlas.connection

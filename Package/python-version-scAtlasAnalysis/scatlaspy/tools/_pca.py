@@ -9,29 +9,39 @@ logger = logging.getLogger('Atlas')
 
 # 流式 PCA ；支持 minibatch 训练 + 推理
 class StreamingPCA:
-    """面向 Atlas 数据库的流式 PCA 模型。
+    """?? Atlas ?????? PCA ???
 
-    该类封装 sklearn ``IncrementalPCA``，用于在不一次性加载完整表达矩阵的情况下训练 PCA。
-
-    流程上会通过 Atlas 的 minibatch 读取接口分批获取表达矩阵，先用 ``partial_fit`` 学习主成分，
-    再将全量细胞分批投影到 PCA 空间，并把结果写入 ``obsm_X_pca``、``varm_PCs`` 和 ``uns_pca_stats``。
+    ???? sklearn ``IncrementalPCA``?????????????????????? PCA?
+    ???? Atlas minibatch ??????????????? ``partial_fit`` ??????
+    ??????????? PCA ????????? ``obsm_X_pca``?``varm_PCs`` ?
+    ``uns_pca_stats``?
 
     Parameters
     ----------
     n_components
-        需要计算的 PCA 主成分数量。
-
+        ????? PCA ??????
     fit_batches
-        用于拟合 IncrementalPCA 的 minibatch 数量上限。
-
+        ???? IncrementalPCA ? minibatch ?????
     buffer_batch_num
-        ``multi-pass`` 读取时 shuffle buffer 中缓存的 batch 数量。
+        ``multi-pass`` ??? shuffle buffer ???? batch ???
 
     Notes
     -----
-    该类服务于 ``sap.tl.pca`` 风格的 PCA 计算入口。与 Scanpy 的常规全量 PCA 相比，它更适合大规模
-    单细胞数据，但结果会受到 minibatch 顺序、训练 batch 数量和 shuffle buffer 设置影响。
-    """
+    ???? ``sap.tl.pca`` ??????????????????????????
+
+    Examples
+    --------
+    ????? API ??::
+
+        atlas.build_read_index(use_hvg=True)
+        sap.tl.pca(atlas, n_components=50)
+
+    ???????? PCA ?::
+
+        model = StreamingPCA(n_components=50, fit_batches=1000)
+        model.run(atlas)
+        results = model.get_results()
+        results["explained_variance_ratio"][:5]"""
 
     # 初始化
     def __init__(self,
@@ -229,7 +239,7 @@ class StreamingPCA:
             数据库表名。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -350,7 +360,7 @@ class StreamingPCA:
             embedding 结果表。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -417,7 +427,7 @@ class StreamingPCA:
         return self
 
 
-    # 降维
+    # transform
     def transform(self, atlas: Atlas):
 
         """执行 ``transform`` 的核心功能。
@@ -481,7 +491,7 @@ class StreamingPCA:
             embedding 结果表。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -521,7 +531,7 @@ class StreamingPCA:
         数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -567,7 +577,7 @@ class StreamingPCA:
             数据库表名。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -599,30 +609,36 @@ class StreamingPCA:
 
 
     def run(self, atlas: Atlas):
-        """执行完整流式 PCA 计算流程。
+        """?????? PCA ?????
 
-        该方法会先创建 PCA 坐标表、PC loadings 表和 PCA 统计表，然后调用 ``fit_transform`` 完成
-        IncrementalPCA 的训练和全量细胞投影。
-
-        完成后，函数会重新从数据库读取 ``varm_PCs``，与当前对象中的 ``components_`` 做一致性检查，
-        用于确认主成分 loadings 已经按预期写入。
+        ??????? PCA ????PC loadings ?? PCA ????????
+        ``fit_transform`` ?? IncrementalPCA ?????????????????
+        ???? Atlas ????
 
         Parameters
         ----------
         atlas
-            Atlas 对象。
-
-            要求已经完成过滤索引构建，并能够通过 ``atlas.get_minibatch_dense`` 读取表达矩阵 minibatch。
+            Atlas ?????????????????????
+            ``atlas.get_minibatch_dense`` ?????? minibatch?
 
         Returns
         -------
         None
-            结果写入 Atlas 数据库表中，不额外返回对象。
+            PCA ???loadings ??????????? Atlas ?????
 
-        Notes
-        -----
-        该方法是类级主流程；用户通常通过 ``pca(atlas, ...)`` 入口调用，而不是直接实例化并运行该类。
-        """
+        Examples
+        --------
+        ???? API ?? PCA::
+
+            atlas.build_read_index(use_hvg=True)
+            sap.tl.pca(atlas, n_components=50)
+
+        ?????????????::
+
+            model = StreamingPCA(n_components=30, fit_batches=500)
+            model.run(atlas)
+            atlas.head("obsm_X_pca")
+            atlas.head("uns_pca_stats")"""
 
         # 建表；建表维度必须和本次 PCA 输出维度 self.n_components 对齐
         self._create_pca_table(
@@ -657,44 +673,42 @@ def pca(
         buffer_batch_num: int = 5,
 ):
 
-    """基于 Atlas minibatch 计算流式 PCA。
+    """基于 Atlas 表达矩阵计算 PCA。
 
-    该函数使用 ``StreamingPCA`` 从 Atlas dense minibatch 中分批拟合
-    ``IncrementalPCA``，然后再次遍历数据写出每个细胞的 PCA 坐标。
-
-    结果保存到 ``obsm_X_pca``、``varm_PCs`` 和 ``uns_pca_stats``，与 Scanpy 中
-    ``sc.tl.pca`` 产生的 obsm/varm/uns 结构相对应。
+    该函数从 Atlas 的小批量读取接口中读取表达矩阵，使用增量 PCA 方式拟合主成分，并把细胞坐标和方差解释比例写入数据库。它类似 Scanpy 的 ``sc.tl.pca``，但面向大规模数据采用分块训练。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     n_components
-        输出维度或 PCA 主成分数量。
-
+        输出维度或参与计算的主成分数量。
     fit_batches
-        用于流式拟合模型的 minibatch 数量上限。
-
+        用于拟合模型的小批量数量。较大值通常更稳定，但计算时间更长。
     buffer_batch_num
-        shuffle buffer 中缓存的 minibatch 数量。
+        预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+    Any
+        函数返回底层实现产生的结果。
 
     Examples
     --------
-    调用该函数：::
+    在默认读取索引上计算 50 个主成分::
 
-        sap.tl.pca(...)
-    """
+        atlas.build_read_index(use_hvg=True)
+        sap.tl.pca(atlas, n_components=50)
+
+    使用更多拟合批次提高稳定性::
+
+        sap.tl.pca(
+            atlas,
+            n_components=80,
+            fit_batches=2000,
+            buffer_batch_num=8,
+        )"""
+
     t_start = time.time()
 
     pca_runner = StreamingPCA(

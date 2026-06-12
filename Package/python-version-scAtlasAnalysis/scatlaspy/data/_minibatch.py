@@ -13,25 +13,41 @@ logger.addHandler(logging.NullHandler())
 ''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
 class ShuffleBuffer:
 
-    """dense minibatch 随机缓冲区。
+    """dense minibatch ??????
 
-    该类属于minibatch 流式读取模块，用于封装该模块中的参数、数据库连接和中间状态。
-
-    从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
-
-    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
+    ??? ``multi-pass`` ???????????? dense minibatch????????
+    ?????????????? batch ???????????????????
+    ????? PCA?K-means ??????
 
     Parameters
     ----------
     gene_num
-        dense minibatch 中的基因数量。
-
+        dense minibatch ??????????????????
     batch_size
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
+        ?? minibatch ??????
     buffer_batch_num
-        shuffle buffer 中缓存的 minibatch 数量。
-    """
+        ????????? minibatch ???????
+        ``batch_size * buffer_batch_num`` ????
+
+    Notes
+    -----
+    ???????????????? ``atlas.get_minibatch_dense(...)`` ?????
+
+    Examples
+    --------
+    ??????????? dense minibatch::
+
+        buffer = ShuffleBuffer(gene_num=2000, batch_size=128, buffer_batch_num=2)
+        buffer.add_batch(np.zeros((128, 2000), dtype=np.float32))
+        buffer.add_batch(np.ones((128, 2000), dtype=np.float32))
+        X_batch = buffer.sample_batch()
+
+    ?????????? buffer ?????::
+
+        buffer = ShuffleBuffer(gene_num=100, batch_size=32, buffer_batch_num=4)
+        buffer.add_batch(np.zeros((20, 100), dtype=np.float32))
+        remaining_batches = buffer.flush_remaining()"""
+
     def __init__(self, gene_num: int, batch_size: int, buffer_batch_num: int):
 
         """初始化对象。
@@ -79,26 +95,37 @@ class ShuffleBuffer:
 
     # 写入一个 batch 到 缓冲区
     def add_batch(self, X_batch: np.ndarray):
-        """向 shuffle buffer 写入一个 dense minibatch。
+        """? shuffle buffer ???? dense minibatch?
 
-        该方法接收已经从 Atlas 表中恢复出的 dense 表达矩阵，并把它追加到当前 buffer 的写入位置。
-
-        当 buffer 中累计的细胞数达到 ``buffer_batch_num * batch_size`` 后，函数会对 buffer 内细胞顺序做一次
-        随机打乱，并切换到输出阶段，后续由 ``sample_batch`` 按批取出。
+        ?????? dense ???????????????????
+        ``batch_size * buffer_batch_num`` ????????????????????
+        ??????? ``sample_batch`` ????????
 
         Parameters
         ----------
         X_batch
-            单个 dense minibatch。
+            ?? dense minibatch???????????????????????
+            ``gene_num`` ???????? ``batch_size``????? batch ?????
 
-            行表示细胞，列表示基因；列数需要与初始化时的 ``gene_num`` 一致，行数通常为 ``batch_size``，
-            最后一个 batch 也可以小于 ``batch_size``。
+        Returns
+        -------
+        None
+            ??????????????????????
 
-        Notes
-        -----
-        该方法用于 ``multi-pass`` minibatch 读取流程。它只负责写入和触发 shuffle，不直接返回训练数据。
-        如果 buffer 已经进入输出阶段，再调用该方法会直接返回，避免覆盖尚未消费的数据。
-        """
+        Examples
+        --------
+        ???? batch ??? shuffle::
+
+            buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
+            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
+            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
+            X_batch = buffer.sample_batch()
+
+        ??????????``sample_batch`` ??? ``None``::
+
+            buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
+            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
+            assert buffer.sample_batch() is None"""
 
         # 如果 buffer 已经满并进入输出阶段，不再写入
         if self.shuffled:
@@ -219,36 +246,53 @@ class ShuffleBuffer:
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
 class MultiThreadedMinibatchFetcher:
 
-    """多线程 minibatch 读取器。
+    """??? minibatch ????
 
-    该类属于minibatch 流式读取模块，用于封装该模块中的参数、数据库连接和中间状态。
-
-    从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
-
-    对象方法通常按照固定流程依次调用，用户一般通过公共入口函数或 ``run`` 方法使用。
-
-    当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``、``X_HyS_indptr_filtered``、``var``。
+    ??? Atlas ???? HyS ??? batch ?? CSR ? dense ?????
+    ?? producer/queue ?????????????? batch ???????
+    ?? ``atlas.get_minibatch_csr`` ? ``atlas.get_minibatch_dense`` ??????
 
     Parameters
     ----------
     file_path
-        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
-
+        Atlas ``.sasql`` ????????
     batch_size
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
+        ?? minibatch ??????
     x_type
-        输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
-
+        ??????????? ``"CSR"`` ? ``"dense"``?
     pass_mode
-        minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
-
+        ?????``"single-pass"`` ???????``"multi-pass"`` ???
+        ``ShuffleBuffer`` ?????????
     buffer_batch_num
-        shuffle buffer 中缓存的 minibatch 数量。
-
+        ``multi-pass`` ??? shuffle buffer ??? batch ???
     max_batches
-        最多输出的 minibatch 数量；为 ``None`` 时不限制。
-    """
+        ????? minibatch ???? ``None`` ?????
+
+    Notes
+    -----
+    ?????????????????? Atlas ?????? minibatch?
+
+    Examples
+    --------
+    ?? Atlas ??? dense batch ????::
+
+        atlas.build_read_index(use_hvg=True)
+        for X_batch, cell_ids in atlas.get_minibatch_dense(batch_size=2048):
+            print(X_batch.shape, len(cell_ids))
+            break
+
+    ?????????????::
+
+        fetcher = MultiThreadedMinibatchFetcher(
+            atlas.file_path,
+            batch_size=1024,
+            x_type="CSR",
+            pass_mode="single-pass",
+            max_batches=10,
+        )
+        for batch in fetcher.run():
+            print(batch.shape)"""
+
     def __init__(self, file_path: PathLike[str] | str,
                  batch_size: int=2048,
                  x_type: str= "CSR",
@@ -289,6 +333,7 @@ class MultiThreadedMinibatchFetcher:
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
         """
+
         self.X_type = x_type  # 输出的X表格式 "CSR" "dense"(宽表)
         self.file_path = fspath(file_path)  # sasql 文件的绝对路径
         self.batch_size = batch_size
@@ -345,7 +390,7 @@ class MultiThreadedMinibatchFetcher:
         当前实现中会访问或生成的关键表包括：``var``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -378,7 +423,7 @@ class MultiThreadedMinibatchFetcher:
         当前实现中会访问或生成的关键表包括：``var``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -408,7 +453,7 @@ class MultiThreadedMinibatchFetcher:
         当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -422,7 +467,7 @@ class MultiThreadedMinibatchFetcher:
 
         fetch_record_indptr = conn.execute(
             """
-            SELECT indptr 
+            SELECT indptr
             FROM X_HyS_indptr_filtered
             -- ORDER BY filter_cell_id  -- 新增
             """
@@ -448,7 +493,7 @@ class MultiThreadedMinibatchFetcher:
         当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 

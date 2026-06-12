@@ -181,57 +181,51 @@ def violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """按分组绘制基因表达小提琴图。
+    """绘制基因或 obs 指标的 violin 图。
 
-    该函数从 ``obs`` 中读取分组信息，并从 ``X_HyS_data`` 中读取指定基因的表达值，按 group 绘制表达分布。
-
-    功能上类似 Scanpy 的 ``sc.pl.violin``，但数据直接来自 Atlas 数据库，并支持每组抽样以控制绘图规模。
+    该函数从 Atlas 数据库读取指定基因表达或 ``obs`` 指标，并按分组绘制 violin 图。用途类似 Scanpy 的 ``sc.pl.violin``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     genes
-        需要绘制或分析的基因名称列表。
-
+        需要展示的基因名称列表。
     groupby
-        ``obs`` 中用于分组的列名。
-
+        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     sample_n_per_group
-        每个分组最多抽样的细胞数量。
-
+        每个分组抽样用于绘图的细胞数量。
     groups
-        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
-
+        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
     where
-        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
-
+        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
     order
-        分组显示顺序；为 ``None`` 时按自然排序生成。
-
+        分组或基因展示顺序。为 ``None`` 时使用默认顺序。
     save_path
-        图像或结果保存路径。
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制单个基因在 cluster 中的表达分布::
 
-        sap.pl.violin(...)
-    """
+        sap.pl.violin(atlas, keys=["MS4A1"], groupby="kmeans")
+
+    同时绘制多个 QC 指标::
+
+        sap.pl.violin(
+            atlas,
+            keys=["n_genes_by_counts", "pct_counts_mt"],
+            groupby="kmeans",
+            use_data="data_log1p",
+        )"""
 
     conn = atlas.connection
 
@@ -519,66 +513,62 @@ def stacked_violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """按分组绘制堆叠小提琴图。
+    """绘制 stacked violin marker 表达图。
 
-    该函数为多个基因和多个分组构建紧凑的 stacked violin 图，用于展示 marker 基因在不同 cluster 或细胞类型中的表达分布。
-
-    表达值从 Atlas 的 ``X_HyS_data`` 表中按需读取，并可通过每组抽样控制绘图数据量。
+    该函数按分组展示多个基因的表达分布，并将每个基因的 violin 图堆叠排列，适合展示细胞类型 marker 在 cluster 或注释类别中的表达模式。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     genes
-        需要绘制或分析的基因名称列表。
-
+        需要展示的基因名称列表。
     groupby
-        ``obs`` 中用于分组的列名。
-
+        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     sample_n_per_group
-        每个分组最多抽样的细胞数量。
-
+        每个分组抽样用于绘图的细胞数量。
     groups
-        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
-
+        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
     where
-        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
-
+        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
     order
-        分组显示顺序；为 ``None`` 时按自然排序生成。
-
+        分组或基因展示顺序。为 ``None`` 时使用默认顺序。
     color_vmin
-        颜色映射下限。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     color_vmax
-        颜色映射上限。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     font_size
-        绘图中文字大小。
-
+        绘图字体大小。
     save_path
-        图像或结果保存路径。
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制多个 marker genes 的 stacked violin::
 
-        sap.pl.stacked_violin(...)
-    """
+        sap.pl.stacked_violin(
+            atlas,
+            genes=["MS4A1", "CD3D", "LYZ", "NKG7"],
+            groupby="kmeans",
+        )
+
+    按自动注释细胞类型展示，并交换坐标轴::
+
+        sap.pl.stacked_violin(
+            atlas,
+            genes=["MS4A1", "CD3D", "LYZ"],
+            groupby="cell_type_auto",
+            swap_axes=True,
+            save=r"F:\\figures\\stacked_violin.png",
+        )"""
     conn = atlas.connection
 
     if isinstance(genes, str):

@@ -197,78 +197,73 @@ def umap(
 
     """绘制 UMAP embedding。
 
-    该函数从 ``obsm_X_umap`` 中读取 UMAP 坐标，并根据 ``color`` 参数自动判断是 obs 分类/连续变量还是 gene
-    expression feature。
-
-    当 ``color`` 为 obs 列时绘制分类或连续 UMAP；当 ``color`` 为基因名时，从 ``X_HyS_data``
-    中读取表达值并绘制 feature plot；混合输入会分别生成结果。
+    该函数读取 ``obsm_X_umap`` 或指定 UMAP 结果表，并按 ``obs`` 列、表达值或其他变量着色，绘制二维 UMAP 散点图。它类似 Scanpy 的 ``sc.pl.umap``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     color
-        用于着色的 ``obs`` 列名、基因名或它们的列表。
-
+        用于给散点上色的 ``obs`` 列名或数值列名。
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
-
+        绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
     where
-        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
-
+        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
-    ncols
-        多面板绘图时每行的子图数量。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     point_size
         散点大小。
-
     alpha
-        绘图透明度。
-
+        图形元素透明度。
     cmap
-        连续变量使用的 colormap。
-
+        连续变量使用的 Matplotlib colormap 名称。
     palette
-        离散分类变量使用的颜色方案。
-
+        离散变量使用的颜色列表或调色板。
     legend_loc
         图例位置。
-
+    ncols
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     frameon
-        是否显示图框。
-
-    save_path
-        图像或结果保存路径。
-
+        是否显示坐标轴边框。
     plot_batch_size
-        绘图时分批读取数据库的细胞数量。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
+    save_path
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
     return_df
-        是否返回用于绘图或分析的 DataFrame。
+        是否返回结果 DataFrame。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    按 K-means cluster 绘制 UMAP::
 
-        sap.pl.umap(...)
-    """
+        sap.tl.umap(atlas)
+        sap.pl.umap(atlas, color="kmeans")
+
+    按 marker gene 表达绘制，并保存图片::
+
+        sap.pl.umap(
+            atlas,
+            color="MS4A1",
+            use_data="data_log1p",
+            save=r"F:\\figures\\umap_MS4A1.png",
+        )
+
+    使用自定义 UMAP 表和较小点大小::
+
+        sap.pl.umap(
+            atlas,
+            use_table="obsm_X_umap_n45_d02",
+            color="cell_type_auto",
+            point_size=0.5,
+        )"""
 
     conn = atlas.connection
 

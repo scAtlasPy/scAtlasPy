@@ -274,75 +274,68 @@ def rank_genes_groups(
         lfc_eps: float = 1e-9,  # 对齐 Scanpy 的 logFC 伪计数
         inplace: bool = True,
         return_df: bool = True,
-) -> pd.DataFrame | None:
-    """按分组计算差异表达基因。
+):
+    """按细胞分组计算 marker gene 排名。
 
-    该函数从 ``obs`` 和 ``X_HyS_data`` 中按 ``groupby`` 聚合表达统计量，计算目标组与参考组之间的
-    t-test、log fold change、表达比例和校正 p 值。
-
-    结果按组写入以 ``add_table`` 为前缀的数据库表，功能上对应 Scanpy 的
-    ``sc.tl.rank_genes_groups``，但适配 Atlas 的 DuckDB 存储结构。
+    该函数按 ``groupby`` 指定的 ``obs`` 分组，对每个 cluster 和参考组执行差异表达统计，并把结果写入数据库表。它类似 Scanpy 的 ``sc.tl.rank_genes_groups``，但返回结果和持久化结果都面向 Atlas 数据库。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     groupby
-        ``obs`` 中用于分组的列名。
-
+        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     groups
-        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
-
+        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
     reference
-        差异表达分析中的参考组，可以是 ``"rest"`` 或某个具体分组。
-
+        差异分析参考组。``"rest"`` 表示与其他所有细胞比较。
     n_genes
-        每个分组保留或绘制的基因数量。
-
+        每个分组保留或展示的基因数量。为 ``None`` 时保留全部可用基因。
     mask_var
-        可选的基因过滤列名，例如 ``"highly_variable_genes"``；为 ``None`` 时使用全部基因。
-
+        用于限制参与分析基因范围的 ``var`` 列名、布尔数组或条件。
     corr_method
-        多重检验校正方法，例如 ``"benjamini-hochberg"`` 或 ``"bonferroni"``。
-
+        多重检验校正方法。常用值为 ``"benjamini-hochberg"``。
     rankby_abs
         是否按统计量绝对值排序。
-
     add_table
-        保存差异表达结果时使用的结果名前缀。
-
+        写入数据库的结果表名。
     input_is_log
-        输入表达字段是否已经是 log scale。
-
+        输入表达矩阵是否已经做过对数变换。
     lfc_eps
-        计算 log fold change 时使用的微小偏移量，用于避免除零。
-
+        计算 log fold change 时加入的极小值，用于避免除零。
     inplace
-        是否将结果写回 Atlas 数据库。
-
+        是否把结果写回 Atlas 数据库。
     return_df
-        是否返回用于绘图或分析的 DataFrame。
+        是否返回结果 DataFrame。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+    pandas.DataFrame 或 None
+        当 ``return_df=True`` 时返回差异基因结果；否则结果仅写入数据库。
 
     Examples
     --------
-    调用该函数：::
+    基于 K-means cluster 计算 marker genes::
 
-        sap.tl.rank_genes_groups(...)
-    """
+        result = sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+
+    只计算指定 cluster，并保留每组前 100 个基因::
+
+        result = sap.tl.rank_genes_groups(
+            atlas,
+            groupby="kmeans",
+            groups=["0", "1", "2"],
+            n_genes=100,
+            add_table="rank_genes_groups_kmeans_top100",
+        )
+
+    计算后直接绘图和自动注释::
+
+        sap.pl.rank_genes_groups(atlas, use_table="rank_genes_groups")
+        summary_df, score_df = sap.tl.annotate_clusters(atlas, groupby="kmeans")"""
 
     method = "t-test"
 
@@ -454,7 +447,7 @@ def rank_genes_groups(
                 需要排序、格式化或转换的单个输入值。
 
             Returns
--------
+            -------
             sort_key
                 可用于自然排序的键。
 
@@ -768,6 +761,9 @@ def rank_genes_groups(
 
 
         print("rank_genes_groups 完成, 耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+
+        if return_df:
+            return result_df
 
         return None
 

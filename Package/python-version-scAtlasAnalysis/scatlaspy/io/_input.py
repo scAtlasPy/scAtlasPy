@@ -35,77 +35,50 @@ def load_h5ad(
     cells_per_block: int = 500,
     blocks_per_pool: int = 10,
 ) -> Any:
-    """统一 h5ad 导入接口。
+    """将 h5ad 文件导入 Atlas 数据库。
 
-    根据 ``load_type`` 选择不同的大 h5ad 导入策略。
+    该函数读取一个或多个 ``.h5ad`` 文件，并把细胞信息、基因信息和表达矩阵写入 Atlas 的 DuckDB 数据库。它类似 Scanpy 的 ``sc.read_h5ad`` 加对象保存流程，但面向大规模数据采用分块写入。
 
     Parameters
     ----------
-    h5ad_path : PathLike[str] | str | list[PathLike[str] | str]
-        h5ad 文件路径。
-
-        - 当 ``load_type="order"``、``"random"``时：
-          传入单个 h5ad 文件路径，类型为 ``str``。
-
-        - 当 ``load_type="list_random"`` 时：
-          可以传入多个 h5ad 文件路径，类型为 ``list[str]``；
-          也可以只传入单个路径 ``str``，函数内部会自动转成单元素列表。
-
-    atlas : Atlas
-        Atlas 对象。
-
-        通常是通过 ``sap.Atlas(...)`` 创建的数据库对象。
-        函数会将 h5ad 中的 ``obs``、``var`` 和表达矩阵写入该 Atlas 对应的 DuckDB 数据库。
-
-    load_type : {"order", "random", "list_random"}, default: "random"
-        导入方式。
-
-        - ``"order"``：
-          顺序读取单个 h5ad，保留原始 cell 顺序。
-          适合需要保留 AnnData 行顺序、并安全导入 ``obsm`` / ``varm`` 的场景。
-
-        - ``"random"``：
-          单个 h5ad 的 shuffle-window 随机导入。
-          会随机重排 cell，因此默认不导入 ``obsm``，只导入 ``varm``。
-
-        - ``"list_random"``：
-          多个 h5ad 文件的全局 block 随机导入。
-          适合多个文件大小不一致、希望整体随机混合导入的场景。
-
-    cells_per_block : int, default: 500
-        每个连续读取 block 中包含的细胞数量。
-
-        函数会按 ``cells_per_block`` 将 h5ad 切成连续 block。
-        该值越大，连续读取效率通常越高，但单个 block 占用内存也越大。
-
-    blocks_per_pool : int, default: 5
-        每次合并多少个 block 形成一个 pool / window 后写入数据库。
-
-        实际每次写入或 flush 的细胞数量大约为：
-
-        ``cells_per_block × blocks_per_pool``
-
-        该值越大，随机混合程度通常越高，但单次内存占用也越大。
-
-    store_type : {"count", "log"}, default: "count"
-        目标表达矩阵尺度。
-
-        - ``"count"``：
-          将表达矩阵以 count 尺度写入数据库。
-          如果输入 h5ad 的 ``X`` 被检测为 log 尺度，会在导入时执行 ``expm1`` 转换。
-
-        - ``"log"``：
-          将表达矩阵以 log1p 尺度写入数据库。
-          如果输入 h5ad 的 ``X`` 被检测为 count 尺度，会在导入时执行 ``log1p`` 转换。
+    h5ad_path
+        输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
+    atlas
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+    load_type
+        导入方式。``"order"`` 表示按原始顺序导入，``"random"`` 表示按随机/分块策略导入。
+    store_type
+        表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
+    cells_per_block
+        写入稀疏表达矩阵时每个细胞块包含的细胞数。
+    blocks_per_pool
+        批量写入时每个处理池包含的块数量。
 
     Returns
     -------
     Any
-        返回底层导入函数的返回结果。
+        函数返回底层实现产生的结果。
 
-        不同 ``load_type`` 对应的底层函数返回值可能不同；
-        有些函数返回导入统计信息，有些函数只执行导入流程而不显式返回结果。
-    """
+    Examples
+    --------
+    顺序导入单个 h5ad 文件::
+
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        sap.io.load_h5ad(r"F:\\data\\pbmc.h5ad", atlas, load_type="order")
+
+    使用对象式 API 导入，并指定表达值类型::
+
+        atlas.load_h5ad(r"F:\\data\\pbmc_log.h5ad", store_type="log")
+
+    分块导入多个文件::
+
+        sap.io.load_h5ad(
+            [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
+            atlas,
+            cells_per_block=1000,
+            blocks_per_pool=20,
+        )"""
+
     start_time = datetime.now()
 
     # =====================================================
@@ -1156,32 +1129,33 @@ def _load_h5ad_order(
 ''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
 def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
 
-    """导入小型单细胞数据文件。
+    """根据文件格式导入数据到 Atlas。
 
-    该函数先调用 ``_read_smart`` 根据文件后缀自动读取数据，再把得到的 AnnData 对象写入 Atlas。
-
-    它适合可以一次性载入内存的小数据集；大 h5ad 文件建议使用 ``_load_h5ad_random``、``_load_h5ad_fast_random`` 或
-    ``_load_h5ad_order``。
+    该函数是多格式输入入口，会根据 ``file_path`` 的后缀选择合适的读取方式。目前常用于把 h5ad 或未来扩展的矩阵格式导入同一个 Atlas 数据库。
 
     Parameters
     ----------
     file_path
-        输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
-
+        输入文件路径。函数会根据文件格式选择合适的读取方式。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
 
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库或当前图形窗口。
 
     Examples
     --------
-    调用该函数：::
+    自动识别并导入文件::
 
-        sap.io.load_multi_format(...)
-    """
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        sap.io.load_multi_format(r"F:\\data\\pbmc.h5ad", atlas)
+
+    使用对象式 API::
+
+        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")"""
+
     start_time = datetime.now()
     adata = _read_smart(file_path)
     load_anndata(adata, atlas)
@@ -2216,31 +2190,34 @@ def _read_smart(file_path: PathLike[str] | str):
 ''' 方法5： 顺序读取，anndata数据导入 '''
 def load_anndata(adata:AnnData, atlas:Atlas):
 
-    """将 AnnData 对象导入 Atlas 数据库。
+    """将 AnnData 对象写入 Atlas 数据库。
 
-    该函数按 AnnData 的 ``obs``、``var``、``X``、``obsm`` 和 ``varm`` 分层写入 Atlas 数据库。
-
-    表达矩阵会写成 HyS 稀疏存储结构，元数据和 embedding 会写成对应的 DuckDB 表。
+    该函数直接接收内存中的 AnnData 对象，并写入 Atlas 数据库。适合已经用 Scanpy 或其他工具完成读取、筛选或预处理后，再转入 Atlas 管理的场景。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
 
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库或当前图形窗口。
 
     Examples
     --------
-    调用该函数：::
+    从 Scanpy 读取并导入::
 
-        sap.io.load_anndata(...)
-    """
+        adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        sap.io.load_anndata(adata, atlas)
+
+    先在 AnnData 中补充元数据再导入::
+
+        adata.obs["sample"] = "sample_1"
+        atlas.load_anndata(adata)"""
 
     try:
         logger.info("准备数据表...")
@@ -2637,36 +2614,35 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
 def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
-    """在数据库中清洗并去重基因名。
+    """检查 Atlas 数据库中的基因名是否重复。
 
-    该函数直接在 ``var`` 表中检查重复基因名，并为第二次及以后出现的重复项添加 ``_1``、``_2`` 等后缀。
-
-    该步骤适合在导入后执行，以保证基因名在后续绘图、差异表达和 AnnData 导出中更容易唯一定位。
+    该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名。重复基因名可能影响按名称绘图、差异基因展示和 AnnData 导出。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     gene_name_column
-        ``var`` 表中保存基因名的列名。
+        保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    bool 或 None
+        检查结果。无法完成检查时可能返回 ``None``。
 
     Examples
     --------
-    调用该函数：::
+    检查默认基因名称列::
 
-        sap.io.gene_names_duplicated(...)
-    """
+        sap.io.gene_names_duplicated(atlas)
+
+    检查自定义列，并在发现重复后定位重复名称::
+
+        if sap.io.gene_names_duplicated(atlas, gene_name_column="gene_symbol"):
+            atlas.query(
+                "SELECT gene_symbol, COUNT(*) FROM var "
+                "GROUP BY gene_symbol HAVING COUNT(*) > 1"
+            )"""
     logger.info(f" 开始在数据库 var表 中清洗基因名 ")
 
     # 检查表是否存在

@@ -482,70 +482,61 @@ def highly_variable_genes(
         # seurat 版本参数：只传给 highly_variable_genes_plot_seurat()
         save: PathLike[str] | str | None = None,
 ):
-    """
-    绘制高变基因结果。
+    """绘制高变基因筛选结果。
 
-    该函数是 HVG 绘图的统一入口，不自动判断 flavor，
-    而是根据用户显式指定的 flavor 调用已有的两个绘图函数。
+    该函数读取 ``var`` 中的高变基因统计列，绘制基因平均表达、方差或评分分布，并高亮已经标记的高变基因。它类似 Scanpy 的 ``sc.pl.highly_variable_genes``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     flavor
-        HVG 绘图类型。
-
-        - "seurat":
-            调用 highly_variable_genes_plot_seurat()
-
-        - "cv":
-            调用 highly_variable_genes_plot()
-
-        - "var":
-            调用 highly_variable_genes_plot()
-
+        算法风格或统计方法。不同函数中可用于选择 Seurat 风格、CV 风格或方差风格等。
     hvg_key
-        var 表中表示高变基因的布尔字段名。
-
+        ``var`` 中标记高变基因的列名。
     sample_other
-        非高变基因抽样数量。为 None 时绘制全部非高变基因。
-
+        绘制高变基因图时，从非高变基因中抽样展示的数量。
     mean_key
-        cv / var 版本中，基因均值字段名。
-
+        ``var`` 中保存均值的列名。
     var_key
-        cv / var 版本中，基因方差字段名。
-
+        ``var`` 中保存方差的列名。
     std_key
-        cv / var 版本中，基因标准差字段名。
-
+        ``var`` 中保存标准差的列名。
     score_key
-        cv / var 版本中，HVG score 字段名。
-
+        ``var`` 中保存高变基因评分的列名。
     figsize
-        cv / var 版本图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     point_size_hvg
-        cv / var 版本高变基因点大小。
-
+        高变基因散点大小。
     point_size_other
-        cv / var 版本非高变基因点大小。
-
+        非高变基因散点大小。
     alpha_hvg
-        cv / var 版本高变基因点透明度。
-
+        高变基因散点透明度。
     alpha_other
-        cv / var 版本非高变基因点透明度。
-
+        非高变基因散点透明度。
     save
-        seurat 版本保存路径。
+        图片保存路径。为 ``None`` 时不保存。
 
     Returns
     -------
-    result
-        底层绘图函数返回结果。
-    """
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+
+    Examples
+    --------
+    绘制默认高变基因结果::
+
+        sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+        sap.pl.highly_variable_genes(atlas)
+
+    使用自定义高变基因列并保存图片::
+
+        sap.pl.highly_variable_genes(
+            atlas,
+            hvg_key="highly_variable_genes",
+            sample_other=50000,
+            save=r"F:\\figures\\hvg.png",
+        )"""
 
     flavor = str(flavor).lower().strip()
 

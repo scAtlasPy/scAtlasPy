@@ -184,77 +184,66 @@ def pca(
         return_df: bool = False,
 ):
 
-    """绘制 PCA embedding。
+    """绘制 PCA 细胞 embedding。
 
-    该函数从 ``obsm_X_pca`` 读取指定两个主成分坐标，并根据 ``color`` 自动判断使用 obs 元数据还是 gene
-    expression 着色。
-
-    当 ``annotate_var_explained=True`` 且存在 ``uns_pca_stats``
-    时，坐标轴会标注对应主成分的解释方差比例。
+    该函数读取 ``obsm_X_pca`` 中的细胞 PCA 坐标，并按指定 ``obs`` 列或数值变量着色，绘制二维 PCA 散点图。它类似 Scanpy 的 ``sc.pl.pca``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     color
-        用于着色的 ``obs`` 列名、基因名或它们的列表。
-
+        用于给散点上色的 ``obs`` 列名或数值列名。
     x_pc
-        PCA 散点图横轴使用的主成分索引。
-
+        横轴使用的 PCA 主成分编号，从 0 开始。
     y_pc
-        PCA 散点图纵轴使用的主成分索引。
-
+        纵轴使用的 PCA 主成分编号，从 0 开始。
     annotate_var_explained
-        是否在 PCA 坐标轴标签中标注解释方差比例。
-
+        是否在坐标轴上标注每个主成分解释的方差比例。
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
-
+        绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
+        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        ``"data_scale"``。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     point_size
         散点大小。
-
     alpha
-        绘图透明度。
-
+        图形元素透明度。
     cmap
-        连续变量使用的 colormap。
-
+        连续变量使用的 Matplotlib colormap 名称。
     palette
-        离散分类变量使用的颜色方案。
-
+        离散变量使用的颜色列表或调色板。
     legend_loc
         图例位置。
-
     frameon
-        是否显示图框。
-
+        是否显示坐标轴边框。
     return_df
-        是否返回用于绘图或分析的 DataFrame。
+        是否返回结果 DataFrame。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制 PC1 和 PC2，并按 K-means cluster 着色::
 
-        sap.pl.pca(...)
-    """
+        sap.tl.pca(atlas)
+        sap.pl.pca(atlas, color="kmeans")
+
+    绘制 PC2 和 PC3，并返回用于检查的 DataFrame::
+
+        df = sap.pl.pca(
+            atlas,
+            color="pct_counts_mt",
+            x_pc=1,
+            y_pc=2,
+            sample_n=200000,
+            return_df=True,
+        )"""
 
     start = datetime.now()
     conn = atlas.connection
@@ -278,7 +267,7 @@ def pca(
             对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
 
         Returns
--------
+        -------
         quoted_name
             加双引号后的 SQL 标识符。
 
@@ -698,51 +687,46 @@ def pca_variance_ratio(
         figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
-    """绘制 PCA 单个主成分解释方差比例。
+    """绘制 PCA 方差解释比例。
 
-    该函数读取 ``uns_pca_stats`` 中的 ``variance_ratio``，绘制前 ``n_pcs`` 个主成分各自解释方差的柱状图。
-
-    它用于判断 PCA 维度选择是否合理，以及前几个主成分是否解释了主要结构。
+    该函数读取 PCA 结果中每个主成分的 explained variance ratio，并绘制柱状图，帮助判断需要保留多少主成分。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     n_pcs
-        需要展示的主成分数量。
-
+        展示的 PCA 主成分数量。
     log
-        是否使用 log scale。
-
+        是否使用对数坐标或对数显示。
     show
-        是否立即显示图像。
-
+        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
     save
-        图像保存设置，可为布尔值、扩展名或文件名。
-
+        图片保存路径。为 ``None`` 时不保存。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     return_fig
-        是否返回 matplotlib Figure 对象。
+        是否返回 Matplotlib Figure 对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    查看前 30 个主成分解释比例::
 
-        sap.pl.pca_variance_ratio(...)
-    """
+        sap.pl.pca_variance_ratio(atlas, n_pcs=30)
+
+    保存前 50 个主成分的对数尺度图::
+
+        sap.pl.pca_variance_ratio(
+            atlas,
+            n_pcs=50,
+            log=True,
+            save=r"F:\\figures\\pca_variance_ratio.png",
+        )"""
 
     # 获取数据库连接
     conn = atlas.connection
@@ -864,51 +848,45 @@ def pca_variance_ratio_cumsum(
         figsize: tuple[float, float] | None=(16, 8),
         return_fig: bool = False,
 ):
-    """绘制 PCA 累计解释方差比例。
+    """绘制 PCA 累积方差解释比例。
 
-    该函数读取 ``uns_pca_stats``，对 ``variance_ratio`` 做累计求和并绘制曲线。
-
-    它适合辅助选择 PCA 主成分数量，例如观察累计解释方差到达平台期的位置。
+    该函数读取 PCA 方差解释比例并计算累积和，帮助判断 PCA 维度选择是否足以覆盖主要变化。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     n_pcs
-        需要展示的主成分数量。
-
+        展示的 PCA 主成分数量。
     log
-        是否使用 log scale。
-
+        是否使用对数坐标或对数显示。
     show
-        是否立即显示图像。
-
+        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
     save
-        图像保存设置，可为布尔值、扩展名或文件名。
-
+        图片保存路径。为 ``None`` 时不保存。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     return_fig
-        是否返回 matplotlib Figure 对象。
+        是否返回 Matplotlib Figure 对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    查看前 50 个主成分的累积解释比例::
 
-        sap.pl.pca_variance_ratio_cumsum(...)
-    """
+        sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=50)
+
+    返回 Figure 以便进一步修改::
+
+        fig = sap.pl.pca_variance_ratio_cumsum(
+            atlas,
+            n_pcs=80,
+            return_fig=True,
+        )"""
 
     # 1. 获取数据库连接
     conn = atlas.connection

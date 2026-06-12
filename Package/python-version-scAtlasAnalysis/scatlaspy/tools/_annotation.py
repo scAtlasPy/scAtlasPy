@@ -206,63 +206,65 @@ def annotate_clusters(
         ambiguity_threshold_medium: float = 0.03
 ):
 
-    """根据 marker 基因对聚类进行细胞类型注释。
+    """根据 marker genes 自动注释 cluster。
 
-    该函数读取差异表达结果，将每个 cluster 的 marker gene 与内置或指定参考 marker 集合进行匹配，并计算候选细胞类型得分。
-
-    根据得分差距和置信度阈值，函数会为每个 cluster 分配细胞类型标签、置信度等级和注释原因，并可写回 ``obs``。
+    该函数读取差异基因结果，并与内置或指定参考 marker 库进行匹配，为每个 cluster 推断细胞类型标签、置信度和候选得分。结果可写入 ``obs``，也会以 DataFrame 形式返回。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     rank_result
-        差异表达结果 DataFrame 或结果表名称。
-
+        差异基因结果。可以传入 ``sap.tl.rank_genes_groups`` 返回的 DataFrame/dict；为 ``None``
+        时从数据库表读取。
     groupby
-        ``obs`` 中用于分组的列名。
-
+        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
+    use_table
+        读取已有结果的数据库表名。
     reference_name
-        marker 参考库名称。
-
+        marker 参考库名称。内置参考库可使用 ``"builtin_pbmc"``。
     write_to_obs
-        是否将结果同步写入 ``obs`` 表。
-
+        是否把结果写回 ``obs`` 表。
     obs_col
-        ``obs`` 中用于写入或读取结果的列名。
-
+        写入自动注释细胞类型的 ``obs`` 列名。
     obs_conf_col
-        写入注释置信度时使用的 ``obs`` 列名。
-
+        写入自动注释置信度的 ``obs`` 列名。
     top_n
-        保留、标注或评分时使用的 top 项数量。
-
+        每个 cluster 用于自动注释或绘图的 top marker 数量。
     unknown_label
         无法可靠注释时使用的标签。
-
     ambiguity_threshold_high
-        判断高置信注释时使用的分数差阈值。
-
+        高置信度判定的分数差阈值。
     ambiguity_threshold_medium
-        判断中等置信注释时使用的分数差阈值。
+        中等置信度判定的分数差阈值。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+    tuple[pandas.DataFrame, pandas.DataFrame]
+        第一个 DataFrame 为 cluster 注释摘要，第二个 DataFrame 为每个 cluster 的参考类型打分。
 
     Examples
     --------
-    调用该函数：::
+    直接使用数据库中已有的差异基因结果进行注释::
 
-        sap.tl.annotate_clusters(...)
-    """
+        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        summary_df, score_df = sap.tl.annotate_clusters(
+            atlas,
+            groupby="kmeans",
+            reference_name="builtin_pbmc",
+            write_to_obs=True,
+        )
+
+    使用内存中的 rank result，并调整 top marker 数量::
+
+        result = sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        summary_df, score_df = sap.tl.annotate_clusters(
+            atlas,
+            rank_result=result,
+            groupby="kmeans",
+            top_n=50,
+            obs_col="cell_type_auto",
+        )"""
 
     start = datetime.now()
     conn = atlas.connection
@@ -399,7 +401,7 @@ def annotate_clusters(
             需要排序、格式化或转换的单个输入值。
 
         Returns
--------
+        -------
         sort_key
             可用于自然排序的键。
 
@@ -534,7 +536,7 @@ def annotate_clusters(
     return summary_df, score_df
 
 # summary_df 是什么？
-# ✅ 每个 cluster 的最终注释结果总表
+# 每个 cluster 的最终注释结果总表
 # 它通常是一行一个 cluster，比如：
 
 # cluster_id	best_cell_type	confidence	best_score	runner_up	    delta_score 	support_markers
@@ -544,10 +546,10 @@ def annotate_clusters(
 # 3	            NK cells	         high	 9.3	    CD8 T cells	        2.7	        GNLY, NKG7
 
 # 也就是说：
-# 👉 summary_df = 最终“cluster 叫什么名字”的表
+# summary_df = 最终“cluster 叫什么名字”的表
 
 # score_df 是什么？
-# ✅ cluster × cell_type 的打分明细表
+# cluster × cell_type 的打分明细表
 # 它不是只给你最终答案，而是把“候选答案都列出来”。
 
 # cluster_id	cell_type	    score	matched_markers	support_markers
@@ -557,7 +559,7 @@ def annotate_clusters(
 # 1	          CD14+ Monocytes	10.5	2	             CD14, LYZ
 # 1	         FCGR3A+ Monocytes	4.9	    1	              FCGR3A
 
-# 👉 score_df = “每个 cluster 对每个 cell type 的评分明细”
+# score_df = “每个 cluster 对每个 cell type 的评分明细”
 
 
 

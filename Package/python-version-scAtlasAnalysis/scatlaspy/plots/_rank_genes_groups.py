@@ -21,63 +21,55 @@ def rank_genes_groups(
         show: bool = True,
         return_fig: bool = False,
 ):
-    """绘制差异表达基因排名图。
+    """绘制每个分组的 top marker gene 排名图。
 
-    该函数读取 ``sap.tl.rank_genes_groups`` 生成的结果表，按 group 展示 top marker genes 及其得分。
-
-    它用于快速浏览每个 cluster 或细胞类型最具代表性的 marker。
+    该函数读取 ``sap.tl.rank_genes_groups`` 写入的差异基因结果表，并按分组展示 top genes 的统计分数或 log fold change。它类似 Scanpy 的 ``sc.pl.rank_genes_groups``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     use_table
-        结果键名、表名前缀或 HDF5 group 名称。
-
+        读取已有结果的数据库表名。
     groups
-        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
-
+        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
     n_genes
-        每个分组保留或绘制的基因数量。
-
+        每个分组保留或展示的基因数量。为 ``None`` 时保留全部可用基因。
     score_key
-        ``var`` 中保存得分的列名。
-
+        ``var`` 中保存高变基因评分的列名。
     gene_label
-        绘图时用于显示基因名的列名。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     ncols
-        多面板绘图时每行的子图数量。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     save_path
-        图像或结果保存路径。
-
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
     show
-        是否立即显示图像。
-
+        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
     return_fig
-        是否返回 matplotlib Figure 对象。
+        是否返回 Matplotlib Figure 对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    计算并绘制默认差异基因排名图::
 
-        sap.pl.rank_genes_groups(...)
-    """
+        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.pl.rank_genes_groups(atlas)
+
+    从自定义结果表读取，并限制展示分组数量::
+
+        sap.pl.rank_genes_groups(
+            atlas,
+            use_table="rank_genes_groups_kmeans_top100",
+            n_genes=10,
+            max_groups=12,
+        )"""
 
     conn = atlas.connection
     if conn is None:
@@ -301,81 +293,67 @@ def rank_genes_groups_volcano(
         label_fontsize: int = 7,
         label_offset_step: int = 12,
 ):
-    """绘制差异表达基因火山图。
+    """绘制差异基因火山图。
 
-    该函数读取某个 group 的差异表达结果，用 log fold change 作为横轴，用 p 值显著性作为纵轴，并标注 top genes。
-
-    它适合检查单个 cluster 与参考组之间的显著上调/下调 marker。
+    该函数读取差异基因结果表，根据 log fold change 和 p 值绘制火山图，用于检查每个 cluster 的显著 marker genes。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     use_table
-        结果键名、表名前缀或 HDF5 group 名称。
-
+        读取已有结果的数据库表名。
     group
-        需要绘制或分析的单个分组名称。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     lfc_key
-        火山图中使用的 log fold change 列名。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     pval_key
-        火山图中使用的 p 值列名。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     gene_label
-        绘图时用于显示基因名的列名。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     pval_cutoff
-        显著性 p 值阈值。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     logfc_cutoff
-        log fold change 阈值。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     top_n
-        保留、标注或评分时使用的 top 项数量。
-
+        每个 cluster 用于自动注释或绘图的 top marker 数量。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     y_cap
-        火山图 y 轴上限。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     xlim_abs
-        火山图 x 轴绝对范围。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     save_path
-        图像或结果保存路径。
-
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
     show
-        是否立即显示图像。
-
+        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
     return_fig
-        是否返回 matplotlib Figure 对象。
-
+        是否返回 Matplotlib Figure 对象。
     label_fontsize
-        基因标签字体大小。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     label_offset_step
-        多个基因标签之间的偏移步长。
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制默认差异基因火山图::
 
-        sap.pl.rank_genes_groups_volcano(...)
-    """
+        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.pl.rank_genes_groups_volcano(atlas)
+
+    指定分组、top genes 和保存路径::
+
+        sap.pl.rank_genes_groups_volcano(
+            atlas,
+            groups=["0", "1", "2"],
+            top_n=20,
+            save=r"F:\\figures\\rank_volcano.png",
+        )"""
 
     conn = atlas.connection
     if conn is None:
@@ -613,60 +591,53 @@ def rank_genes_groups_violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制差异表达基因小提琴图。
+    """绘制 marker genes 的表达 violin 图。
 
-    该函数选择某个 group 的 top marker genes，并从表达矩阵中读取这些基因在不同分组中的表达分布。
-
-    它用于验证 marker gene 是否真正集中表达于目标 cluster 或细胞类型。
+    该函数基于差异基因结果自动选择 top marker genes，并从 Atlas 表达矩阵读取表达值，按分组绘制 violin 图。适合检查 marker 在目标 cluster 中是否特异表达。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     group
-        需要绘制或分析的单个分组名称。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     use_table
-        结果键名、表名前缀或 HDF5 group 名称。
-
+        读取已有结果的数据库表名。
     groupby
-        ``obs`` 中用于分组的列名。
-
+        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
     reference
-        差异表达分析中的参考组，可以是 ``"rest"`` 或某个具体分组。
-
+        差异分析参考组。``"rest"`` 表示与其他所有细胞比较。
     genes
-        需要绘制或分析的基因名称列表。
-
+        需要展示的基因名称列表。
     n_genes
-        每个分组保留或绘制的基因数量。
-
+        每个分组保留或展示的基因数量。为 ``None`` 时保留全部可用基因。
     use_expr_field
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
-
+        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     sample_n_per_group
-        每个分组最多抽样的细胞数量。
-
+        每个分组抽样用于绘图的细胞数量。
     save_path
-        图像或结果保存路径。
+        图片保存路径。为 ``None`` 时只显示或返回图对象。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制每组 top marker 的 violin 图::
 
-        sap.pl.rank_genes_groups_violin(...)
-    """
+        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.pl.rank_genes_groups_violin(atlas)
+
+    指定分组和表达矩阵::
+
+        sap.pl.rank_genes_groups_violin(
+            atlas,
+            groups=["0", "1"],
+            top_n=5,
+            use_data="data_log1p",
+        )"""
 
     conn = atlas.connection
 

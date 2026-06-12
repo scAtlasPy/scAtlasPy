@@ -12,45 +12,43 @@ def kmeans_cluster_size(
         title: str | None = None
 ):
 
-    """绘制 KMeans 聚类大小统计图。
+    """绘制 K-means cluster 的细胞数量。
 
-    该函数从 ``obs`` 中读取聚类列，统计每个 cluster 的细胞数量和比例，并绘制柱状图。
-
-    它适合在运行 ``sap.tl.kmeans`` 后快速检查聚类规模是否均衡、是否存在过小 cluster 或异常大 cluster。
+    该函数读取 ``obs`` 中的聚类列，统计每个 cluster 的细胞数，并绘制柱状图。适合检查聚类是否过度不均衡或是否存在很小的 cluster。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     use_obs_col
-        ``obs`` 中用于写入或读取结果的列名。
-
+        读取或写入 ``obs`` 的列名。
     figsize
-        matplotlib 图像大小。
-
+        图形大小。为 ``None`` 时使用函数默认尺寸。
     show_percent
-        是否在图中显示百分比。
-
+        是否在图中展示百分比信息。
     title
-        图标题。
+        图标题。为 ``None`` 时使用默认标题。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    matplotlib.figure.Figure 或 None
+        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
 
     Examples
     --------
-    调用该函数：::
+    绘制默认 K-means 聚类大小::
 
-        sap.pl.kmeans_cluster_size(...)
-    """
+        sap.tl.kmeans(atlas, n_clusters=20)
+        sap.pl.kmeans_cluster_size(atlas)
+
+    绘制自定义聚类列并显示百分比::
+
+        sap.pl.kmeans_cluster_size(
+            atlas,
+            use_obs_col="kmeans_50",
+            show_percent=True,
+            title="K-means 50 cluster size",
+        )"""
 
     start = datetime.now()
     conn = atlas.connection

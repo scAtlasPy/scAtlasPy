@@ -26,23 +26,30 @@ logger.addHandler(logging.NullHandler())
 
 
 def set_verbosity(level: str = "warning") -> None:
-    """设置 Atlas 包的日志输出级别。
+    """设置 scAtlasPy 的日志输出级别。
 
-    该函数调整名为 ``Atlas`` 的 logger，用于控制导入导出、预处理、工具函数和绘图流程中的日志详细程度。
-
-    它只影响 scAtlasPy 自己的 logger，不会修改 Python root logger 或第三方库的日志设置。
+    该函数调整包内使用的 ``Atlas`` logger，统一控制导入、预处理、工具函数和绘图流程中的日志详细程度。它不会主动修改第三方库的日志级别。
 
     Parameters
     ----------
     level
-        日志级别字符串，例如 ``"debug"``、``"info"``、``"warning"`` 或 ``"error"``。
+        日志级别字符串。可选值包括 ``"debug"``、``"info"``、``"warning"`` 和 ``"error"``。
+
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库或当前图形窗口。
 
     Examples
     --------
-    调用该函数：::
+    只显示警告和错误信息::
 
-        sap.set_verbosity(...)
-    """
+        sap.set_verbosity("warning")
+
+    调试导入或预处理流程::
+
+        sap.set_verbosity("debug")
+        atlas = sap.Atlas(r"F:\\data\\pbmc")"""
 
     level = str(level).lower()
     level_map = {
@@ -79,34 +86,63 @@ def set_verbosity(level: str = "warning") -> None:
 class Atlas:
     """Atlas 数据库对象。
 
-    ``Atlas`` 封装一个持久化 DuckDB-backed ``.sasql`` 数据库文件，保存数据库名称、文件路径和当前连接。
+    Atlas 对象管理一个持久化的 DuckDB-backed ``.sasql`` 数据库，保存数据库路径、活动连接，并提供创建、打开、查询、检查、读取和调用 IO 函数的便捷方法。
 
-    该对象提供创建、打开、查询、查看表结构、构建过滤索引和按 minibatch 读取表达矩阵等入口，是 scAtlasPy 中多数
-    ``sap.pp``、``sap.tl`` 和 ``sap.pl`` 函数共同依赖的核心对象。
-
-    Parameters
+    Attributes
     ----------
-    name
-        对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+    file_path
+        当前 ``.sasql`` 数据库文件路径。
+    connection
+        当前 DuckDB 连接对象。
 
-    path
-        目录路径或文件路径。
-    """
+    Examples
+    --------
+    创建或连接一个 Atlas 数据库::
+
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+
+    使用对象式 API 导入 h5ad 文件::
+
+        atlas = sap.Atlas(r"F:\\data\\pbmc", verbosity="info")
+        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
+
+    查看数据库内容并关闭连接::
+
+        atlas.describe()
+        atlas.head("obs", n=5)
+        atlas.close()"""
 
     def __init__(
             self,
             file_name: PathLike[str] | str,
             verbosity: Literal["error", "warning", "info", "debug"] | None = "warning",
     ):
-        """
-        初始化 Atlas 数据库对象。
+        """初始化 Atlas 数据库对象。
 
-        支持：
-            Atlas(r"F:\\data\\file_name\\sql_obs.sasql")
-            Atlas(r"F:\\data\\file_name\\sql_obs")
-            Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
-            Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
-        """
+        构造函数会根据 ``file_name`` 推断 ``.sasql`` 数据库路径，创建父目录，并建立 DuckDB 连接。如果数据库文件尚不存在，会自动创建空数据库。
+
+        Parameters
+        ----------
+        file_name
+            Atlas 数据库文件路径或数据库名称。可以传入完整 ``.sasql`` 路径，也可以传入不带后缀的路径；函数会自动补全 ``.sasql``
+            后缀。
+        verbosity
+            初始化 Atlas 时设置的日志级别。设为 ``None`` 时不修改当前日志配置。
+
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
+
+        Examples
+        --------
+        传入不带后缀的数据库路径::
+
+            atlas = sap.Atlas(r"F:\\data\\test_10W")
+
+        传入完整 ``.sasql`` 文件路径，并打开更详细日志::
+
+            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql", verbosity="info")"""
 
         if verbosity is not None:
             set_verbosity(verbosity)
@@ -169,38 +205,66 @@ class Atlas:
 
     @property
     def file_path(self) -> str:
-        """
-        Atlas 数据库文件的绝对路径。
-        """
+        """返回 Atlas 数据库文件路径。
+
+        该属性返回当前 Atlas 对象指向的 ``.sasql`` 文件路径，可用于确认数据库实际保存位置。
+
+        Returns
+        -------
+        str
+            数据库或对象的文本摘要。
+
+        Examples
+        --------
+        查看当前数据库路径::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.file_path"""
         return self.__file_path
 
 
     @property
     def connection(self) -> Optional[duckdb.DuckDBPyConnection]:
-        """执行 ``connection`` 的核心功能。
+        """返回当前 DuckDB 连接。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.connection`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        该属性保存 Atlas 当前使用的 DuckDB 连接对象。通常不需要直接操作它，除非需要调用 DuckDB 的底层 API。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        duckdb.DuckDBPyConnection
+            当前 Atlas 数据库连接。
 
         Examples
         --------
-        调用该函数：::
+        使用底层 DuckDB 连接执行查询::
 
-            sap.connection(...)
-        """
+            con = atlas.connection
+            con.sql("SELECT COUNT(*) FROM obs").fetchone()"""
         return self.__connection
 
 
     @connection.setter
     def connection(self, value: Optional[duckdb.DuckDBPyConnection]) -> None:
+        """返回当前 DuckDB 连接。
+
+        该属性保存 Atlas 当前使用的 DuckDB 连接对象。通常不需要直接操作它，除非需要调用 DuckDB 的底层 API。
+
+        Parameters
+        ----------
+        value
+            参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
+
+        Returns
+        -------
+        duckdb.DuckDBPyConnection
+            当前 Atlas 数据库连接。
+
+        Examples
+        --------
+        使用底层 DuckDB 连接执行查询::
+
+            con = atlas.connection
+            con.sql("SELECT COUNT(*) FROM obs").fetchone()"""
         self.__connection = value
 
 
@@ -232,28 +296,31 @@ class Atlas:
 
 
     def connect(self, mode: Literal["r+", "r"] = "r+") -> duckdb.DuckDBPyConnection:
-        """建立 DuckDB 数据库连接。
+        """连接 Atlas 数据库。
 
-        该方法打开当前 Atlas 对象指向的 ``.sasql`` 文件，并把连接保存到 ``atlas.connection``。
-
-        多数读写函数要求连接已存在；如果连接已关闭或对象刚被创建，可以调用该方法重新连接。
+        根据当前 ``file_path`` 建立 DuckDB 连接，并把连接对象保存到 ``atlas.connection``。已有连接会被复用或替换为新的连接。
 
         Parameters
         ----------
         mode
-            数据库打开模式，通常为 ``"r+"`` 或 ``"r"``。
+            数据库连接模式。``"r+"`` 表示可读写连接，``"r"`` 表示只读连接。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        duckdb.DuckDBPyConnection
+            当前 Atlas 数据库连接。
 
         Examples
         --------
-        调用该函数：::
+        以默认可读写模式连接数据库::
 
-            sap.connect(...)
-        """
+            atlas.connect()
+
+        以只读模式打开数据库，适合检查已有结果::
+
+            atlas.connect(mode="r")
+            atlas.head("obs")"""
+
         logger.info(f"请求数据库连接，模式: {mode}")
 
         if self.__connection is not None: # 如果已有连接，先关闭
@@ -299,20 +366,23 @@ class Atlas:
 
 
     def close(self):
-        """执行 ``close`` 的核心功能。
+        """关闭当前数据库连接。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
+        关闭 ``atlas.connection`` 并释放 DuckDB 连接资源。关闭后如需继续使用数据库，可再次调用 ``atlas.connect()``。
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.close`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
 
         Examples
         --------
-        调用该函数：::
+        完成分析后关闭连接::
 
-            sap.close(...)
-        """
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.describe()
+            atlas.close()"""
+
         logger.info("关闭数据库连接")
         try:
             # 检查是否存在数据库连接
@@ -331,31 +401,33 @@ class Atlas:
 
 
     def execute_sql(self, sql: str) -> DuckDBPyConnection | None:
-        """执行 ``execute_sql`` 的核心功能。
+        """执行一条 SQL 语句。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.execute_sql`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
+        该方法适合执行建表、更新、删除临时表等 SQL 操作。若需要把查询结果直接转为 DataFrame，优先使用 ``atlas.query``。
 
         Parameters
         ----------
         sql
-            需要执行的 SQL 语句。
+            需要执行的 SQL 语句。适合用于建表、更新字段、删除临时表等不一定需要返回结果的操作。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        duckdb.DuckDBPyConnection 或 None
+            DuckDB 执行结果对象；执行失败时会抛出异常。
 
         Examples
         --------
-        调用该函数：::
+        新增一个布尔过滤列::
 
-            sap.execute_sql(...)
-        """
+            atlas.execute_sql(
+                "ALTER TABLE obs ADD COLUMN IF NOT EXISTS filter_custom BOOLEAN"
+            )
+
+        将已有列的空值填为 ``False``::
+
+            atlas.execute_sql(
+                "UPDATE obs SET filter_custom = FALSE WHERE filter_custom IS NULL"
+            )"""
 
         # 检查是否有活动的数据库连接
         if self.__connection is None:
@@ -379,55 +451,54 @@ class Atlas:
 
 
     def exists(self) -> bool:
-        """执行 ``exists`` 的核心功能。
+        """检查 Atlas 数据库文件是否存在。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.exists`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        该方法只检查 ``atlas.file_path`` 指向的文件是否存在，不验证数据库内部表结构是否完整。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        bool 或 None
+            检查结果。无法完成检查时可能返回 ``None``。
 
         Examples
         --------
-        调用该函数：::
+        判断数据库文件是否已经创建::
 
-            sap.exists(...)
-        """
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.exists()"""
+
         exists = os.path.exists(self.file_path)
         logger.debug(f"检查数据库文件是否存在: {self.file_path} -> {exists}")
         return exists
 
 
     def query(self, query: str):
-        """执行 ``query`` 的核心功能。
+        """执行 SQL 查询并返回 DataFrame。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.query`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        该方法通过当前 DuckDB 连接执行查询，并将结果转为 ``pandas.DataFrame``，适合交互式检查 ``obs``、``var`` 和结果表。
 
         Parameters
         ----------
         query
-            需要执行的 SQL 查询语句。
+            需要执行并返回结果的 SQL 查询语句。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        pandas.DataFrame
+            包含查询、统计或绘图所需数据的表格。
 
         Examples
         --------
-        调用该函数：::
+        查看细胞数量::
 
-            sap.query(...)
-        """
+            atlas.query("SELECT COUNT(*) AS n_cells FROM obs")
+
+        按聚类统计细胞数::
+
+            atlas.query(
+                "SELECT kmeans, COUNT(*) AS n_cells FROM obs GROUP BY kmeans ORDER BY kmeans"
+            )"""
+
         logger.info("查询数据库，返回值类型为pandas")
 
         if self.__connection is None:
@@ -438,30 +509,27 @@ class Atlas:
 
 
     def query_raw(self, query: str):
-        """执行 ``query_raw`` 的核心功能。
+        """执行 SQL 查询并返回 DuckDB 原始结果。
 
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.query_raw`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        与 ``atlas.query`` 不同，该方法保留 DuckDB 的原始返回对象，适合继续调用 ``fetchone``、``fetchall`` 或 DuckDB 原生方法。
 
         Parameters
         ----------
         query
-            需要执行的 SQL 查询语句。
+            需要执行并返回结果的 SQL 查询语句。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        duckdb.DuckDBPyConnection 或 None
+            DuckDB 执行结果对象；执行失败时会抛出异常。
 
         Examples
         --------
-        调用该函数：::
+        读取单个统计值::
 
-            sap.query_raw(...)
-        """
+            result = atlas.query_raw("SELECT COUNT(*) FROM obs")
+            n_cells = result.fetchone()[0]"""
+
         logger.info("查询数据库，返回值类型为duckDB")
 
         if self.__connection is None:
@@ -472,23 +540,24 @@ class Atlas:
 
 
     def describe(self) -> str:
-        """查看 Atlas 数据库概要。
+        """汇总 Atlas 数据库中的表结构。
 
-        该方法读取数据库中的表列表、列信息和行数，并生成适合打印查看的文本摘要。
-
-        它用于快速确认数据库是否包含 ``obs``、``var``、``X_HyS_data``、embedding 和分析结果表。
+        该方法扫描数据库表和部分关键字段，生成可读的数据库摘要，适合在导入数据或完成分析后检查当前 Atlas 对象包含哪些内容。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        str
+            数据库或对象的文本摘要。
 
         Examples
         --------
-        调用该函数：::
+        打印数据库摘要::
 
-            sap.describe(...)
-        """
+            print(atlas.describe())
+
+        在 notebook 中直接查看摘要::
+
+            atlas.describe()"""
 
         if self.__connection is None:
             self.connect("r+")
@@ -606,31 +675,31 @@ class Atlas:
 
 
     def head(self, table_name: str, n: int = 5):
-        """查看指定数据库表的前几行。
+        """查看数据库表的前几行。
 
-        该方法会检查目标表是否存在，读取表结构，并返回指定行数的数据。
-
-        适合调试导入结果、查看 ``obs``/``var`` 新增列，或检查分析结果表是否写入成功。
+        该方法打印并返回指定表的前 ``n`` 行，同时展示表名、列名和行数信息，适合快速检查导入结果或分析结果。
 
         Parameters
         ----------
         table_name
             数据库表名。
-
         n
-            数量参数，例如返回行数、抽样数量或参与计算的元素个数。
+            返回或展示的记录数量。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        pandas.DataFrame
+            包含查询、统计或绘图所需数据的表格。
 
         Examples
         --------
-        调用该函数：::
+        查看 ``obs`` 前 5 行::
 
-            sap.show(...)
-        """
+            atlas.head("obs")
+
+        查看差异基因结果前 10 行::
+
+            atlas.head("rank_genes_groups", n=10)"""
 
         if self.__connection is None:
             self.connect("r+")
@@ -688,34 +757,40 @@ class Atlas:
             use_hvg: bool = True,
             use_data: str = "data_log1p",
     ):
-        """根据过滤条件重建 Atlas 过滤索引。
+        """构建表达矩阵读取索引。
 
-        该方法调用 ``FilterIndexBuilder``，根据 ``obs`` 和 ``var`` 中的过滤列生成连续
-        ``filter_cell_id`` 与 ``filter_gene_id``。
-
-        随后会重建 ``X_HyS_data_filtered`` 和 ``X_HyS_indptr_filtered``，供 PCA、KMeans 和
-        dense/CSR minibatch 读取使用。
+        该方法根据细胞过滤条件、基因过滤条件和高变基因标记，构建后续小批量读取表达矩阵所需的索引表。PCA、K-means 和部分绘图函数通常依赖该索引。
 
         Parameters
         ----------
         cell_condition
-            ``obs`` 中用于筛选细胞的布尔列名或条件。
-
+            用于筛选细胞的 ``obs`` 条件列名或 SQL 条件；为 ``None`` 时不按细胞过滤。
         gene_condition
-            ``var`` 中用于筛选基因的布尔列名或条件。
-
+            用于筛选基因的 ``var`` 条件列名或 SQL 条件；为 ``None`` 时不按基因过滤。
         use_hvg
-            是否只处理高变基因。
-
+            是否优先使用高变基因列构建读取索引或是否只使用高变基因。
         use_data
-            从 ``X_HyS_data`` 中读取的表达字段。
+            读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+            ``"data_scale"``。
+
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
 
         Examples
         --------
-        调用该函数：::
+        使用默认过滤列构建索引::
 
-            sap.build_read_index(...)
-        """
+            sap.pp.filter_cells(atlas, min_genes=200)
+            sap.pp.filter_genes(atlas, min_cells=3)
+            atlas.build_read_index(cell_condition="filter_cells", gene_condition="filter_genes")
+
+        只使用高变基因构建 PCA 输入索引::
+
+            sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
+            atlas.build_read_index(use_hvg=True)"""
+
         builder = FilterIndexBuilder(
             self.file_path,
             cell_condition=cell_condition,
@@ -727,25 +802,29 @@ class Atlas:
 
 
     def get_minibatch_csr(self, x_type: str = "CSR"):
-        """按 minibatch 读取 CSR 表达矩阵。
+        """以稀疏 CSR 小批量读取表达矩阵。
 
-        该方法构造 ``MultiThreadedMinibatchFetcher``，从过滤后的 HyS 表中逐批恢复 CSR 矩阵。
-
-        它适合需要稀疏矩阵输入的训练、调试或和 scipy sparse 工作流对接的场景。
+        该方法基于已经构建的读取索引，从数据库中按批返回稀疏矩阵，适合需要流式处理表达矩阵的算法。
 
         Parameters
         ----------
         x_type
-            输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
+            返回的小批量矩阵格式。常用值为 ``"CSR"`` 或其他函数支持的稀疏矩阵格式。
+
+        Returns
+        -------
+        Any
+            函数返回底层实现产生的结果。
 
         Examples
         --------
-        调用该函数：::
+        遍历 CSR 小批量::
 
-            sap.get_minibatch_csr(...)
-        """
+            for X_batch, cell_ids in atlas.get_minibatch_csr():
+                print(X_batch.shape, len(cell_ids))
+                break"""
 
-        fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type=  x_type)
+        fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type = x_type)
         for X_batch in fetcher.run():
             pass
             # yield X_batch
@@ -758,37 +837,38 @@ class Atlas:
             max_batches: int | None = None,
             buffer_batch_num: int = 5,
     ):
-        """按 minibatch 读取 dense 表达矩阵。
+        """以 dense 小批量读取表达矩阵。
 
-        该方法从过滤后的 HyS 表中逐批恢复 dense 矩阵，并支持 ``single-pass`` 和 ``multi-pass`` 两种遍历模式。
-
-        ``multi-pass`` 会使用 shuffle buffer 提高训练数据随机性，常用于流式 PCA 和 MiniBatchKMeans。
+        该方法把数据库中的稀疏表达记录按批转换为 dense array，适合 IncrementalPCA、MiniBatchKMeans 等需要 dense 输入的算法。
 
         Parameters
         ----------
         pass_mode
-            minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
-
-        buffer_batch_num
-            shuffle buffer 中缓存的 minibatch 数量。
-
-        max_batches
-            最多输出的 minibatch 数量；为 ``None`` 时不限制。
-
+            小批量读取模式。用于控制迭代器如何遍历数据库中的表达矩阵。
         batch_size
-            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+            每个小批量包含的细胞数量。较大值通常更快，但会增加内存占用。
+        max_batches
+            最多读取的小批量数量。为 ``None`` 时遍历全部可用批次。
+        buffer_batch_num
+            预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
 
-        Yields
+        Returns
         -------
-        batch
-            逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
+        Any
+            函数返回底层实现产生的结果。
 
         Examples
         --------
-        调用该函数：::
+        读取用于模型拟合的小批量::
 
-            sap.get_minibatch_dense(...)
-        """
+            for X_batch, cell_ids in atlas.get_minibatch_dense(batch_size=4096):
+                print(X_batch.shape)
+                break
+
+        限制只读取前 100 个批次做快速测试::
+
+            batches = atlas.get_minibatch_dense(batch_size=2048, max_batches=100)"""
+
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
 
@@ -881,6 +961,41 @@ class Atlas:
         cells_per_block: int = 500,
         blocks_per_pool: int = 10,
     ) -> Any:
+        """通过 Atlas 对象导入 h5ad 文件。
+
+        这是 ``sap.io.load_h5ad`` 的对象式包装。函数位置仍在 ``scatlaspy.io``，但可以用 ``atlas.load_h5ad(...)`` 直接调用。
+
+        Parameters
+        ----------
+        h5ad_path
+            输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
+        load_type
+            导入方式。``"order"`` 表示按原始顺序导入，``"random"`` 表示按随机/分块策略导入。
+        store_type
+            表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
+        cells_per_block
+            写入稀疏表达矩阵时每个细胞块包含的细胞数。
+        blocks_per_pool
+            批量写入时每个处理池包含的块数量。
+
+        Returns
+        -------
+        Any
+            函数返回底层实现产生的结果。
+
+        Examples
+        --------
+        顺序导入单个 h5ad 文件::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
+
+        导入多个 h5ad 文件::
+
+            atlas.load_h5ad([
+                r"F:\\data\\batch1.h5ad",
+                r"F:\\data\\batch2.h5ad",
+            ])"""
         return _io_load_h5ad(
             h5ad_path,
             self,
@@ -892,10 +1007,53 @@ class Atlas:
 
 
     def load_anndata(self, adata: AnnData) -> None:
+        """通过 Atlas 对象导入 AnnData。
+
+        这是 ``sap.io.load_anndata`` 的对象式包装，用于把内存中的 AnnData 写入当前 Atlas 数据库。
+
+        Parameters
+        ----------
+        adata
+            AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
+
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
+
+        Examples
+        --------
+        从 Scanpy 读取 h5ad 后导入 Atlas::
+
+            adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.load_anndata(adata)"""
+
         return _io_load_anndata(adata, self)
 
 
     def load_multi_format(self, file_path: PathLike[str] | str) -> None:
+        """通过 Atlas 对象导入多格式输入文件。
+
+        这是 ``sap.io.load_multi_format`` 的对象式包装，用于根据文件后缀选择对应导入流程。
+
+        Parameters
+        ----------
+        file_path
+            输入文件路径。函数会根据文件格式选择合适的读取方式。
+
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
+
+        Examples
+        --------
+        导入一个支持的输入文件::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")"""
+
         return _io_load_multi_format(file_path, self)
 
 
@@ -903,6 +1061,30 @@ class Atlas:
         self,
         gene_name_column: str = "atlas_gene_name",
     ) -> bool | None:
+        """检查基因名称是否重复。
+
+        这是 ``sap.io.gene_names_duplicated`` 的对象式包装，用于检查 ``var`` 中指定基因名称列是否存在重复值。
+
+        Parameters
+        ----------
+        gene_name_column
+            保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
+
+        Returns
+        -------
+        bool 或 None
+            检查结果。无法完成检查时可能返回 ``None``。
+
+        Examples
+        --------
+        检查默认基因名列::
+
+            atlas.gene_names_duplicated()
+
+        检查自定义基因名列::
+
+            atlas.gene_names_duplicated(gene_name_column="gene_symbol")"""
+
         return _io_gene_names_duplicated(self, gene_name_column=gene_name_column)
 
 
@@ -912,6 +1094,32 @@ class Atlas:
         *,
         batch_cells: int = 1_000_000,
     ) -> None:
+        """通过 Atlas 对象导出 h5ad 文件。
+
+        这是 ``sap.io.write_h5ad`` 的对象式包装，会把当前 Atlas 数据库中的表达矩阵和元数据导出为 AnnData/h5ad。
+
+        Parameters
+        ----------
+        out_h5ad_path
+            输出 ``.h5ad`` 文件路径。
+        batch_cells
+            导出表达矩阵时每批处理的细胞数。
+
+        Returns
+        -------
+        None
+            结果直接写入 Atlas 数据库或当前图形窗口。
+
+        Examples
+        --------
+        导出为 h5ad 文件::
+
+            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
+
+        使用较小批次降低内存占用::
+
+            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)"""
+
         return _io_write_h5ad(
             self,
             out_h5ad_path,
@@ -923,6 +1131,30 @@ class Atlas:
         self,
         columns: list[str] | str | None = None,
     ) -> pd.DataFrame:
+        """通过 Atlas 对象读取 obs 表。
+
+        这是 ``sap.io.get_obs_df`` 的对象式包装，用于把 ``obs`` 表中的指定列读取为 DataFrame。
+
+        Parameters
+        ----------
+        columns
+            需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
+
+        Returns
+        -------
+        pandas.DataFrame
+            包含查询、统计或绘图所需数据的表格。
+
+        Examples
+        --------
+        读取全部 ``obs`` 列::
+
+            obs = atlas.get_obs_df()
+
+        只读取聚类和 QC 列::
+
+            obs = atlas.get_obs_df(columns=["kmeans", "n_genes_by_counts", "pct_counts_mt"])"""
+
         return _io_get_obs_df(self, columns=columns)
 
 
@@ -933,6 +1165,38 @@ class Atlas:
         include_obsm: bool = True,
         include_varm: bool = True,
     ) -> AnnData:
+        """通过 Atlas 对象构建 AnnData。
+
+        这是 ``sap.io.get_anndata`` 的对象式包装，用于从 Atlas 数据库读取指定细胞、表达矩阵和 embedding，构建内存中的 AnnData 对象。
+
+        Parameters
+        ----------
+        atlas_cell_ids
+            需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
+        use_data
+            读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+            ``"data_scale"``。
+        include_obsm
+            是否把 ``obsm_*`` 结果表写入返回的 AnnData。
+        include_varm
+            是否把 ``varm_*`` 结果表写入返回的 AnnData。
+
+        Returns
+        -------
+        AnnData
+            从 Atlas 数据库构建的 AnnData 对象。
+
+        Examples
+        --------
+        导出前 1000 个细胞为 AnnData::
+
+            cell_ids = atlas.query("SELECT atlas_cell_id FROM obs LIMIT 1000")["atlas_cell_id"]
+            adata = atlas.get_anndata(cell_ids.tolist(), use_data="data_log1p")
+
+        导出当前过滤索引中的全部细胞::
+
+            adata = atlas.get_anndata(None, include_obsm=True)"""
+
         return _io_get_anndata(
             self,
             atlas_cell_ids=atlas_cell_ids,
