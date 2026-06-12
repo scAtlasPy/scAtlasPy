@@ -64,7 +64,7 @@ def load_h5ad(
     顺序导入单个 h5ad 文件::
 
         atlas = sap.Atlas(r"F:\\data\\pbmc")
-        sap.io.load_h5ad(r"F:\\data\\pbmc.h5ad", atlas, load_type="order")
+        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
 
     使用对象式 API 导入，并指定表达值类型::
 
@@ -72,9 +72,8 @@ def load_h5ad(
 
     分块导入多个文件::
 
-        sap.io.load_h5ad(
+        atlas.load_h5ad(
             [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
-            atlas,
             cells_per_block=1000,
             blocks_per_pool=20,
         )"""
@@ -231,7 +230,7 @@ def _load_h5ad_list_random(
     --------
     调用该函数：::
 
-        sap.io._load_h5ad_fast_random(...)
+        _load_h5ad_fast_random(...)  # internal helper
     """
 
 
@@ -692,7 +691,7 @@ def _load_h5ad_random(
     --------
     调用该函数：::
 
-        sap.io._load_h5ad_random(...)
+        _load_h5ad_random(...)  # internal helper
     """
 
     h5ad_path = os.fspath(h5ad_path)
@@ -971,7 +970,7 @@ def _load_h5ad_order(
     --------
     调用该函数：::
 
-        sap.io._load_h5ad_order(...)
+        _load_h5ad_order(...)  # internal helper
     """
     commit_every = 5
     gc_every = 5
@@ -1150,7 +1149,7 @@ def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
     自动识别并导入文件::
 
         atlas = sap.Atlas(r"F:\\data\\pbmc")
-        sap.io.load_multi_format(r"F:\\data\\pbmc.h5ad", atlas)
+        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
 
     使用对象式 API::
 
@@ -2212,7 +2211,7 @@ def load_anndata(adata:AnnData, atlas:Atlas):
 
         adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
         atlas = sap.Atlas(r"F:\\data\\pbmc")
-        sap.io.load_anndata(adata, atlas)
+        atlas.load_anndata(adata)
 
     先在 AnnData 中补充元数据再导入::
 
@@ -2634,11 +2633,11 @@ def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name
     --------
     检查默认基因名称列::
 
-        sap.io.gene_names_duplicated(atlas)
+        atlas.gene_names_duplicated()
 
     检查自定义列，并在发现重复后定位重复名称::
 
-        if sap.io.gene_names_duplicated(atlas, gene_name_column="gene_symbol"):
+        if atlas.gene_names_duplicated(gene_name_column="gene_symbol"):
             atlas.query(
                 "SELECT gene_symbol, COUNT(*) FROM var "
                 "GROUP BY gene_symbol HAVING COUNT(*) > 1"

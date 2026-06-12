@@ -43,7 +43,7 @@ def write_h5ad(
     --------
     导出当前数据库::
 
-        sap.io.write_h5ad(atlas, r"F:\\data\\pbmc_export.h5ad")
+        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
 
     使用对象式 API 并降低单批内存占用::
 
@@ -281,11 +281,11 @@ def get_obs_df(
     --------
     读取全部 obs 信息::
 
-        obs = sap.io.get_obs_df(atlas)
+        obs = atlas.get_obs_df()
 
     只读取聚类和自动注释列::
 
-        obs = sap.io.get_obs_df(atlas, columns=["kmeans", "cell_type_auto"])"""
+        obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
 
     start_time = datetime.now()
 
@@ -390,7 +390,7 @@ def get_anndata(
     导出指定细胞::
 
         cell_ids = [0, 1, 2, 3]
-        adata = sap.io.get_anndata(atlas, cell_ids, use_data="data_log1p")
+        adata = atlas.get_anndata(cell_ids, use_data="data_log1p")
 
     导出过滤后的前 5000 个细胞并包含 UMAP/PCA::
 

@@ -116,6 +116,7 @@ class Atlas:
             self,
             file_name: PathLike[str] | str,
             verbosity: Literal["error", "warning", "info", "debug"] | None = "warning",
+            memory_limit: str | int | None = None,
     ):
         """初始化 Atlas 数据库对象。
 
@@ -128,6 +129,12 @@ class Atlas:
             后缀。
         verbosity
             初始化 Atlas 时设置的日志级别。设为 ``None`` 时不修改当前日志配置。
+        memory_limit
+            DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如
+            ``"4GB"``；也可以传入整数，整数会按 GB 解释，
+            例如 ``4`` 等价于 ``"4GB"``。
+            该参数只限制 DuckDB 查询和中间计算使用的内存，不限制
+            Python、NumPy 或 pandas 本身占用的内存。为 ``None`` 时不设置限制。
 
         Returns
         -------
@@ -142,7 +149,11 @@ class Atlas:
 
         传入完整 ``.sasql`` 文件路径，并打开更详细日志::
 
-            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql", verbosity="info")"""
+            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql", verbosity="info")
+
+        限制 DuckDB 查询和中间计算最多使用 4GB 内存::
+
+            atlas = sap.Atlas(r"F:\\data\\test_10W", memory_limit="4GB")"""
 
         if verbosity is not None:
             set_verbosity(verbosity)
@@ -150,6 +161,7 @@ class Atlas:
         self.__file_path = self._resolve_file_path(file_name)
         self.__connection = None
         self.__mode: Literal["r+", "r"] = "r+"
+        self.__memory_limit = memory_limit
 
         logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
 
@@ -268,9 +280,68 @@ class Atlas:
         self.__connection = value
 
 
-    def _create(self) -> duckdb.DuckDBPyConnection:
+    def _apply_memory_limit(self) -> None:
+        """应用 DuckDB 内存限制。
+
+        ``memory_limit`` 只限制 DuckDB 查询和中间计算可使用的内存，
+        不限制 Python、NumPy 或 pandas 本身占用的内存。
+        如果 ``memory_limit`` 是整数，则按 GB 解释，例如 ``4`` 会被转换为
+        ``"4GB"``。
+
+        Returns
+        -------
+        None
+            该方法直接作用于当前 DuckDB 连接。
+
+        Examples
+        --------
+        初始化 Atlas 时限制 DuckDB 查询内存::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc", memory_limit="4GB")
+
+        使用整数设置 GB 单位的内存限制::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc", memory_limit=4)
+
+        连接已经存在的数据库时也会自动应用该限制::
+
+            atlas = sap.Atlas(r"F:\\data\\pbmc.sasql", memory_limit="1024MB")
         """
-        创建 Atlas 数据库文件。
+
+        if self.__connection is None:
+            return
+
+        if self.__memory_limit is None:
+            return
+
+        if isinstance(self.__memory_limit, int):
+            memory_limit = f"{self.__memory_limit}GB"
+        else:
+            memory_limit = str(self.__memory_limit).strip()
+
+        if memory_limit == "":
+            return
+
+        memory_limit_sql = memory_limit.replace("'", "''")
+
+        self.__connection.execute(
+            f"SET memory_limit = '{memory_limit_sql}'"
+        )
+
+        logger.info(f"DuckDB memory_limit 设置为: {memory_limit}")
+
+
+    def _create(self) -> duckdb.DuckDBPyConnection:
+        """创建 Atlas 数据库文件并返回连接。
+
+        该方法在 ``self.file_path`` 指向的位置创建新的 ``.sasql`` 数据库文件。
+        连接创建完成后，会立即调用 ``self._apply_memory_limit()``，确保
+        初始化时传入的 ``memory_limit`` 对新连接生效。
+
+        Returns
+        -------
+        duckdb.DuckDBPyConnection
+            新创建的 DuckDB 连接对象。
         """
 
         db_dir = os.path.dirname(self.file_path)
@@ -287,6 +358,9 @@ class Atlas:
             logger.debug("连接 DuckDB 数据库")
             con = duckdb.connect(database=self.file_path)
 
+            self.__connection = con
+            self._apply_memory_limit()
+
             logger.debug(f"数据库已成功创建: {self.file_path}")
             return con
 
@@ -299,6 +373,7 @@ class Atlas:
         """连接 Atlas 数据库。
 
         根据当前 ``file_path`` 建立 DuckDB 连接，并把连接对象保存到 ``atlas.connection``。已有连接会被复用或替换为新的连接。
+        如果初始化 Atlas 时设置了 ``memory_limit``，每次重新建立连接后都会自动应用该限制。
 
         Parameters
         ----------
@@ -357,6 +432,7 @@ class Atlas:
                 raise ValueError(f"不支持的连接模式: {mode}")
 
             self.__mode = mode
+            self._apply_memory_limit()
             logger.debug("数据库连接成功")
             return self.__connection
 
@@ -820,8 +896,8 @@ class Atlas:
         --------
         遍历 CSR 小批量::
 
-            for X_batch, cell_ids in atlas.get_minibatch_csr():
-                print(X_batch.shape, len(cell_ids))
+            for X_batch in atlas.get_minibatch_csr():
+                print(X_batch.shape)
                 break"""
 
         fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type = x_type)
@@ -861,7 +937,7 @@ class Atlas:
         --------
         读取用于模型拟合的小批量::
 
-            for X_batch, cell_ids in atlas.get_minibatch_dense(batch_size=4096):
+            for X_batch in atlas.get_minibatch_dense(batch_size=4096):
                 print(X_batch.shape)
                 break
 
@@ -946,7 +1022,7 @@ class Atlas:
     # io 方法包装
     # -----------------------------------------------------
     # 保留原函数位置不动：
-    #   sap.io.load_h5ad(file_path, atlas, ...)
+    #   load_h5ad(file_path, atlas, ...)
     #
     # 同时支持对象式调用：
     #   atlas.load_h5ad(file_path, ...)
@@ -963,7 +1039,7 @@ class Atlas:
     ) -> Any:
         """通过 Atlas 对象导入 h5ad 文件。
 
-        这是 ``sap.io.load_h5ad`` 的对象式包装。函数位置仍在 ``scatlaspy.io``，但可以用 ``atlas.load_h5ad(...)`` 直接调用。
+        这是底层 h5ad 导入函数的对象式入口，可以用 ``atlas.load_h5ad(...)`` 直接调用。
 
         Parameters
         ----------
@@ -1009,7 +1085,7 @@ class Atlas:
     def load_anndata(self, adata: AnnData) -> None:
         """通过 Atlas 对象导入 AnnData。
 
-        这是 ``sap.io.load_anndata`` 的对象式包装，用于把内存中的 AnnData 写入当前 Atlas 数据库。
+        这是底层 AnnData 导入函数的对象式入口，用于把内存中的 AnnData 写入当前 Atlas 数据库。
 
         Parameters
         ----------
@@ -1035,7 +1111,7 @@ class Atlas:
     def load_multi_format(self, file_path: PathLike[str] | str) -> None:
         """通过 Atlas 对象导入多格式输入文件。
 
-        这是 ``sap.io.load_multi_format`` 的对象式包装，用于根据文件后缀选择对应导入流程。
+        这是底层多格式导入函数的对象式入口，用于根据文件后缀选择对应导入流程。
 
         Parameters
         ----------
@@ -1063,7 +1139,7 @@ class Atlas:
     ) -> bool | None:
         """检查基因名称是否重复。
 
-        这是 ``sap.io.gene_names_duplicated`` 的对象式包装，用于检查 ``var`` 中指定基因名称列是否存在重复值。
+        这是底层基因名重复检查函数的对象式入口，用于检查 ``var`` 中指定基因名称列是否存在重复值。
 
         Parameters
         ----------
@@ -1096,7 +1172,7 @@ class Atlas:
     ) -> None:
         """通过 Atlas 对象导出 h5ad 文件。
 
-        这是 ``sap.io.write_h5ad`` 的对象式包装，会把当前 Atlas 数据库中的表达矩阵和元数据导出为 AnnData/h5ad。
+        这是底层 h5ad 导出函数的对象式入口，会把当前 Atlas 数据库中的表达矩阵和元数据导出为 AnnData/h5ad。
 
         Parameters
         ----------
@@ -1133,7 +1209,7 @@ class Atlas:
     ) -> pd.DataFrame:
         """通过 Atlas 对象读取 obs 表。
 
-        这是 ``sap.io.get_obs_df`` 的对象式包装，用于把 ``obs`` 表中的指定列读取为 DataFrame。
+        这是底层 ``obs`` 读取函数的对象式入口，用于把 ``obs`` 表中的指定列读取为 DataFrame。
 
         Parameters
         ----------
@@ -1167,7 +1243,7 @@ class Atlas:
     ) -> AnnData:
         """通过 Atlas 对象构建 AnnData。
 
-        这是 ``sap.io.get_anndata`` 的对象式包装，用于从 Atlas 数据库读取指定细胞、表达矩阵和 embedding，构建内存中的 AnnData 对象。
+        这是底层 AnnData 构建函数的对象式入口，用于从 Atlas 数据库读取指定细胞、表达矩阵和 embedding，构建内存中的 AnnData 对象。
 
         Parameters
         ----------

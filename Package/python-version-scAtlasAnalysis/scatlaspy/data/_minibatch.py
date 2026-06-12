@@ -13,36 +13,36 @@ logger.addHandler(logging.NullHandler())
 ''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
 class ShuffleBuffer:
 
-    """dense minibatch ??????
+    """dense minibatch 随机缓冲区。
 
-    ??? ``multi-pass`` ???????????? dense minibatch????????
-    ?????????????? batch ???????????????????
-    ????? PCA?K-means ??????
+    该类在 ``multi-pass`` 小批量读取模式中缓存若干 dense minibatch，达到指定容量后
+    对细胞顺序进行随机打乱，再按 batch 输出。它用于减少多轮训练时的顺序偏差，
+    主要服务于 PCA、K-means 等流式模型。
 
     Parameters
     ----------
     gene_num
-        dense minibatch ??????????????????
+        dense minibatch 中的基因数量，也就是输出矩阵的列数。
     batch_size
-        ?? minibatch ??????
+        每个 minibatch 的细胞数量。
     buffer_batch_num
-        ????????? minibatch ???????
-        ``batch_size * buffer_batch_num`` ????
+        缓冲区中最多缓存的 minibatch 数量；总容量为
+        ``batch_size * buffer_batch_num`` 个细胞。
 
     Notes
     -----
-    ???????????????? ``atlas.get_minibatch_dense(...)`` ?????
+    这是内部工具类。普通用户通常通过 ``atlas.get_minibatch_dense(...)`` 间接使用。
 
     Examples
     --------
-    ??????????? dense minibatch::
+    在内部测试中缓存并抽样 dense minibatch::
 
         buffer = ShuffleBuffer(gene_num=2000, batch_size=128, buffer_batch_num=2)
         buffer.add_batch(np.zeros((128, 2000), dtype=np.float32))
         buffer.add_batch(np.ones((128, 2000), dtype=np.float32))
         X_batch = buffer.sample_batch()
 
-    ?????????? buffer ?????::
+    处理最后不足一个完整 buffer 的剩余数据::
 
         buffer = ShuffleBuffer(gene_num=100, batch_size=32, buffer_batch_num=4)
         buffer.add_batch(np.zeros((20, 100), dtype=np.float32))
@@ -95,33 +95,33 @@ class ShuffleBuffer:
 
     # 写入一个 batch 到 缓冲区
     def add_batch(self, X_batch: np.ndarray):
-        """? shuffle buffer ???? dense minibatch?
+        """向 shuffle buffer 写入一个 dense minibatch。
 
-        ?????? dense ???????????????????
-        ``batch_size * buffer_batch_num`` ????????????????????
-        ??????? ``sample_batch`` ????????
+        该方法把当前 dense 表达矩阵追加到缓冲区。当缓冲区累计达到
+        ``batch_size * buffer_batch_num`` 个细胞后，会随机打乱缓冲区中的细胞顺序，
+        并切换到可通过 ``sample_batch`` 读取的输出状态。
 
         Parameters
         ----------
         X_batch
-            ?? dense minibatch???????????????????????
-            ``gene_num`` ???????? ``batch_size``????? batch ?????
+            当前 dense minibatch。行表示细胞，列表示基因；列数需要与初始化时的
+            ``gene_num`` 一致，行数通常为 ``batch_size``，最后一个 batch 可以更小。
 
         Returns
         -------
         None
-            ??????????????????????
+            该方法只更新缓冲区状态，不直接返回训练数据。
 
         Examples
         --------
-        ???? batch ??? shuffle::
+        写入两个 batch 并触发 shuffle::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
             buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
             buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
             X_batch = buffer.sample_batch()
 
-        ??????????``sample_batch`` ??? ``None``::
+        在缓冲区尚未填满时，``sample_batch`` 会返回 ``None``::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
             buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
@@ -246,42 +246,42 @@ class ShuffleBuffer:
 ''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
 class MultiThreadedMinibatchFetcher:
 
-    """??? minibatch ????
+    """多线程 minibatch 读取器。
 
-    ??? Atlas ???? HyS ??? batch ?? CSR ? dense ?????
-    ?? producer/queue ?????????????? batch ???????
-    ?? ``atlas.get_minibatch_csr`` ? ``atlas.get_minibatch_dense`` ??????
+    该类从 Atlas 过滤后的 HyS 表中按 batch 恢复 CSR 或 dense 表达矩阵，
+    使用 producer/queue 结构预取数据，并保证消费者按 batch 顺序获得结果。
+    它是 ``atlas.get_minibatch_csr`` 和 ``atlas.get_minibatch_dense`` 的底层实现。
 
     Parameters
     ----------
     file_path
-        Atlas ``.sasql`` ????????
+        Atlas ``.sasql`` 数据库文件路径。
     batch_size
-        ?? minibatch ??????
+        每个 minibatch 的细胞数量。
     x_type
-        ??????????? ``"CSR"`` ? ``"dense"``?
+        输出矩阵类型。常用值为 ``"CSR"`` 或 ``"dense"``。
     pass_mode
-        ?????``"single-pass"`` ???????``"multi-pass"`` ???
-        ``ShuffleBuffer`` ?????????
+        遍历模式。``"single-pass"`` 顺序遍历一次，``"multi-pass"`` 可结合
+        ``ShuffleBuffer`` 做随机化多批训练。
     buffer_batch_num
-        ``multi-pass`` ??? shuffle buffer ??? batch ???
+        ``multi-pass`` 模式下 shuffle buffer 缓存的 batch 数量。
     max_batches
-        ????? minibatch ???? ``None`` ?????
+        最多输出的 minibatch 数量；为 ``None`` 时不限制。
 
     Notes
     -----
-    ?????????????????? Atlas ?????? minibatch?
+    这是内部流式读取器。普通用户通常通过 Atlas 对象方法读取 minibatch。
 
     Examples
     --------
-    ?? Atlas ??? dense batch ????::
+    通过 Atlas 对象按 dense batch 读取数据::
 
         atlas.build_read_index(use_hvg=True)
-        for X_batch, cell_ids in atlas.get_minibatch_dense(batch_size=2048):
-            print(X_batch.shape, len(cell_ids))
+        for X_batch in atlas.get_minibatch_dense(batch_size=2048):
+            print(X_batch.shape)
             break
 
-    ?????????????::
+    直接创建读取器进行底层调试::
 
         fetcher = MultiThreadedMinibatchFetcher(
             atlas.file_path,
@@ -290,8 +290,8 @@ class MultiThreadedMinibatchFetcher:
             pass_mode="single-pass",
             max_batches=10,
         )
-        for batch in fetcher.run():
-            print(batch.shape)"""
+        for X_batch in fetcher.run():
+            print(X_batch.shape)"""
 
     def __init__(self, file_path: PathLike[str] | str,
                  batch_size: int=2048,
