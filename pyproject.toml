@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+
+[project]
+name = "scatlaspy"
+version = "0.1.0"
+
+dependencies = [
+    "numpy",
+    "scipy",
+    "pandas",
+    "h5py",
+    "matplotlib",
+    "tqdm",
+    "scikit-learn",
+    "umap-learn",
+    
+    "anndata>=0.8.0",
+    "pyarrow>=23.0.0",
+    "scanpy>=1.11.5",
+    "duckdb>=1.4.3",
+]
+
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-cov",
+    "hypothesis",
+]
+
+docs = [
+    
+]
+
+ml = [
+    "torch",
+]
+
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["scatlaspy*"]
+namespaces = false
+
+
+[tool.setuptools.package-data]
+scatlaspy = [
+    "resources/*.sql",
+    "resources/*.json",
+]
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
