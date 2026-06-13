@@ -1,160 +1,252 @@
+<p align="center">
+  <img src="docs/_static/scAtlas_logo.svg" alt="scAtlasPy logo" width="320">
+</p>
 
-## 📖 项目文档
+# scAtlasPy
 
-- [项目介绍](OVERVIEW.md) - scAtlas 概述、核心特性和快速开始指南
-- [分支管理说明](#🌿-分支管理说明branch-strategy)
+scAtlasPy is an on-disk single-cell atlas analysis platform designed to make full-scale human cell atlas analysis feasible on memory-limited local hardware. As single-cell atlases grow from millions to hundreds of millions of cells, conventional in-memory workflows become increasingly constrained by RAM capacity. scAtlasPy addresses this bottleneck with compressed disk-resident data management, high-throughput random data streaming, and an extensible analysis layer for atlas-scale preprocessing, visualization, statistics, and machine learning workflows.
 
----
+scAtlasPy keeps expression matrices, metadata, embeddings, and analysis results in a persistent `.sasql` atlas database and retrieves only the data needed for each operation. This design supports comprehensive analysis pipelines under strict memory constraints while remaining compatible with familiar Scanpy-style Python workflows.
 
-## 🌿 分支管理说明（Branch Strategy）
+The API follows familiar Scanpy-style namespaces:
 
-本项目采用 **主干 + 开发 + 个人分支** 的分支管理模式，用于保证代码稳定性与多人协作效率。
+```python
+import scatlaspy as sap
 
----
+atlas = sap.Atlas("pbmc.sasql")
+sap.pp.filter_cells(atlas, min_genes=200)
+sap.tl.pca(atlas)
+sap.pl.pca(atlas, color="cell_type")
+```
 
-### 一、分支结构总览
+## Highlights
 
-```text
-main
- └── dev
-      ├── dev-zsp
-      └── dev-yyz
-````
+- Persistent `.sasql` atlas files built on an embedded analytical database, enabling local, serverless analysis with compact on-disk storage.
+- Chunked conversion from diverse single-cell source formats into `.sasql`, designed to avoid full in-memory loading during data ingestion.
+- Full-spectrum atlas analysis under memory constraints, including QC, filtering, normalization, transformation, feature selection, PCA, clustering, UMAP, marker ranking, annotation, and visualization.
+- Flexible data retrieval interfaces for both interactive analysis and atlas-scale algorithm development, including SQL queries, metadata access, AnnData export, and minibatch streaming.
+- Extensible architecture for emerging atlas-oriented computational methods, including machine learning workflows that require high-throughput random access to large cell collections.
+- A community-facing foundation for building an open cell atlas analysis ecosystem across storage, retrieval, algorithms, and applications.
 
-* **main**：主分支（稳定分支）
-* **dev**：开发分支（集成分支）
-* **dev-xxx**：个人开发分支（功能开发）
+## Installation
 
----
-
-### 二、各分支职责说明
-
-#### 1️⃣ main（主分支）
-
-* 存放 **稳定、可运行、可交付** 的代码
-* ⚠️不允许直接在 `main` 上开发或提交代码
-* 只能通过 **合并 dev 分支** 的方式更新
-
-
----
-
-#### 2️⃣ dev（开发分支）
-
-* 用于整合所有成员的阶段性成果
-* 所有个人分支的代码，需先合并到 `dev`
-* 在 dev 中通过测试后，再合并到 main
-
----
-
-#### 3️⃣ dev-xxx（个人分支）
-
-* 每位成员使用 **独立的个人分支**
-* 命名规范：`dev-姓名缩写 / dev-昵称`
-
-  * 例如：`dev-zsp`、`dev-yyz`
-* 所有功能开发、Bug 修复 **只在个人分支完成**
-
----
-
-### 三、开发流程（标准）
-
-#### 1️⃣ Clone 项目
+The recommended way to install the released version of scAtlasPy is through PyPI:
 
 ```bash
-git clone https://github.com/scAtlasAnalysis/scAtlas.git
-cd scAtlas
+pip install scatlaspy
 ```
 
-默认位于 `main` 分支。
-
----
-
-#### 2️⃣ 切换到个人分支
+To install the latest development version directly from GitHub:
 
 ```bash
-git status
-git checkout dev-zsp
+git clone https://github.com/scAtlasAnalysis/scAtlaspy.git
+cd scAtlaspy
+pip install -e .
 ```
 
-
-
----
-
-#### 3️⃣ 开发 & 提交代码
+You can verify the installation with:
 
 ```bash
-# 编写代码
-git add .
-git commit -m "feat: 实现 xxx 功能"
-git push
+python -c "import scatlaspy as sap; print(sap.Atlas)"
 ```
 
----
+## Documentation
 
-#### 4️⃣ 同步 dev 分支的最新代码
+- Documentation: https://scatlaspy.readthedocs.io
+- API reference: https://scatlaspy.readthedocs.io/en/latest/api.html
+- Tutorials and examples: https://scatlaspy.readthedocs.io/en/latest/tutorials.html
 
-在合并前，先同步 `dev`：
+## Quick Start
+
+Create or open an Atlas database:
+
+```python
+import scatlaspy as sap
+
+atlas = sap.Atlas("data/pbmc.sasql", verbosity="info", memory_limit="8GB")
+```
+
+Import a single `.h5ad` file:
+
+```python
+atlas.load_h5ad(
+    "data/pbmc.h5ad",
+    load_type="order",
+    store_type="count",
+    cells_per_block=1000,  # number of cells processed per import block
+)
+```
+
+Import multiple `.h5ad` files with randomized block loading:
+
+```python
+atlas.load_h5ad(
+    ["data/batch1.h5ad", "data/batch2.h5ad"],
+    load_type="list_random",
+    cells_per_block=1000,  # number of cells in each source block
+    blocks_per_pool=20,    # number of blocks shuffled and flushed together
+)
+```
+
+Run a typical preprocessing and analysis workflow:
+
+```python
+sap.pp.calculate_qc_metrics(atlas)
+sap.pp.filter_cells(atlas, min_genes=200, max_genes=6000)
+sap.pp.filter_genes(atlas, min_cells=3)
+
+sap.pp.normalize_total(atlas, target_sum=1e4)
+sap.pp.log1p(atlas)
+sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+sap.pp.scale(atlas)
+
+atlas.build_read_index(
+    cell_condition="filter_cells",
+    gene_condition="filter_genes",
+    use_hvg=True,
+)
+
+sap.tl.pca(atlas, n_components=50)
+sap.tl.kmeans(atlas, n_clusters=20)
+sap.tl.umap(atlas)
+sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+```
+
+Visualize results:
+
+```python
+sap.pl.violin_qc_metrics(atlas)
+sap.pl.pca(atlas, color="kmeans")
+sap.pl.umap(atlas, color="kmeans")
+sap.pl.rank_genes_groups(atlas)
+sap.pl.dotplot(atlas, genes=["MS4A1", "CD3D", "LYZ"], groupby="kmeans")
+```
+
+Export data back to AnnData or `.h5ad`:
+
+```python
+adata = atlas.get_anndata(None, use_data="data_log1p")
+atlas.write_h5ad("data/pbmc_processed.h5ad")
+```
+
+Close the database connection when finished:
+
+```python
+atlas.close()
+```
+
+## Data Model
+
+An Atlas database is a DuckDB file with the `.sasql` extension. scAtlasPy stores core single-cell components as database tables:
+
+| Component | Stored as | Typical content |
+| --- | --- | --- |
+| `obs` | table | Cell metadata, QC metrics, filtering flags, cluster labels |
+| `var` | table | Gene metadata, QC metrics, filtering flags, HVG flags |
+| expression matrix | sparse tables | Count, normalized, log-transformed, scaled, or transformed matrices |
+| `obsm_*` | tables | Cell embeddings such as PCA and UMAP coordinates |
+| `varm_*` | tables | Gene loadings such as PCA loadings |
+| `uns_*` | tables | Analysis summaries and parameters |
+
+Because the database is queryable, you can inspect or extend it with SQL:
+
+```python
+atlas.head("obs", n=5)
+atlas.describe()
+
+df = atlas.query("""
+    SELECT kmeans, COUNT(*) AS n_cells
+    FROM obs
+    GROUP BY kmeans
+    ORDER BY n_cells DESC
+""")
+```
+
+## API Overview
+
+### Core
+
+- `sap.Atlas(file_name, verbosity=None, memory_limit=None)`: create or open a `.sasql` database.
+- `atlas.load_h5ad(...)`: import one or more `.h5ad` files.
+- `atlas.load_anndata(adata)`: import an in-memory `AnnData` object.
+- `atlas.load_multi_format(...)`: import supported source formats into an Atlas database.
+- `atlas.get_anndata(...)`: materialize selected cells as `AnnData`.
+- `atlas.write_h5ad(...)`: export the Atlas database to `.h5ad`.
+- `atlas.query(...)` / `atlas.execute_sql(...)`: run SQL against the database.
+- `atlas.build_read_index(...)`: build a filtered cell/gene read index for downstream analysis.
+- `atlas.close()`: close the DuckDB connection.
+
+### Preprocessing: `sap.pp`
+
+- QC and filtering: `calculate_qc_metrics`, `calculate_cell_total_counts`, `calculate_gene_total_counts`, `filter_cells`, `filter_genes`
+- Transformations: `normalize_total`, `normalize_total_scale_factor`, `log1p`, `expm1`, `sqrt`, `scale`
+- Feature selection: `highly_variable_genes`
+- Convenience workflow: `normalize_and_log1p`
+
+### Tools: `sap.tl`
+
+- Dimensionality reduction: `pca`, `umap`
+- Clustering: `kmeans`
+- Marker analysis: `rank_genes_groups`
+- Annotation: `annotate_clusters`
+
+### Plotting: `sap.pl`
+
+- QC plots: `highest_expr_genes`, `violin_qc_metrics`, `scatter_qc_metrics`
+- Embeddings and model diagnostics: `pca`, `pca_loadings`, `pca_variance_ratio`, `pca_variance_ratio_cumsum`, `umap`
+- Cluster and marker plots: `kmeans_cluster_size`, `rank_genes_groups`, `rank_genes_groups_volcano`, `rank_genes_groups_violin`
+- Expression summaries: `dotplot`, `violin`, `stacked_violin`, `highly_variable_genes`
+
+## Working With Large Datasets
+
+scAtlasPy is designed around chunked reads and writes. For large `.h5ad` files:
+
+- Increase `cells_per_block` for faster import when memory allows.
+- Decrease `cells_per_block` or `batch_cells` to reduce peak memory.
+- Use `memory_limit` when creating `Atlas` to limit DuckDB query memory.
+- Build a read index after filtering before running PCA, UMAP, or minibatch workflows.
+- Prefer database-side SQL summaries when you only need metadata or aggregated results.
+
+Example:
+
+```python
+atlas = sap.Atlas("large_dataset.sasql", memory_limit="16GB")
+atlas.load_h5ad("large_dataset.h5ad", cells_per_block=2000)
+
+sap.pp.filter_cells(atlas, min_genes=200)
+sap.pp.filter_genes(atlas, min_cells=3)
+sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
+
+atlas.build_read_index(use_hvg=True)
+sap.tl.pca(atlas, n_components=50, fit_batches=1000)
+```
+
+## Development
+
+Clone the repository and install in editable mode:
 
 ```bash
-git fetch origin
-git rebase origin/dev
+git clone https://github.com/scAtlasAnalysis/scAtlaspy.git
+cd scAtlaspy
+pip install -e ".[test]"
 ```
 
-如有冲突，解决后：
+Run tests:
 
 ```bash
-git rebase --continue
+pytest
 ```
 
----
-
-#### 5️⃣ 合并到 dev 分支
-
-* 通过 Pull Request（推荐）
-* 或由负责人手动合并
-
----
-
-### 四、分支使用规范（重要）
-
-❌ 禁止行为：
-
-* 直接在 `main` 分支提交代码
-* 在他人的个人分支上开发
-* 未同步 `dev` 就直接合并
-
-✅ 推荐习惯：
-
-* 每天开发前先 `git pull`
-* 提交前确认当前分支
-* 提交信息清晰、具体
-
----
-
-### 五、提交信息规范（建议）
-
-```text
-feat: 新功能
-fix: 修复 bug
-docs: 文档修改
-refactor: 代码重构
-```
-
-示例：
+Run a quick import check:
 
 ```bash
-git commit -m "fix: 修复登录接口参数校验错误"
+python -c "import scatlaspy as sap; print(sap.Atlas)"
 ```
 
----
+## Citation
 
-### 六、快速自检
+If you use scAtlasPy in academic work, please cite the project repository for now. A formal citation will be added when a paper or archived release is available.
 
-```bash
-git branch    # 确认当前分支
-git status    # 确认工作区状态
-```
+## License
 
-
-
-
+scAtlasPy is released under the BSD 3-Clause License.
