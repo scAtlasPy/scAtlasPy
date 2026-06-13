@@ -1,4 +1,4 @@
-# Python 字节码缓存
+# Python temp file
 __pycache__/
 *.pyc
 *.pyo
@@ -10,7 +10,7 @@ __pycache__/
 dist/
 build/
 
-# 数据文件 (大数据不适合上传)
+# dataset file
 *.h5ad
 *.h5
 *.hdf
@@ -37,8 +37,11 @@ build/
 .Rprofile
 renv/
 
-# 临时文件
+# temp file
 *.log
 *.tmp
 *.bak
 *~
+
+# building package related temp file
+*.egg-info/

@@ -1,4 +1,0 @@
-Operator,Time (s),Peak Memory (MiB),peak_delta,Dataset
-sequential_iteration,90.5161,73139.68,5.29,1M_neurons_filtered_gene_bc_matrices_h5.h5
-sequential_iteration,76.7551,69271.9,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
-sequential_iteration,66.6325,69769.48,0.0,1M_neurons_filtered_gene_bc_matrices_h5.h5
