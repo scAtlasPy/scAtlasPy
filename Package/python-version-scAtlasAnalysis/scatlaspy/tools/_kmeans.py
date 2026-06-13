@@ -616,4 +616,4 @@ def kmeans(
 
     t_end = time.time()
 
-    print(f" KMeans Done, 耗时 = {t_end - t_start:.2f} seconds")
+    logger.info(f" KMeans Done, 耗时 = {t_end - t_start:.2f} seconds")

@@ -142,7 +142,7 @@ class FilterIndexBuilder:
 
         self.conn.close()
 
-        print(f"build_read_index Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
+        logger.info(f"build_read_index Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
 
 
     # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
@@ -329,7 +329,7 @@ class FilterIndexBuilder:
         pbar = tqdm(
             total=total_rows,
             unit="rows",
-            desc="Processing",
+            desc="build_read_index",
             ncols=130
         )
 

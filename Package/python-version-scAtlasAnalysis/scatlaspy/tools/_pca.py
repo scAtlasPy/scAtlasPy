@@ -720,4 +720,4 @@ def pca(
     pca_runner.run(atlas)
 
     t_end = time.time()
-    print(f" PCA Done, total time = {t_end - t_start:.2f} seconds")
+    logger.info(f" PCA Done, total time = {t_end - t_start:.2f} seconds")

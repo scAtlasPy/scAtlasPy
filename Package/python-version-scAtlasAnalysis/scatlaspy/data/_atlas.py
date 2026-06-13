@@ -25,7 +25,9 @@ logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
 
-def set_verbosity(level: str = "warning") -> None:
+def set_verbosity(
+        level: Literal["error", "warning", "info", "debug"] | None = None,
+) -> None:
     """设置 scAtlasPy 的日志输出级别。
 
     该函数调整包内使用的 ``Atlas`` logger，统一控制导入、预处理、工具函数和绘图流程中的日志详细程度。它不会主动修改第三方库的日志级别。
@@ -34,6 +36,7 @@ def set_verbosity(level: str = "warning") -> None:
     ----------
     level
         日志级别字符串。可选值包括 ``"debug"``、``"info"``、``"warning"`` 和 ``"error"``。
+        传入 ``None`` 时关闭 ``Atlas`` logger，不输出 scAtlasPy 自身日志。
 
     Returns
     -------
@@ -51,6 +54,13 @@ def set_verbosity(level: str = "warning") -> None:
         sap.set_verbosity("debug")
         atlas = sap.Atlas(r"F:\\data\\pbmc")"""
 
+    atlas_logger = logging.getLogger("Atlas")
+
+    if level is None:
+        atlas_logger.disabled = True
+        return
+
+    atlas_logger.disabled = False
     level = str(level).lower()
     level_map = {
         "error": logging.ERROR,
@@ -60,9 +70,8 @@ def set_verbosity(level: str = "warning") -> None:
     }
 
     if level not in level_map:
-        raise ValueError("level 只支持: error, warning, info, debug")
+        raise ValueError("level 只支持: error, warning, info, debug, None")
 
-    atlas_logger = logging.getLogger("Atlas")
     atlas_logger.setLevel(level_map[level])
 
     atlas_logger.handlers = [
@@ -115,7 +124,7 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            verbosity: Literal["error", "warning", "info", "debug"] | None = "warning",
+            verbosity: Literal["error", "warning", "info", "debug"] | None = None,
             memory_limit: str | int | None = None,
     ):
         """初始化 Atlas 数据库对象。
@@ -128,7 +137,7 @@ class Atlas:
             Atlas 数据库文件路径或数据库名称。可以传入完整 ``.sasql`` 路径，也可以传入不带后缀的路径；函数会自动补全 ``.sasql``
             后缀。
         verbosity
-            初始化 Atlas 时设置的日志级别。设为 ``None`` 时不修改当前日志配置。
+            初始化 Atlas 时设置的日志级别。
         memory_limit
             DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如
             ``"4GB"``；也可以传入整数，整数会按 GB 解释，
@@ -155,8 +164,7 @@ class Atlas:
 
             atlas = sap.Atlas(r"F:\\data\\test_10W", memory_limit="4GB")"""
 
-        if verbosity is not None:
-            set_verbosity(verbosity)
+        set_verbosity(verbosity)
 
         self.__file_path = self._resolve_file_path(file_name)
         self.__connection = None

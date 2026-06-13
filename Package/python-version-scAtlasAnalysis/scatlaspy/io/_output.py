@@ -114,7 +114,7 @@ def write_h5ad(
 
         for start in tqdm(
             range(0, nnz, batch_cells),
-            desc="导出进度"
+            desc="write_h5ad"
         ):
             end = min(start + batch_cells, nnz)
 
@@ -179,7 +179,7 @@ def write_h5ad(
             df = df.drop(columns=["atlas_gene_id"])
             g_varm.create_dataset(key, data=df.to_numpy())
 
-    print(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 
 # 写 AnnData 到 h5ad
@@ -349,7 +349,7 @@ def get_obs_df(
     # 5. 默认 atlas_cell_id 作为 pandas index
     df = df.set_index("atlas_cell_id", drop=False)
 
-    print(f" get_obs_df Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f" get_obs_df Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
     return df
 
@@ -621,8 +621,8 @@ def get_anndata(
     # 8. 清理临时表
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
-    print(" AnnData 导出完成")
-    print(f"  - cells: {adata.n_obs:,}")
-    print(f"  - genes: {adata.n_vars:,}")
+    logger.info(" AnnData 导出完成")
+    logger.info(f"  - cells: {adata.n_obs:,}")
+    logger.info(f"  - genes: {adata.n_vars:,}")
 
     return adata

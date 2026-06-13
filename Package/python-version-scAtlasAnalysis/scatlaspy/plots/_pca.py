@@ -172,14 +172,14 @@ def pca(
         x_pc: int = 0,
         y_pc: int = 1,
         annotate_var_explained: bool = True,
-        sample_n: int | None = 500000,
+        sample_n: int | None = None,
         use_data: str = "data_log1p",
-        figsize: tuple[float, float] | None=(22, 8),
-        point_size: float = 1.0,
-        alpha: float = 0.7,
+        figsize: tuple[float, float] | None=(6, 5), # (6, 5) (22, 8)
+        point_size: float = 12,
+        alpha: float = 0.8,
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        legend_loc: str = "right_margin",
+        legend_loc: str | None = None,  # str = "right_margin",
         frameon: bool = True,
         return_df: bool = False,
 ):
@@ -684,57 +684,45 @@ def pca_variance_ratio(
         log: bool = False,
         show: bool | None = None,
         save: bool | PathLike[str] | str | None = None,
-        figsize: tuple[float, float] | None=(16, 8),
+        figsize: tuple[float, float] | None = (7, 6),
         return_fig: bool = False,
 ):
-    """绘制 PCA 方差解释比例。
+    """绘制 PCA 方差解释比例，Scanpy-like 风格。
 
-    该函数读取 PCA 结果中每个主成分的 explained variance ratio，并绘制柱状图，帮助判断需要保留多少主成分。
+    该函数读取 ``uns_pca_stats`` 中每个主成分的 explained variance ratio，
+    并以 Scanpy ``sc.pl.pca_variance_ratio`` 类似的方式绘图：
+    横轴为 ranking，纵轴为 variance ratio，每个 PC 以竖排文本标注。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。
+
     n_pcs
         展示的 PCA 主成分数量。
+
     log
-        是否使用对数坐标或对数显示。
+        是否使用 y 轴对数坐标。
+
     show
-        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
+        是否显示图像。
+
     save
-        图片保存路径。为 ``None`` 时不保存。
+        图片保存路径。
+
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        图形大小。
+
     return_fig
-        是否返回 Matplotlib Figure 对象。
+        是否返回 ``fig, ax``。
+    """
 
-    Returns
-    -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
-
-    Examples
-    --------
-    查看前 30 个主成分解释比例::
-
-        sap.pl.pca_variance_ratio(atlas, n_pcs=30)
-
-    保存前 50 个主成分的对数尺度图::
-
-        sap.pl.pca_variance_ratio(
-            atlas,
-            n_pcs=50,
-            log=True,
-            save=r"F:\\figures\\pca_variance_ratio.png",
-        )"""
-
-    # 获取数据库连接
     conn = atlas.connection
 
-    # 2. 从 uns_pca_stats 表中读取 PCA 方差解释率
-    # uns_pca_stats 表中通常包含：
-    # pc_index        ：主成分编号，通常从 0 开始
-    # variance_ratio  ：每个主成分解释的方差比例
+    if conn is None:
+        raise ValueError("atlas.connection 为空，请先连接数据库")
+
+    # 1. 读取 PCA 方差解释率
     df = conn.execute(f"""
         SELECT pc_index, variance_ratio
         FROM uns_pca_stats
@@ -742,97 +730,116 @@ def pca_variance_ratio(
         LIMIT {int(n_pcs)}
     """).fetchdf()
 
-
     if df.empty:
         raise ValueError("uns_pca_stats 为空，请先运行 PCA 后再绘图。")
 
-    # 3. 准备绘图数据
-    # 数据库中的 pc_index 一般从 0 开始：
-    # 0, 1, 2, ...
-    # 但 Scanpy 绘图习惯显示为：
-    # PC1, PC2, PC3, ...
-    # 所以这里 +1
-    x = df["pc_index"].to_numpy() + 1
+    # 2. 准备数据
+    # Scanpy 风格：x 轴是 ranking，从 0 开始
+    x = np.arange(df.shape[0])
+    y = df["variance_ratio"].to_numpy(dtype=float)
 
-    # y 轴为每个主成分的方差解释率
-    y = df["variance_ratio"].to_numpy()
+    pc_labels = [
+        f"PC{int(pc_index) + 1}"
+        for pc_index in df["pc_index"].to_numpy()
+    ]
 
-    # 4. 创建图像对象
-    # 使用 fig, ax 的方式，而不是直接 plt.figure()
-    # 这样更方便后续控制 show、save 和 return_fig
+    # 3. 创建图像
     fig, ax = plt.subplots(figsize=figsize)
 
-    # 绘制折线图
-    ax.plot(x, y, marker="o")
+    # 4. 用文字标注每个 PC，而不是画折线
+    for xi, yi, lab in zip(x, y, pc_labels):
+        ax.text(
+            xi,
+            yi,
+            lab,
+            rotation=90,
+            ha="center",
+            va="bottom",
+            fontsize=10,
+            clip_on=False,
+        )
 
-    # 设置坐标轴标签和标题
-    ax.set_xlabel("Principal component")
-    ax.set_ylabel("Explained variance ratio")
-    ax.set_title("PCA variance ratio")
+    # 5. 坐标轴样式，尽量接近 Scanpy
+    ax.set_title("variance ratio", fontsize=18, pad=8)
+    ax.set_xlabel("ranking", fontsize=18)
+    ax.set_ylabel("")
 
-    # 如果 log=True，则使用对数坐标
+    # x 轴显示 ranking
+    ax.set_xlim(-0.8, len(x) - 0.2)
+
+    # 尽量让右侧有 20 这个刻度，接近 Scanpy 示例
+    if len(x) <= 20:
+        ax.set_xticks(np.arange(0, len(x) + 1, 5))
+    else:
+        ax.set_xticks(np.arange(0, len(x), 5))
+
+    # y 轴留一点上方空间，避免 PC1 标签被裁掉
+    y_max = float(np.nanmax(y))
+    y_min = float(np.nanmin(y))
+
     if log:
         ax.set_yscale("log")
+        positive_y = y[y > 0]
+        if positive_y.size > 0:
+            ax.set_ylim(
+                float(np.nanmin(positive_y)) * 0.8,
+                y_max * 1.25,
+            )
+    else:
+        ax.set_ylim(
+            max(0.0, y_min - y_max * 0.05),
+            y_max * 1.20,
+        )
 
-    # 添加网格线，让图更容易阅读
-    ax.grid(True, alpha=0.3)
+    # 网格和边框：Scanpy 图是有网格和完整边框的
+    ax.grid(True, color="#cccccc", linewidth=0.8, alpha=0.9)
 
-    # 自动调整布局，避免标签或标题被裁剪
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.0)
+
+    ax.tick_params(
+        axis="both",
+        labelsize=14,
+        width=1.0,
+        length=4,
+    )
+
     fig.tight_layout()
 
-    # 5. 保存图像
-    # 这里模仿 Scanpy 的 save 风格：
-    # save=True       -> 使用默认文件名
-    # save=".pdf"     -> 默认文件名 + 后缀
-    # save="_xxx.png" -> 默认文件名 + 自定义后缀
-    # save="xxx.png"  -> 使用完整自定义文件名
+    # 6. 保存图像
     if save:
         default_name = "pca_variance_ratio"
 
-        # save=True：保存为默认 png 文件
         if save is True:
             save_path = f"{default_name}.png"
 
-        # save 是字符串：根据字符串形式判断保存路径
         elif isinstance(save, (str, PathLike)):
             save = fspath(save)
 
-            # 例如 save=".pdf" / ".png" / ".svg"
-            # 保存为 pca_variance_ratio.pdf / pca_variance_ratio.png / pca_variance_ratio.svg
             if save.startswith("."):
                 save_path = f"{default_name}{save}"
 
-            # 例如 save="_test.png"
-            # 保存为 pca_variance_ratio_test.png
             elif save.startswith("_"):
                 save_path = f"{default_name}{save}"
 
-            # 例如 save="my_pca.png"
-            # 直接使用用户提供的完整文件名
             else:
                 save_path = save
 
         else:
             raise ValueError("save 只支持 bool 或 str。")
 
-        # 保存图像
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
-    # 6. 显示或关闭图像
-    # 如果 show=None，则默认显示图像
+    # 7. 显示或关闭
     if show is None:
         show = True
 
-    # show=True：显示图像
     if show:
         plt.show()
-
-    # show=False：不显示图像，并关闭 fig，避免占用内存
     else:
         plt.close(fig)
 
-    # 7. 是否返回 fig, ax
-    # 如果 return_fig=True，返回 fig 和 ax，方便外部继续修改图像
     if return_fig:
         return fig, ax
 
@@ -972,3 +979,345 @@ def pca_variance_ratio_cumsum(
     if return_fig:
         return fig, ax
 
+
+# 画 PCA loadings
+def pca_loadings(
+        atlas: Atlas,
+        components: int | tuple[int, ...] | list[int] = (1, 2),
+        n_genes: int = 10,
+        include_lowest: bool = True,
+        figsize: tuple[float, float] | None = (14, 8),
+        show: bool | None = None,
+        save: bool | PathLike[str] | str | None = None,
+        return_fig: bool = False,
+):
+    """绘制 PCA loadings 图，类似 scanpy.pl.pca_loadings。
+
+    该函数从 ``varm_PCs`` 表中读取每个基因在指定 PC 上的 loading，
+    并展示 loading 最大的基因；当 ``include_lowest=True`` 时，
+    同时展示 loading 最小的基因。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。需要已经运行过 PCA，并包含 ``varm_PCs`` 表。
+
+    components
+        需要展示的主成分编号。注意这里和 Scanpy 一样，从 1 开始。
+        例如 ``components=(1, 2)`` 表示 PC1 和 PC2。
+
+    n_genes
+        每侧展示的基因数量。
+        当 ``include_lowest=True`` 时，每个 PC 会展示 top n_genes 和 bottom n_genes。
+
+    include_lowest
+        是否同时展示 loading 最小的基因。
+
+    figsize
+        图像大小。为 ``None`` 时自动根据 components 数量设置。
+
+    show
+        是否显示图像。默认为 True。
+
+    save
+        图片保存路径。
+
+    return_fig
+        是否返回 ``fig, axes``。
+    """
+
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection 为空，请先连接数据库")
+
+    def _q(name: str) -> str:
+        return '"' + name.replace('"', '""') + '"'
+
+    # -------------------------------------------------
+    # 1. 处理 components
+    # -------------------------------------------------
+    if isinstance(components, int):
+        components = (components,)
+    else:
+        components = tuple(components)
+
+    if len(components) == 0:
+        raise ValueError("components 不能为空")
+
+    for comp in components:
+        if comp < 1:
+            raise ValueError("components 使用 Scanpy 风格编号，必须从 1 开始，例如 PC1 写 1")
+
+    # -------------------------------------------------
+    # 2. 检查 varm_PCs 和 var 表
+    # -------------------------------------------------
+    varm_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = 'varm_PCs'
+    """).fetchone()[0]
+
+    if varm_exists == 0:
+        raise ValueError("数据库中不存在 varm_PCs 表，请先运行 PCA")
+
+    var_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = 'var'
+    """).fetchone()[0]
+
+    if var_exists == 0:
+        raise ValueError("数据库中不存在 var 表")
+
+    varm_cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info('varm_PCs')").fetchall()
+    ]
+
+    var_cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info('var')").fetchall()
+    ]
+
+    if "atlas_gene_id" not in varm_cols:
+        raise ValueError("varm_PCs 表中不存在 atlas_gene_id 字段")
+
+    if "atlas_gene_id" not in var_cols:
+        raise ValueError("var 表中不存在 atlas_gene_id 字段")
+
+    gene_name_col = "atlas_gene_name" if "atlas_gene_name" in var_cols else "atlas_gene_id"
+
+    # -------------------------------------------------
+    # 3. 自动匹配 PC 列名
+    # -------------------------------------------------
+    def _find_pc_col(comp: int) -> str:
+        # comp 是 1-based，pc_index 是 0-based
+        pc_index = comp - 1
+
+        candidates = [
+            f"pc{pc_index}",
+            f"PC{pc_index}",
+            f"PC{comp}",
+            f"pc{comp}",
+            f"{pc_index}",
+            f"{comp}",
+        ]
+
+        for c in candidates:
+            if c in varm_cols:
+                return c
+
+        raise ValueError(
+            f"varm_PCs 中找不到 PC{comp} 对应的 loading 列。\n"
+            f"尝试过这些列名: {candidates}\n"
+            f"当前 varm_PCs 字段为: {varm_cols}"
+        )
+
+    # -------------------------------------------------
+    # 4. 创建图像
+    # -------------------------------------------------
+    n_components = len(components)
+
+    if figsize is None:
+        figsize = (5.0 * n_components, 4.2)
+
+    fig, axes = plt.subplots(
+        1,
+        n_components,
+        figsize=figsize,
+        squeeze=False,
+    )
+
+    axes = axes.ravel()
+
+    # -------------------------------------------------
+    # 5. 每个 PC 单独画一个 panel
+    # -------------------------------------------------
+    for ax, comp in zip(axes, components):
+
+        pc_col = _find_pc_col(comp)
+
+        df = conn.execute(f"""
+            SELECT
+                v.{_q(gene_name_col)} AS gene_name,
+                p.{_q(pc_col)} AS loading
+            FROM varm_PCs AS p
+            JOIN var AS v
+              ON p.atlas_gene_id = v.atlas_gene_id
+            WHERE p.{_q(pc_col)} IS NOT NULL
+        """).fetchdf()
+
+        if df.empty:
+            raise ValueError(f"PC{comp} 的 loading 数据为空")
+
+        df["gene_name"] = df["gene_name"].astype(str)
+        df["loading"] = df["loading"].astype(float)
+
+        # loading 最大的基因
+        top_df = (
+            df.sort_values("loading", ascending=False)
+              .head(int(n_genes))
+              .copy()
+        )
+
+        if include_lowest:
+            # loading 最小的基因
+            low_df = (
+                df.sort_values("loading", ascending=True)
+                  .head(int(n_genes))
+                  .copy()
+            )
+
+            # 为了显示上更像 Scanpy，负向基因从接近 0 到最负排列
+            low_df = low_df.sort_values("loading", ascending=False).copy()
+
+            plot_df = pd.concat([top_df, low_df], ignore_index=True)
+
+            x_top = np.arange(len(top_df))
+            x_low = np.arange(len(top_df) + 1, len(top_df) + 1 + len(low_df))
+
+            # 正向基因
+            for xi, row in zip(x_top, top_df.itertuples(index=False)):
+                ax.text(
+                    xi,
+                    row.loading,
+                    row.gene_name,
+                    rotation=90,
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                    clip_on=False,
+                )
+
+            # 中间省略号
+            y_mid = 0.0
+            if len(plot_df) > 0:
+                y_mid = float((plot_df["loading"].max() + plot_df["loading"].min()) / 2)
+
+            ax.text(
+                len(top_df),
+                y_mid,
+                "...",
+                ha="center",
+                va="center",
+                fontsize=10,
+            )
+
+            # 负向基因
+            for xi, row in zip(x_low, low_df.itertuples(index=False)):
+                ax.text(
+                    xi,
+                    row.loading,
+                    row.gene_name,
+                    rotation=90,
+                    ha="center",
+                    va="top",
+                    fontsize=9,
+                    clip_on=False,
+                )
+
+            x_all = np.concatenate([x_top, x_low])
+            y_all = plot_df["loading"].to_numpy()
+
+        else:
+            plot_df = top_df.copy()
+            x_all = np.arange(len(plot_df))
+            y_all = plot_df["loading"].to_numpy()
+
+            for xi, row in zip(x_all, plot_df.itertuples(index=False)):
+                ax.text(
+                    xi,
+                    row.loading,
+                    row.gene_name,
+                    rotation=90,
+                    ha="center",
+                    va="bottom",
+                    fontsize=9,
+                    clip_on=False,
+                )
+
+        # -------------------------------------------------
+        # 6. Scanpy-like 样式
+        # -------------------------------------------------
+        ax.set_title(f"PC{comp}", fontsize=18, pad=8)
+        ax.set_xlabel("ranking", fontsize=16)
+        ax.set_ylabel("")
+
+        if len(x_all) > 0:
+            ax.set_xlim(-0.8, max(x_all) + 0.8)
+
+        y_min = float(np.nanmin(y_all))
+        y_max = float(np.nanmax(y_all))
+        y_range = y_max - y_min
+
+        if y_range == 0:
+            y_range = abs(y_max) if y_max != 0 else 1.0
+
+        ax.set_ylim(
+            y_min - 0.15 * y_range,
+            y_max + 0.15 * y_range,
+        )
+
+        ax.set_xticks([])
+
+        ax.grid(
+            True,
+            axis="y",
+            color="#cccccc",
+            linewidth=0.8,
+            alpha=0.9,
+        )
+
+        ax.grid(False, axis="x")
+
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.0)
+
+        ax.tick_params(
+            axis="both",
+            labelsize=14,
+            width=1.0,
+            length=4,
+        )
+
+    fig.tight_layout()
+
+    # -------------------------------------------------
+    # 7. 保存图像
+    # -------------------------------------------------
+    if save:
+        default_name = "pca_loadings"
+
+        if save is True:
+            save_path = f"{default_name}.png"
+
+        elif isinstance(save, (str, PathLike)):
+            save = fspath(save)
+
+            if save.startswith("."):
+                save_path = f"{default_name}{save}"
+            elif save.startswith("_"):
+                save_path = f"{default_name}{save}"
+            else:
+                save_path = save
+
+        else:
+            raise ValueError("save 只支持 bool 或 str。")
+
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+
+    # -------------------------------------------------
+    # 8. 显示或关闭
+    # -------------------------------------------------
+    if show is None:
+        show = True
+
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    if return_fig:
+        return fig, axes

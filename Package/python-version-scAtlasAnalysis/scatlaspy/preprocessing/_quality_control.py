@@ -236,8 +236,8 @@ def filter_cells(
     # 5. 统计结果
     removed = total_cells - keep_total
 
-    print(f"filter_cells Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
-    print(f"保留细胞 = {keep_total} / {total_cells} , ({keep_total / total_cells * 100:.2f}%)")
+    logger.info(f"filter_cells Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"保留细胞 = {keep_total} / {total_cells} , ({keep_total / total_cells * 100:.2f}%)")
 
     # 内存清理
     _cleanup_qc_after_step(
@@ -392,8 +392,8 @@ def filter_genes(
 
     conn.execute("DROP TABLE IF EXISTS gene_filter_stats_tmp")
 
-    print(f"filter_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
-    print(f"保留基因 = {keep_count} / {n_genes} , ({keep_count / n_genes * 100:.2f}%)")
+    logger.info(f"filter_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"保留基因 = {keep_count} / {n_genes} , ({keep_count / n_genes * 100:.2f}%)")
 
     # 函数结束后兜底清理
     _cleanup_qc_after_step(
@@ -491,7 +491,7 @@ def calculate_cell_total_counts(
     pbar = tqdm(
         range(n_chunks),
         total=n_chunks,
-        desc="cell_total_counts",
+        desc="calculate_cell_total_counts",
         unit="chunk",
     )
 
@@ -530,7 +530,7 @@ def calculate_cell_total_counts(
         # 每个 chunk 后立即清理
         conn.execute("DROP TABLE IF EXISTS cell_total_counts_chunk")
 
-    print(f"calculate_cell_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"calculate_cell_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
     # 内存清理
     _cleanup_qc_after_step(
@@ -649,7 +649,7 @@ def calculate_gene_total_counts(
         collect=True,
     )
 
-    print(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 # var 表  新增字段
@@ -900,7 +900,7 @@ def calculate_qc_metrics(
         collect=True,
     )
 
-    print(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"calculate_gene_total_counts Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 # var 表  新增字段

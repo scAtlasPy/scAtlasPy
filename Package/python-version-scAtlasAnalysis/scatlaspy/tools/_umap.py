@@ -363,8 +363,8 @@ def umap(
 
         offset += len(batch_df)
 
-        print(f"[UMAP] transformed {offset}/{total_n}")
+        logger.info(f"[UMAP] transformed {offset}/{total_n}")
 
-    print(f"UMAP Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
+    logger.info(f"UMAP Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
 
     return reducer

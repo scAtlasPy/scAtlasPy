@@ -8,8 +8,8 @@
 import scatlaspy as sap
 
 # todo 要不要推荐用户限制内存
-    # 日志控制
-    # 输出控制
+    # 日志控制   -- OK
+    # 输出控制   -- OK 排查哪些需要print， 哪些不需要
     # 注释控制
     # 命名控制    -- ok
     # 枚举类型排查 -- ok
@@ -20,16 +20,17 @@ import scanpy as sc
 adata = sc.datasets.pbmc3k()
 atlas.load_anndata(adata)
 
+import scatlaspy as sap
 atlas = sap.Atlas(r"F:\data\database\test_10W_1")
 file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample10W.h5ad"
-atlas.load_h5ad(file_path)
+atlas.load_h5ad(file_path,load_type="random")
 
 # file_path = r"F:\data\ALL_Tissue_Global_Clustering_Scanpy_sample20W.h5ad"
 # file_path = r"F:\data\FullMouseBrain_raw.h5ad"
 # file_path = r"F:\data\HBCA__subsample_20__hvg_2000.h5ad"
 # file_path = r"F:\data\adata_JAX_dataset_1.h5ad"
 # file_path = r"F:\data\100M\tahoe100M_2025-02-25_h5ad_plate14_filt_Vevo_Tahoe100M_WServicesFrom_ParseGigalab.h5ad"
-#
+
 #  多文件导入
 # atlas = sap.Atlas(r"F:\data\database\test_100M-123")
 h5ad_paths = [ # 18,251,480 x 62,710
@@ -57,14 +58,7 @@ sap.pl.highest_expr_genes(
 )
 
 #  小数据 / 和 Scanpy 对齐 / 做展示图
-sap.pl.highest_expr_genes(
-    atlas,
-    n_top=20,
-    use_all_cells=False,
-    show_outliers=True,
-    sample_cells=10_000,
-    max_outliers=5_000, # 每个基因最多绘制多少个离群点
-)
+sap.pl.highest_expr_genes(atlas)
 
 # 3. 过滤 filter_cells & filter_genes
 sap.pp.filter_cells(atlas, min_genes=200)
@@ -79,7 +73,7 @@ sap.pl.violin_qc_metrics(atlas,sample_n=100000) # 数据特别大，想限制绘
 
 # QC 散点图（scatter plot）
 sap.pl.scatter_qc_metrics(atlas)
-sap.pl.scatter_qc_metrics(atlas,sample_n=100000)
+sap.pl.scatter_qc_metrics(atlas,sample_n=100000)  # 数据特别大，想限制绘图点数
 
 # 5. calculate_cell_total_counts & calculate_gene_total_counts
 sap.pp.calculate_cell_total_counts(atlas)
@@ -132,14 +126,19 @@ adata.write_h5ad(r"F:\data\out\test_10W_out_1.h5ad") # adata 导出为 h5ad
 # 计算层：训练 PCA + 写入 obsm_X_pca / varm_PCs / uns_pca_stats
 sap.tl.pca(
     atlas,
-    n_components=30,
-    fit_batches=1000, # 训练轮数
+    n_components=50, # 30
+    fit_batches=100, # 训练轮数 1000
 )
 
 # 可视化层：只读 PCA 结果
-sap.pl.pca(atlas, color="cell_type") # embryo_id  keep organ louvain CST3
-sap.pl.pca_variance_ratio(atlas, n_pcs=30)
-sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=30)
+sap.pl.pca(atlas, color="CST3") # embryo_id  keep organ louvain CST3
+sap.pl.pca_loadings(
+    atlas,
+    components=(1, 2),
+    include_lowest=True,
+)
+sap.pl.pca_variance_ratio(atlas, n_pcs=20)
+sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=20)
 
 
 # 15. KMeans：计算 + 聚类大小 QC
@@ -147,8 +146,8 @@ sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=30)
 sap.tl.kmeans(
     atlas,
     n_components=30,
-    n_clusters=30,
-    fit_batches=1000, # 训练轮数
+    n_clusters=8,
+    fit_batches=100, # 训练轮数
     buffer_batch_num=5,
     use_obs_col="kmeans"
 )
@@ -169,14 +168,31 @@ sap.tl.umap(
     n_jobs=1,
     eval_sample_n=10000,
 )
+sap.tl.umap(
+    atlas,
+    n_neighbors=15,
+    min_dist=0.5,
+)
 
 # 可视化层：
 sap.pl.umap(
     atlas,
+    color="kmeans",
+    sample_n=None,
+    point_size=20,
+    alpha=0.85,
+    figsize=(10, 8),
+)
+
+
+sap.pl.umap(
+    atlas,
     color="kmeans", # cell_type
     sample_n=None,    # 全量画图
-    plot_batch_size=200000  # 分批加载画图
 )
+
+
+
 # 多个 marker gene 上色
 sap.pl.umap(
     atlas,

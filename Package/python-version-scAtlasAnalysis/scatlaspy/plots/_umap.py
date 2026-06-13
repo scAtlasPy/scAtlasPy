@@ -7,7 +7,9 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
-
+import logging
+logger = logging.getLogger("Atlas")
+logger.addHandler(logging.NullHandler())
 
 # =====================================================
 # 统一离散分类颜色池
@@ -171,7 +173,7 @@ def umap(
         atlas: Atlas,
         color: str | list[str] = "kmeans",
         *,
-        sample_n: int | None = 50000,
+        sample_n: int | None = None,
         where: str | None = None,
 
         # gene feature 参数
@@ -179,7 +181,7 @@ def umap(
 
         # 图形参数
         figsize: tuple[float, float] | None = (22, 8),
-        point_size: float = 1.0,
+        point_size: float = 5,
         alpha: float = 0.7,
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -277,7 +279,7 @@ def umap(
         raise ValueError("color 不能为空")
 
     if where is not None and str(where).strip() != "":
-        print(f"[UMAP] where = {where}")
+        logger.info(f"[UMAP] where = {where}")
 
     # 检查 obsm_X_umap 是否存在
     tables = conn.execute("""
@@ -953,7 +955,8 @@ def _draw_umap_obs_streaming(
     ax.set_xticks([])
     ax.set_yticks([])
 
-    ax.set_aspect("equal", adjustable="box")
+    # ax.set_aspect("equal", adjustable="box")
+    ax.set_aspect("auto")
 
     ax.margins(0.02)
 
@@ -967,9 +970,15 @@ def _draw_umap_obs_streaming(
             spine.set_visible(False)
 
     if legend_loc == "right_margin":
+        # fig.subplots_adjust(
+        #     left=0.06,
+        #     right=0.42,
+        #     bottom=0.10,
+        #     top=0.90,
+        # )
         fig.subplots_adjust(
-            left=0.06,
-            right=0.42,
+            left=0.08,
+            right=0.78,
             bottom=0.10,
             top=0.90,
         )
@@ -1059,7 +1068,7 @@ def _plot_umap_features(
         raise ValueError("genes 不能为空")
 
     if where is not None and str(where).strip() != "":
-        print(f"[UMAP features] where = {where}")
+        logger.info(f"[UMAP features] where = {where}")
 
     # 检查表和列
     tables = conn.execute("""

@@ -241,7 +241,7 @@ def normalize_total(
         collect=True,
     )
 
-    print(f"normalize_total Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_total Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # atlas.connection.execute("CHECKPOINT")
 # atlas.connection.close()
@@ -393,7 +393,7 @@ def normalize_total_scale_factor(
         collect=True,
     )
 
-    print(f"normalize_total_scale_factor Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_total_scale_factor Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   obs 表
@@ -520,7 +520,7 @@ def log1p(
         collect=True,
     )
 
-    print(f"log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -650,7 +650,7 @@ def expm1(
         collect=True,
     )
 
-    print(f"expm1 Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"expm1 Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -796,7 +796,7 @@ def normalize_and_log1p(
         collect=True,
     )
 
-    print(f"normalize_and_log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_and_log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -918,7 +918,7 @@ def highly_variable_genes(
             "可选值为: 'seurat', 'cv', 'var'"
         )
 
-    print(f"highly_variable_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"highly_variable_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
     return None
 
 
@@ -1943,10 +1943,6 @@ def scale(
         chunk_end = min(chunk_start + chunk_ids - 1, max_id)
 
         t0 = datetime.now()
-        # print(
-        #     f"\n[Chunk {chunk_idx + 1}/{n_chunks}] "
-        #     f"id: {chunk_start} ~ {chunk_end}"
-        # )
 
         conn.execute("BEGIN")
         try:
@@ -1995,7 +1991,7 @@ def scale(
         collect=True,
     )
 
-    print(f"scale Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"scale Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表
@@ -2111,8 +2107,6 @@ def sqrt(
         start_id = min_id + i * chunk_ids
         end_id = start_id + chunk_ids - 1
 
-        # print(f"  -> chunk {i + 1}/{n_chunks}: id [{start_id}, {end_id}]")
-
         conn.execute(
             f"""
             UPDATE X_HyS_data
@@ -2130,7 +2124,7 @@ def sqrt(
         collect=True,
     )
 
-    print(f"sqrt Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"sqrt Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 # 运行结果
 #   X_HyS_data 表

@@ -6,7 +6,8 @@ import pandas as pd
 from scipy import stats
 from typing import Any
 from ..data import Atlas
-
+import logging
+logger = logging.getLogger('Atlas')
 
 def _q(name: str) -> str:
     """为 SQL 标识符添加安全引用。
@@ -760,7 +761,7 @@ def rank_genes_groups(
             conn.unregister("_rgg_result_py")
 
 
-        print("rank_genes_groups 完成, 耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+        ("rank_genes_groups 完成, 耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
 
         if return_df:
             return result_df

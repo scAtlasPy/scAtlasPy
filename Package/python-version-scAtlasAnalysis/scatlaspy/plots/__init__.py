@@ -12,6 +12,7 @@ from ._kmeans import (
 
 from ._pca import (
     pca,
+    pca_loadings,
     pca_variance_ratio,
     pca_variance_ratio_cumsum,
 )

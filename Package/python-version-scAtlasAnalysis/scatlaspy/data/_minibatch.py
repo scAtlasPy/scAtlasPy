@@ -1061,7 +1061,7 @@ class MultiThreadedMinibatchFetcher:
         avg_cell_speed = self.output_cells / elapsed if elapsed > 0 else 0.0
 
         if self.total_batches % self.speed_log_every == 0:
-            print(
+            logger.info(
                 f"[Speed] output_batches={self.total_batches}, "
                 f"[ current={current_batch_speed:.2f} batch/s, "
                 f"{current_cell_speed:.0f} cells/s, ]"
@@ -1072,7 +1072,7 @@ class MultiThreadedMinibatchFetcher:
         self.output_last_time = now
 
         if self._output_limit_reached():
-            print(f"[Consumer] reach max_batches={self.max_batches}, stop")
+            logger.info(f"[Consumer] reach max_batches={self.max_batches}, stop")
             self.stop_event.set()
 
         return True

@@ -11,7 +11,7 @@ def highest_expr_genes(
         atlas: Atlas,
         n_top: int = 20,
         use_all_cells: bool = True,
-        show_outliers: bool = False,    # 是否绘制离群点
+        show_outliers: bool = True,    # 是否绘制离群点
         max_outliers: int = 5000,       # 每个基因最多绘制多少个离群点
         figsize: tuple[float, float] | None=(12, 10),
         approx_quantile: bool = True,   # 大数据默认用近似分位数，避免 OOM

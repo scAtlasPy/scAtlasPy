@@ -33,7 +33,7 @@ def load_h5ad(
     load_type: Literal["order", "random", "list_random"] = "random",
     store_type: StoreType = "count",
     cells_per_block: int = 500,
-    blocks_per_pool: int = 10,
+    blocks_per_pool: int = 20,
 ) -> Any:
     """将 h5ad 文件导入 Atlas 数据库。
 
@@ -177,7 +177,7 @@ def load_h5ad(
             store_type=store_type,
         )
 
-    print(f"load_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"load_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
     return None
 
 
@@ -187,7 +187,7 @@ def _load_h5ad_list_random(
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
-    blocks_per_pool: int = 10,    # 每次从全局随机 block 池读取多少个 block 后 flush
+    blocks_per_pool: int = 20,    # 每次从全局随机 block 池读取多少个 block 后 flush
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
@@ -271,8 +271,8 @@ def _load_h5ad_list_random(
 
     var_written = False
 
-    print(f"[INFO] 文件数量: {file_num:,}")
-    print(f"[INFO] store_type: {store_type}")
+    logger.info(f"[INFO] 文件数量: {file_num:,}")
+    logger.info(f"[INFO] store_type: {store_type}")
 
     file_states = []
 
@@ -290,7 +290,7 @@ def _load_h5ad_list_random(
             n_cells = adata_backed.n_obs
             n_genes = adata_backed.n_vars
 
-            print(f"[INFO] 当前文件维度 : {n_cells:,} × {n_genes:,}")
+            logger.info(f"[INFO] 当前文件维度 : {n_cells:,} × {n_genes:,}")
 
             # 每个文件单独检测 X 是 count 还是 log
             source_store_type = _detect_x_store_type_from_backed(
@@ -501,7 +501,7 @@ def _load_h5ad_list_random(
         processed_blocks = 0
         flush_counter = 0
 
-        pbar = tqdm(total=total_blocks, desc="读取进度")
+        pbar = tqdm(total=total_blocks, desc="load_h5ad")
 
         # 事务：多个 flush 共用事务
         conn.execute("BEGIN TRANSACTION")
@@ -654,7 +654,7 @@ def _load_h5ad_random(
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
-    blocks_per_pool: int = 10,   # 固定窗口级随机，默认 5 个 batch
+    blocks_per_pool: int = 20,   # 固定窗口级随机，默认 5 个 batch
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
@@ -748,8 +748,8 @@ def _load_h5ad_random(
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print(f"[INFO] store_type = {store_type}")
+    logger.info(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    logger.info(f"[INFO] store_type = {store_type}")
 
     # 窗口缓存: 每次攒够 blocks_per_pool 个 batch 再统一随机写入
     window_adatas = []
@@ -763,7 +763,7 @@ def _load_h5ad_random(
         for block_i, block_start in enumerate(
             tqdm(
                 block_starts,
-                desc="读取进度",
+                desc="load_h5ad",
             )
         ):
             block_end = min(int(block_start) + cells_per_block, n_cells)
@@ -935,7 +935,7 @@ def _load_h5ad_order(
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int = 500,
-    blocks_per_pool: int = 10,
+    blocks_per_pool: int = 20,
 ):
 
     """按原始细胞顺序导入单个 h5ad 文件。
@@ -1018,8 +1018,8 @@ def _load_h5ad_order(
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    print(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    print(f"[INFO] store_type = {store_type}")
+    logger.info(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    logger.info(f"[INFO] store_type = {store_type}")
 
     mini_batch_counter = 0
 
@@ -1030,7 +1030,7 @@ def _load_h5ad_order(
         for mega_i, mega_start in enumerate(
             tqdm(
                 range(0, n_cells, mega_batch_size),
-                desc="读取进度",
+                desc="load_h5ad",
             )
         ):
             mega_end = min(mega_start + mega_batch_size, n_cells)
@@ -1158,7 +1158,7 @@ def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
     start_time = datetime.now()
     adata = _read_smart(file_path)
     load_anndata(adata, atlas)
-    print(f"load_multi_format Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"load_multi_format Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 
 # 将计算结果写入数据库表
@@ -2535,7 +2535,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         global_data_counter = np.int64(0)
         global_indptr_offset = np.int64(0)
 
-        for chunk_idx in tqdm(range(total_chunks), desc="读取进度"):
+        for chunk_idx in tqdm(range(total_chunks), desc="load"):
             start = chunk_idx * chunk_size
             end = min(start + chunk_size, n_cells)
             size = end - start
@@ -2712,7 +2712,7 @@ def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name
         atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
         logger.info("var表已更新")
 
-    print("gene_names_duplicated Done")
+    logger.info("gene_names_duplicated Done")
     return True
 
 # 示例
