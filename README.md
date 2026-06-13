@@ -8,25 +8,40 @@ scAtlasPy is an on-disk single-cell atlas analysis platform designed to make ful
 
 scAtlasPy keeps expression matrices, metadata, embeddings, and analysis results in a persistent `.sasql` atlas database and retrieves only the data needed for each operation. This design supports comprehensive analysis pipelines under strict memory constraints while remaining compatible with familiar Scanpy-style Python workflows.
 
-The API follows familiar Scanpy-style namespaces:
+scAtlasPy provides a familiar Python workflow while keeping the atlas on disk:
 
 ```python
 import scatlaspy as sap
 
 atlas = sap.Atlas("pbmc.sasql")
+atlas.load_h5ad("pbmc.h5ad", load_type="order")
+
+sap.pp.calculate_qc_metrics(atlas)
 sap.pp.filter_cells(atlas, min_genes=200)
-sap.tl.pca(atlas)
-sap.pl.pca(atlas, color="cell_type")
+sap.pp.filter_genes(atlas, min_cells=3)
+sap.pp.normalize_total(atlas)
+sap.pp.log1p(atlas)
+sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+
+atlas.build_read_index(
+    cell_condition="filter_cells",
+    gene_condition="filter_genes",
+    use_hvg=True,
+)
+
+sap.tl.pca(atlas, n_components=50)
+sap.tl.kmeans(atlas, n_clusters=20)
+sap.pl.pca(atlas, color="kmeans")
 ```
 
 ## Highlights
 
-- Persistent `.sasql` atlas files built on an embedded analytical database, enabling local, serverless analysis with compact on-disk storage.
-- Chunked conversion from diverse single-cell source formats into `.sasql`, designed to avoid full in-memory loading during data ingestion.
-- Full-spectrum atlas analysis under memory constraints, including QC, filtering, normalization, transformation, feature selection, PCA, clustering, UMAP, marker ranking, annotation, and visualization.
-- Flexible data retrieval interfaces for both interactive analysis and atlas-scale algorithm development, including SQL queries, metadata access, AnnData export, and minibatch streaming.
-- Extensible architecture for emerging atlas-oriented computational methods, including machine learning workflows that require high-throughput random access to large cell collections.
-- A community-facing foundation for building an open cell atlas analysis ecosystem across storage, retrieval, algorithms, and applications.
+- Persistent `.sasql` atlas files built on an embedded analytical database. Run local, serverless analyses with compact on-disk storage.
+- Chunked conversion from diverse single-cell source formats into `.sasql`. Data ingestion does not require full in-memory loading.
+- Full-spectrum atlas analysis under memory constraints. This includes QC, filtering, normalization, feature selection, PCA, clustering, UMAP, marker ranking, annotation, and visualization.
+- Flexible data retrieval for interactive analysis and atlas-scale algorithm development. Use SQL queries, metadata access, AnnData export, or minibatch streaming.
+- Extensible architecture for emerging atlas-oriented computational methods. It is designed to support machine learning workflows that need high-throughput random access to large cell collections.
+- A community-facing foundation for an open cell atlas analysis ecosystem across storage, retrieval, algorithms, and applications.
 
 ## Installation
 
