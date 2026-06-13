@@ -6,7 +6,7 @@
 
 scAtlasPy is an on-disk single-cell atlas analysis platform designed to make full-scale human cell atlas analysis feasible on memory-limited local hardware. As single-cell atlases grow from millions to hundreds of millions of cells, conventional in-memory workflows become increasingly constrained by RAM capacity. scAtlasPy addresses this bottleneck with compressed disk-resident data management, high-throughput random data streaming, and an extensible analysis layer for atlas-scale preprocessing, visualization, statistics, and machine learning workflows.
 
-scAtlasPy keeps expression matrices, metadata, embeddings, and analysis results in a persistent `.sasql` atlas database and retrieves only the data needed for each operation. This design supports comprehensive analysis pipelines under strict memory constraints while remaining compatible with familiar Scanpy-style Python workflows.
+scAtlasPy keeps expression matrices, metadata, embeddings, and analysis results in a persistent `.sasql` atlas database and retrieves only the data needed for each operation. This design supports comprehensive analysis pipelines under strict memory constraints while remaining compatible with familiar Python single-cell analysis workflows.
 
 scAtlasPy provides a familiar Python workflow while keeping the atlas on disk:
 
