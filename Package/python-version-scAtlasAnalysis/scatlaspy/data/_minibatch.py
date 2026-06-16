@@ -357,7 +357,6 @@ class MultiThreadedMinibatchFetcher:
         self.batch_cell_counts, self.batch_nnz = self._prepare_batch_info_sql()  # 获取batch_nnz (每批cell的非零值数量)
         self.batch_idx = 0  # 批次的编号
         self.batch_num = len(self.batch_nnz)  # 批次数量
-        self._check_batch_info()  # 检查 batch 是否覆盖所有 cell
 
         self.queue = queue.Queue(maxsize=self.producer_num * 5)  # 数据缓存队列 ：Queue（核心）
 
@@ -539,47 +538,6 @@ class MultiThreadedMinibatchFetcher:
         batch_nnz = [int(r[2]) for r in rows]
 
         return batch_cell_counts, batch_nnz
-
-
-    def _check_batch_info(self):
-        """执行 ``_check_batch_info`` 的核心功能。
-
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
-
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-        """
-
-        conn = duckdb.connect(self.file_path)
-        conn.execute("PRAGMA enable_progress_bar=false")
-
-        total_cells = conn.execute("""
-            SELECT COUNT(*)
-            FROM X_HyS_indptr_filtered
-        """).fetchone()[0]
-
-        conn.close()
-
-        total_from_batches = sum(self.batch_cell_counts)
-
-        logger.info("[BatchInfo] total cells from indptr:", total_cells)
-        logger.info("[BatchInfo] total cells from batches:", total_from_batches)
-        logger.info("[BatchInfo] batch_num:", self.batch_num)
-        logger.info("[BatchInfo] last batch cells:", self.batch_cell_counts[-1])
-        logger.info("[BatchInfo] last batch nnz:", self.batch_nnz[-1])
-
-        if total_from_batches != total_cells:
-            raise RuntimeError(
-                f"[BatchInfo] batch 信息丢细胞: "
-                f"batches={total_from_batches}, indptr={total_cells}"
-            )
 
 
     def _producer(self, tid: int):

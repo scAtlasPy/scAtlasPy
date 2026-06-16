@@ -221,7 +221,7 @@ class StreamingKMeans:
             embedding 结果表。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 

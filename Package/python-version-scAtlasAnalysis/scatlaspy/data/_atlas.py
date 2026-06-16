@@ -836,8 +836,8 @@ class Atlas:
 
     def build_read_index(
             self,
-            cell_condition: str | None = None,
-            gene_condition: str | None = None,
+            cell_condition: str  = "filter_cells",
+            gene_condition: str  = "filter_genes",
             use_hvg: bool = True,
             use_data: str = "data_log1p",
     ):
