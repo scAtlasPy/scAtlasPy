@@ -1,5 +1,6 @@
 from ..data import Atlas
 from matplotlib.lines import Line2D
+import numpy as np
 import re
 import math
 from os import PathLike
@@ -7,6 +8,7 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
+import matplotlib.patheffects as pe
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
@@ -168,6 +170,80 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     }
 
 
+def _spread_on_data_label_positions(
+        center_df: pd.DataFrame,
+        x_col: str = "x_center",
+        y_col: str = "y_center",
+        min_dx_frac: float = 0.08,
+        min_dy_frac: float = 0.06,
+        step_frac: float = 0.018,
+        max_iter: int = 200,
+) -> pd.DataFrame:
+    """
+    简单避让 on_data 标签位置，避免多个类别标签挤在一起。
+
+    不改变细胞点的位置，只调整文字标签的位置。
+    """
+
+    center_df = center_df.copy()
+
+    if len(center_df) <= 1:
+        center_df["label_x"] = center_df[x_col].astype(float)
+        center_df["label_y"] = center_df[y_col].astype(float)
+        return center_df
+
+    x = center_df[x_col].astype(float).to_numpy()
+    y = center_df[y_col].astype(float).to_numpy()
+
+    x_span = max(float(np.nanmax(x) - np.nanmin(x)), 1e-12)
+    y_span = max(float(np.nanmax(y) - np.nanmin(y)), 1e-12)
+
+    min_dx = min_dx_frac * x_span
+    min_dy = min_dy_frac * y_span
+
+    step_x = step_frac * x_span
+    step_y = step_frac * y_span
+
+    label_x = x.copy()
+    label_y = y.copy()
+
+    for _ in range(max_iter):
+        moved = False
+
+        for i in range(len(center_df)):
+            for j in range(i + 1, len(center_df)):
+
+                dx = label_x[j] - label_x[i]
+                dy = label_y[j] - label_y[i]
+
+                if abs(dx) < min_dx and abs(dy) < min_dy:
+
+                    # 如果两个标签几乎完全重合，给一个固定方向
+                    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+                        direction = 1 if (i + j) % 2 == 0 else -1
+                        dx = direction * 1e-6
+                        dy = direction * 1e-6
+
+                    # 水平方向和垂直方向都稍微推开
+                    sx = step_x if dx >= 0 else -step_x
+                    sy = step_y if dy >= 0 else -step_y
+
+                    label_x[i] -= sx
+                    label_x[j] += sx
+                    label_y[i] -= sy
+                    label_y[j] += sy
+
+                    moved = True
+
+        if not moved:
+            break
+
+    center_df["label_x"] = label_x
+    center_df["label_y"] = label_y
+
+    return center_df
+
+
 # UMAP 可视化入口
 def umap(
         atlas: Atlas,
@@ -182,7 +258,7 @@ def umap(
         # 图形参数
         figsize: tuple[float, float] | None = (22, 8),
         point_size: float = 5,
-        alpha: float = 0.7,
+        alpha: float = 0.85,
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
 
@@ -358,41 +434,22 @@ def umap(
         )
 
     # 混合模式
-    result = {}
-
-    for obs_col in obs_colors:
-        result[obs_col] = _plot_umap_obs(
-            atlas=atlas,
-            color=obs_col,
-            sample_n=sample_n,
-            where=where,
-            legend_loc=legend_loc,
-            figsize=figsize,
-            point_size=point_size,
-            alpha=alpha,
-            cmap=cmap,
-            palette=palette,
-            frameon=frameon,
-            save_path=None,
-            plot_batch_size=plot_batch_size,
-            return_df=return_df,
-        )
-
-    if len(gene_colors) > 0:
-        result["genes"] = _plot_umap_features(
-            atlas=atlas,
-            genes=gene_colors,
-            sample_n=sample_n,
-            where=where,
-            use_data=use_data,
-            ncols=ncols,
-            figsize=figsize,
-            point_size=point_size,
-            alpha=alpha,
-            cmap=cmap,
-        )
-
-    return result
+    return _plot_umap_mixed(
+        atlas=atlas,
+        obs_colors=obs_colors,
+        gene_colors=gene_colors,
+        sample_n=sample_n,
+        where=where,
+        use_data=use_data,
+        ncols=ncols,
+        figsize=figsize,
+        point_size=point_size,
+        alpha=alpha,
+        cmap=cmap,
+        palette=palette,
+        frameon=frameon,
+        save_path=save_path,
+    )
 
 
 
@@ -661,18 +718,31 @@ def _plot_umap_obs(
         leg.set_in_layout(False)
 
     elif legend_loc == "on_data":
+        center_rows = []
         for lab in unique_labels:
             sub = plot_df[plot_df["color_label"] == lab]
-            x_center = sub["umap1"].mean()
-            y_center = sub["umap2"].mean()
+            if len(sub) == 0:
+                continue
+            center_rows.append({
+                "color_label": str(lab),
+                "x_center": float(sub["umap1"].median()),
+                "y_center": float(sub["umap2"].median()),
+            })
+        center_df = pd.DataFrame(center_rows)
+
+        # 修改：对 on_data 标签位置做简单避让，避免文字挤在一起
+        center_df = _spread_on_data_label_positions(center_df)
+        for _, row in center_df.iterrows():
             ax.text(
-                x_center,
-                y_center,
-                str(lab),
-                fontsize=12,
+                row["label_x"],
+                row["label_y"],
+                str(row["color_label"]),
+                fontsize=14,
                 weight="bold",
+                color="black",
                 ha="center",
-                va="center"
+                va="center",
+                zorder=10,
             )
     else:
         raise ValueError("legend_loc 只能是 'right_margin' 或 'on_data'")
@@ -691,12 +761,12 @@ def _plot_umap_obs(
         ax.spines["bottom"].set_linewidth(1.0)
         ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
 
-    if legend_loc == "right_margin":
+    if legend_loc in ("right_margin", "on_data"):
         fig.subplots_adjust(
-            left=0.06,
-            right=0.38,
-            bottom=0.16,
-            top=0.88,
+            left=0.08,
+            right=0.70,
+            bottom=0.10,
+            top=0.90,
         )
     else:
         plt.tight_layout(pad=0.8)
@@ -927,24 +997,27 @@ def _draw_umap_obs_streaming(
         center_df = conn.execute(f"""
             SELECT
                 CAST(o.{color} AS TEXT) AS color_label,
-                AVG(u.umap1) AS x_center,
-                AVG(u.umap2) AS y_center
+                MEDIAN(u.umap1) AS x_center,
+                MEDIAN(u.umap2) AS y_center
             FROM obsm_X_umap u
             JOIN obs o
               ON u.atlas_cell_id = o.atlas_cell_id
             WHERE {where_sql}
             GROUP BY CAST(o.{color} AS TEXT)
         """).fetchdf()
-
+        # 修改：对 on_data 标签位置做简单避让，避免文字挤在一起
+        center_df = _spread_on_data_label_positions(center_df)
         for _, row in center_df.iterrows():
             ax.text(
-                row["x_center"],
-                row["y_center"],
+                row["label_x"],
+                row["label_y"],
                 str(row["color_label"]),
-                fontsize=12,
+                fontsize=14,
                 weight="bold",
+                color="black",
                 ha="center",
-                va="center"
+                va="center",
+                zorder=10,
             )
 
     else:
@@ -969,7 +1042,7 @@ def _draw_umap_obs_streaming(
         for spine in ax.spines.values():
             spine.set_visible(False)
 
-    if legend_loc == "right_margin":
+    if legend_loc in ("right_margin", "on_data"):
         # fig.subplots_adjust(
         #     left=0.06,
         #     right=0.42,
@@ -978,7 +1051,7 @@ def _draw_umap_obs_streaming(
         # )
         fig.subplots_adjust(
             left=0.08,
-            right=0.78,
+            right=0.70,
             bottom=0.10,
             top=0.90,
         )
@@ -1307,3 +1380,475 @@ def _plot_umap_features(
 
     return plot_data
 
+
+# umap() ─ 混合模式：obs 分类变量 + gene feature 变量画在同一个 Figure
+def _plot_umap_mixed(
+        atlas: Atlas,
+        obs_colors: list[str],
+        gene_colors: list[str],
+        sample_n: int | None = 50000,
+        where: str | None = None,
+        use_data: str = "data_log1p",
+        ncols: int = 3,
+        figsize: tuple[float, float] | None = None,
+        point_size: float = 5,
+        alpha: float = 0.85,
+        cmap: str = "viridis",
+        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+        frameon: bool = True,
+        save_path: PathLike[str] | str | None = None,
+):
+    """绘制混合类型的 UMAP 多面板图。
+
+    该内部函数用于支持 ``sap.pl.umap`` 中同时传入 ``obs`` 分类变量和
+    gene feature 变量的情况，例如 ``color=["kmeans", "CD14", "NKG7"]``。
+    函数会把不同类型的着色变量统一绘制到同一个 Figure 中，每个变量对应
+    一个独立子图，从而实现类似 Scanpy ``sc.pl.umap`` 的多面板显示效果。
+
+    具体来说，``obs_colors`` 中的变量会按照离散分类变量绘制，
+    使用统一的离散颜色池和图例；``gene_colors`` 中的变量会按照连续表达量
+    绘制，使用 ``use_data`` 指定的表达字段和连续 colormap，并为每个 gene
+    feature 子图添加 colorbar。
+
+    该函数不会把分类标签和基因表达值叠加在同一个坐标轴中，而是将它们
+    画在同一个 Figure 的不同 panel 中。这样可以避免离散颜色和连续颜色
+    映射互相冲突，同时保持与 Scanpy 多变量 UMAP 可视化相近的展示方式。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常要求已经计算过 UMAP，并且数据库中包含
+        ``obsm_X_umap``、``obs``、``var`` 和 ``X_HyS_data`` 等表。
+
+    obs_colors
+        需要绘制的 ``obs`` 列名列表，例如 ``["kmeans"]``、
+        ``["cell_type"]`` 或 ``["batch", "kmeans"]``。
+        这些变量会被当作离散分类变量绘制。
+
+    gene_colors
+        需要绘制的基因名称列表，例如 ``["CD14", "NKG7"]``。
+        这些变量会被当作连续 gene feature 绘制。
+
+    sample_n
+        绘图时抽样的细胞数量。为 ``None`` 时使用全部细胞。
+        对于大数据集，建议设置为一个合适的整数，例如 ``50000``，
+        以避免一次性读取过多 UMAP 坐标和表达值导致内存压力过大。
+
+    where
+        可选 SQL 过滤条件，用于限制参与绘图的细胞。
+        例如 ``where="batch = 'sample1'"``。
+
+    use_data
+        gene feature 绘图时读取的 ``X_HyS_data`` 表达字段。
+        常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"``
+        和 ``"data_scale"``。
+
+    ncols
+        多面板图中每行显示的子图数量。
+
+    figsize
+        图像大小。为 ``None`` 时根据子图数量自动设置。
+
+    point_size
+        散点大小。
+
+    alpha
+        散点透明度。
+
+    cmap
+        gene feature 连续表达值使用的 colormap。
+
+    palette
+        ``obs`` 离散分类变量使用的颜色方案。
+
+    frameon
+        是否显示坐标轴边框。
+
+    save_path
+        图片保存路径。为 ``None`` 时只显示图像，不保存。
+
+    Returns
+    -------
+    dict
+        返回包含绘图变量和基础 UMAP 数据的字典。通常包括
+        ``"obs"``、``"genes"`` 和 ``"data"`` 三部分。
+
+    Notes
+    -----
+    该函数主要用于 ``obs`` 分类变量和 gene feature 混合绘图场景。
+    如果只绘制单个 ``obs`` 分类变量，仍然使用 ``_plot_umap_obs``；
+    如果只绘制 gene feature 列表，仍然使用 ``_plot_umap_features``。
+    因此，新增该函数不会改变原有单类型 UMAP 绘图的行为。
+
+    Examples
+    --------
+    将聚类标签和 marker gene 表达绘制在同一个 Figure 中::
+
+        sap.pl.umap(
+            atlas,
+            color=["kmeans", "CD14", "NKG7"],
+            use_data="data_log1p",
+            sample_n=50000,
+        )
+
+    绘制多个 obs 分类变量和多个基因表达::
+
+        sap.pl.umap(
+            atlas,
+            color=["kmeans", "cell_type", "CD14", "NKG7"],
+            use_data="data_log1p",
+            ncols=2,
+        )
+    """
+
+    conn = atlas.connection
+
+    if len(obs_colors) == 0 and len(gene_colors) == 0:
+        raise ValueError("obs_colors 和 gene_colors 不能同时为空")
+
+    # -----------------------------------------------------
+    # 1. 检查基础表
+    # -----------------------------------------------------
+    tables = conn.execute("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_name IN ('obsm_X_umap', 'obs', 'var', 'X_HyS_data')
+    """).fetchdf()["table_name"].tolist()
+
+    if "obsm_X_umap" not in tables:
+        raise ValueError("数据库中不存在 obsm_X_umap，请先运行 sap.tl.umap(atlas)")
+    if "obs" not in tables:
+        raise ValueError("数据库中不存在 obs")
+    if "var" not in tables:
+        raise ValueError("数据库中不存在 var")
+    if "X_HyS_data" not in tables and len(gene_colors) > 0:
+        raise ValueError("数据库中不存在 X_HyS_data")
+
+    obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
+    var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
+    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
+
+    for obs_col in obs_colors:
+        if obs_col not in obs_cols:
+            raise ValueError(f"obs 中不存在列: {obs_col}")
+
+    if len(gene_colors) > 0:
+        if use_data not in x_cols:
+            raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+
+        if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
+            raise ValueError("var 需要包含 atlas_gene_id / atlas_gene_name")
+
+    # -----------------------------------------------------
+    # 2. 读取 UMAP + obs 数据
+    # -----------------------------------------------------
+    obs_select = ""
+
+    if len(obs_colors) > 0:
+        obs_select = ",\n                " + ",\n                ".join([
+            f"CAST(o.{obs_col} AS TEXT) AS {obs_col}"
+            for obs_col in obs_colors
+        ])
+
+    where_sql = ""
+
+    if where is not None and str(where).strip() != "":
+        where_sql = f"WHERE {where}"
+
+    if sample_n is None:
+        umap_query = f"""
+            SELECT
+                u.atlas_cell_id,
+                u.umap1,
+                u.umap2
+                {obs_select}
+            FROM obsm_X_umap u
+            JOIN obs o
+              ON u.atlas_cell_id = o.atlas_cell_id
+            {where_sql}
+            ORDER BY u.atlas_cell_id
+        """
+    else:
+        umap_query = f"""
+            SELECT *
+            FROM (
+                SELECT
+                    u.atlas_cell_id,
+                    u.umap1,
+                    u.umap2
+                    {obs_select}
+                FROM obsm_X_umap u
+                JOIN obs o
+                  ON u.atlas_cell_id = o.atlas_cell_id
+                {where_sql}
+            ) t
+            USING SAMPLE {int(sample_n)} ROWS
+            ORDER BY atlas_cell_id
+        """
+
+    umap_df = conn.execute(umap_query).fetchdf()
+
+    if len(umap_df) == 0:
+        raise ValueError("筛选 / 抽样后没有可绘制的细胞")
+
+    # -----------------------------------------------------
+    # 3. 读取 gene expression
+    # -----------------------------------------------------
+    gene_expr_data = {}
+
+    if len(gene_colors) > 0:
+
+        gene_name_sql = ", ".join([f"'{str(g)}'" for g in gene_colors])
+
+        if use_data == "data_scale":
+            if "zero_scale_transform" not in var_cols:
+                raise ValueError(
+                    "var 中不存在 zero_scale_transform。\n"
+                    "请先运行 scale 流程写入 zero_scale_transform。"
+                )
+
+            gene_map_df = conn.execute(f"""
+                SELECT
+                    atlas_gene_id,
+                    atlas_gene_name,
+                    zero_scale_transform
+                FROM var
+                WHERE atlas_gene_name IN ({gene_name_sql})
+            """).fetchdf()
+
+            gene_map = {
+                row["atlas_gene_name"]: (
+                    int(row["atlas_gene_id"]),
+                    float(row["zero_scale_transform"]) if pd.notna(row["zero_scale_transform"]) else 0.0
+                )
+                for _, row in gene_map_df.iterrows()
+            }
+
+        else:
+            gene_map_df = conn.execute(f"""
+                SELECT
+                    atlas_gene_id,
+                    atlas_gene_name
+                FROM var
+                WHERE atlas_gene_name IN ({gene_name_sql})
+            """).fetchdf()
+
+            gene_map = {
+                row["atlas_gene_name"]: int(row["atlas_gene_id"])
+                for _, row in gene_map_df.iterrows()
+            }
+
+        missing_genes = [g for g in gene_colors if g not in gene_map]
+
+        if missing_genes:
+            raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+
+        conn.register("_umap_cells_tmp", umap_df[["atlas_cell_id"]])
+
+        for gene in gene_colors:
+
+            if use_data == "data_scale":
+                gene_id, zero_fill = gene_map[gene]
+
+                expr_df = conn.execute(f"""
+                    SELECT
+                        c.atlas_cell_id,
+                        COALESCE(x.{use_data}, {zero_fill}) AS expr
+                    FROM _umap_cells_tmp c
+                    LEFT JOIN X_HyS_data x
+                      ON c.atlas_cell_id = x.atlas_cell_id
+                     AND x.atlas_gene_id = {gene_id}
+                """).fetchdf()
+
+            else:
+                gene_id = gene_map[gene]
+
+                expr_df = conn.execute(f"""
+                    SELECT
+                        c.atlas_cell_id,
+                        COALESCE(x.{use_data}, 0.0) AS expr
+                    FROM _umap_cells_tmp c
+                    LEFT JOIN X_HyS_data x
+                      ON c.atlas_cell_id = x.atlas_cell_id
+                     AND x.atlas_gene_id = {gene_id}
+                """).fetchdf()
+
+            df = umap_df[["atlas_cell_id", "umap1", "umap2"]].merge(
+                expr_df,
+                on="atlas_cell_id",
+                how="left"
+            )
+
+            if use_data == "data_scale":
+                _, zero_fill = gene_map[gene]
+                df["expr"] = df["expr"].fillna(zero_fill)
+            else:
+                df["expr"] = df["expr"].fillna(0.0)
+
+            # 高表达点后画，避免被低表达点盖住
+            df = df.sort_values("expr", ascending=True).reset_index(drop=True)
+
+            gene_expr_data[gene] = df
+
+        conn.unregister("_umap_cells_tmp")
+
+    # -----------------------------------------------------
+    # 4. 创建多 panel Figure
+    # -----------------------------------------------------
+    panel_names = obs_colors + gene_colors
+    n_panels = len(panel_names)
+
+    if n_panels == 0:
+        raise ValueError("没有可绘制的 panel")
+
+    ncols_eff = min(int(ncols), n_panels)
+    nrows_eff = math.ceil(n_panels / ncols_eff)
+
+    if figsize is None:
+        figsize = (5.3 * ncols_eff, 5.0 * nrows_eff)
+
+    fig, axes = plt.subplots(
+        nrows_eff,
+        ncols_eff,
+        figsize=figsize,
+        facecolor="white"
+    )
+
+    if nrows_eff == 1 and ncols_eff == 1:
+        axes = [[axes]]
+    elif nrows_eff == 1:
+        axes = [axes]
+    elif ncols_eff == 1:
+        axes = [[ax] for ax in axes]
+
+    axes_flat = [ax for row in axes for ax in row]
+
+    # -----------------------------------------------------
+    # 5. 画 obs 分类变量
+    # -----------------------------------------------------
+    ax_id = 0
+
+    for obs_col in obs_colors:
+        ax = axes_flat[ax_id]
+        ax_id += 1
+
+        df = umap_df[["umap1", "umap2", obs_col]].copy()
+        df = df[df[obs_col].notna()].copy()
+        df[obs_col] = df[obs_col].astype(str)
+
+        unique_labels = _sort_categories_natural(
+            df[obs_col].unique().tolist()
+        )
+
+        label_to_color = _build_discrete_color_map(
+            labels=unique_labels,
+            palette=palette,
+        )
+
+        for lab in unique_labels:
+            sub = df[df[obs_col] == lab]
+
+            if len(sub) == 0:
+                continue
+
+            ax.scatter(
+                sub["umap1"].to_numpy(),
+                sub["umap2"].to_numpy(),
+                s=point_size,
+                alpha=alpha,
+                c=[label_to_color[lab]],
+                linewidths=0,
+                rasterized=True,
+                label=str(lab),
+            )
+
+        ax.set_title(obs_col, fontsize=18, weight="normal", pad=10)
+
+        legend_handles = [
+            Line2D(
+                [0], [0],
+                marker="o",
+                color="w",
+                label=str(lab),
+                markerfacecolor=label_to_color[lab],
+                markersize=8,
+            )
+            for lab in unique_labels
+        ]
+
+        ax.legend(
+            handles=legend_handles,
+            title=None,
+            bbox_to_anchor=(1.02, 0.5),
+            loc="center left",
+            frameon=False,
+            fontsize=10,
+            borderaxespad=0.0,
+            handletextpad=0.35,
+            labelspacing=0.35,
+        )
+
+    # -----------------------------------------------------
+    # 6. 画 gene feature
+    # -----------------------------------------------------
+    for gene in gene_colors:
+        ax = axes_flat[ax_id]
+        ax_id += 1
+
+        df = gene_expr_data[gene]
+
+        sc = ax.scatter(
+            df["umap1"].to_numpy(),
+            df["umap2"].to_numpy(),
+            c=df["expr"].to_numpy(),
+            cmap=cmap,
+            s=point_size,
+            alpha=alpha,
+            linewidths=0,
+            rasterized=True,
+        )
+
+        cbar = plt.colorbar(sc, ax=ax, pad=0.02, fraction=0.046)
+        cbar.ax.tick_params(labelsize=10)
+
+        ax.set_title(gene, fontsize=18, weight="normal", pad=10)
+
+    # -----------------------------------------------------
+    # 7. 统一样式
+    # -----------------------------------------------------
+    for ax in axes_flat[:n_panels]:
+
+        ax.set_xlabel("UMAP1", fontsize=14)
+        ax.set_ylabel("UMAP2", fontsize=14)
+
+        ax.set_facecolor("white")
+        ax.grid(False)
+
+        if not frameon:
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.spines["left"].set_visible(False)
+            ax.spines["bottom"].set_visible(False)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        else:
+            ax.spines["left"].set_linewidth(1.0)
+            ax.spines["bottom"].set_linewidth(1.0)
+            ax.tick_params(axis="both", labelsize=10, width=1.0, length=4)
+
+    # 多余子图隐藏
+    for ax in axes_flat[n_panels:]:
+        ax.set_visible(False)
+
+    plt.tight_layout(pad=1.0)
+
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
+    plt.show()
+
+    return {
+        "obs": obs_colors,
+        "genes": gene_colors,
+        "data": umap_df,
+    }

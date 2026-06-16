@@ -1,565 +1,332 @@
-import numpy as np
+from collections.abc import Mapping, Sequence
 import pandas as pd
-from datetime import datetime
-from typing import Any
 from ..data import Atlas
 
 
-# 示例： 内置 PBMC marker reference（Phase 1）
-def _get_builtin_pbmc_marker_reference():
-
-    """获取数据库或对象中的内部信息。
-
-    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
-
-    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Returns
-    -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    return {
-        "CD4 T cells": ["IL7R"],
-        "CD14+ Monocytes": ["CD14", "LYZ"],
-        "B cells": ["MS4A1"],
-        "CD8 T cells": ["CD8A"],
-        "NK cells": ["GNLY", "NKG7"],
-        "FCGR3A+ Monocytes": ["FCGR3A", "MS4A7"],
-        "Dendritic Cells": ["FCER1A", "CST3"],
-        "Megakaryocytes": ["PPBP"]
-    }
+def _quote_identifier(name: str) -> str:
+    """给 SQL 字段名或表名加双引号，避免特殊字符或关键字导致 SQL 报错。"""
+    return '"' + str(name).replace('"', '""') + '"'
 
 
-# 工具函数：0~1 归一化
-def _minmax_scale(series: pd.Series) -> pd.Series:
-
-    """执行 ``_minmax_scale`` 的核心功能。
-
-    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
-
-    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    series
-        需要缩放或统计的 pandas Series。
-
-    Returns
-    -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    x = series.astype(float).copy()
-    if len(x) == 0:
-        return x
-    xmin = float(x.min())
-    xmax = float(x.max())
-    if xmax - xmin < 1e-12:
-        return pd.Series(np.ones(len(x)), index=x.index)
-    return (x - xmin) / (xmax - xmin)
-
-
-# 单个 cluster × 单个 cell_type 打分
-def _score_one_celltype_v2(
-        marker_df: pd.DataFrame,
-        marker_genes: list[str],
-        top_n: int = 50,
-        single_marker_penalty: float = 0.6
-) -> tuple[float, list[str], int, float, float]:
-
-    """执行 ``_score_one_celltype_v2`` 的核心功能。
-
-    该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
-
-    基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``rank_genes_groups``。
-
-    Parameters
-    ----------
-    marker_df
-        某个 cluster 的 marker 基因统计表。
-
-    marker_genes
-        某个参考细胞类型对应的 marker 基因集合。
-
-    top_n
-        保留、标注或评分时使用的 top 项数量。
-
-    single_marker_penalty
-        候选细胞类型只命中少量 marker 时使用的惩罚系数。
-
-    Returns
-    -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    if marker_df is None or len(marker_df) == 0:
-        return 0.0, [], 0, 0.0, 0.0
-
-    df = marker_df.copy().head(top_n).reset_index(drop=True)
-
-    if "atlas_gene_name" not in df.columns:
-        raise ValueError("rank_genes_groups 结果中缺少 atlas_gene_name")
-
-    df["atlas_gene_name"] = df["atlas_gene_name"].astype(str)
-    df["_gene_upper"] = df["atlas_gene_name"].str.upper()
-
-    marker_upper = [g.upper() for g in marker_genes]
-    n_ref = len(marker_upper)
-
-    # 选择主支持列
-    if "final_score" in df.columns:
-        base_col = "final_score"
-    elif "t_like_score" in df.columns:
-        base_col = "t_like_score"
-    elif "score" in df.columns:
-        base_col = "score"
-    else:
-        raise ValueError("marker_df 中缺少可用主分数字段（final_score / t_like_score / score）")
-
-    # 构造融合支持度（cluster 内部）
-    df["_base_norm"] = _minmax_scale(df[base_col])
-
-    if "log2fc" in df.columns:
-        df["_fc_pos"] = df["log2fc"].clip(lower=0)
-        df["_fc_norm"] = _minmax_scale(df["_fc_pos"])
-    else:
-        df["_fc_norm"] = 0.0
-
-    if "pct_diff" in df.columns:
-        df["_pct_pos"] = df["pct_diff"].clip(lower=0)
-        df["_pct_norm"] = _minmax_scale(df["_pct_pos"])
-    elif "pct_in" in df.columns and "pct_rest" in df.columns:
-        df["_pct_pos"] = (df["pct_in"] - df["pct_rest"]).clip(lower=0)
-        df["_pct_norm"] = _minmax_scale(df["_pct_pos"])
-    else:
-        df["_pct_norm"] = 0.0
-
-    # cluster 内 gene 支持度（0~1 量级）
-    df["_gene_support_raw"] = (
-        0.50 * df["_base_norm"] +
-        0.30 * df["_fc_norm"] +
-        0.20 * df["_pct_norm"]
-    )
-
-    # 排名权重：越靠前越重要
-    df["_rank"] = np.arange(len(df))
-    df["_rank_weight"] = 1.0 / (df["_rank"] + 1.0)
-
-    df["_gene_support"] = df["_gene_support_raw"] * df["_rank_weight"]
-
-    # 命中 reference marker
-    hit_df = df[df["_gene_upper"].isin(marker_upper)].copy()
-
-    if len(hit_df) == 0:
-        return 0.0, [], 0, 0.0, 0.0
-
-    matched_markers = len(hit_df)
-    support_markers = hit_df["atlas_gene_name"].astype(str).tolist()
-
-    mean_support = float(hit_df["_gene_support"].mean())
-    match_fraction = matched_markers / max(n_ref, 1)
-
-    # 最终 annotation score ：  核心：平均支持度 × 命中比例
-    score = mean_support * match_fraction
-
-    # 单-marker cell type 惩罚： 避免 PPBP 这种只靠 1 个 marker 劫持
-    if n_ref == 1:
-        score *= single_marker_penalty
-
-    return score, support_markers, matched_markers, mean_support, match_fraction
-
-
-# 主函数：自动 cluster 注释
-def annotate_clusters(
+# 手动 cluster 注释接口
+def manual_annotate_clusters(
         atlas: Atlas,
-        rank_result: dict | pd.DataFrame | None = None,
-        groupby: str = "kmeans",
-        use_table: str = "rank_genes_groups",
-        reference_name: str = "builtin_pbmc",
-        write_to_obs: bool = True,
-        obs_col: str = "cell_type_auto",
-        obs_conf_col: str = "cell_type_auto_confidence",
-        top_n: int = 50,
-        unknown_label: str = "Unknown",
-        ambiguity_threshold_high: float = 0.08,
-        ambiguity_threshold_medium: float = 0.03
-):
+        cluster_to_cell_type: Mapping[str, str] | Sequence[str],
+        groupby: str = "leiden",
+        obs_col: str = "cell_type_manual",
+        table_name: str | None = "manual_cluster_annotation",
+        unknown_label: str | None = None,
+        return_df: bool = True,
+) -> pd.DataFrame | None:
+    """手动为 cluster 添加细胞类型注释。
 
-    """根据 marker genes 自动注释 cluster。
+    该函数对应 Scanpy PBMC3k 流程中的手动注释步骤：
+    在查看 marker genes、rank genes 图和 UMAP 图之后，由用户手动指定
+    每个 cluster 对应的细胞类型名称，并将这些标签写回 ``obs`` 表。
 
-    该函数读取差异基因结果，并与内置或指定参考 marker 库进行匹配，为每个 cluster 推断细胞类型标签、置信度和候选得分。结果可写入 ``obs``，也会以 DataFrame 形式返回。
+    注意：
+    该函数不会自动推断细胞类型，也不会根据 marker gene 自动打分。
+    它只负责把用户提供的 cluster 与 cell type 的对应关系写入数据库。
+
+    每次运行该函数时，都会先清空 ``obs_col`` 中已有的旧注释结果，
+    然后重新写入新的手动注释。因此，下一次注释会覆盖上一次注释，
+    不会保留旧标签。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
-    rank_result
-        差异基因结果。可以传入 ``sap.tl.rank_genes_groups`` 返回的 DataFrame/dict；为 ``None``
-        时从数据库表读取。
+        Atlas 对象。需要已经连接到包含 ``obs`` 表的 DuckDB 数据库。
+        如果尚未连接，函数会自动以 ``r+`` 模式连接。
+
+    cluster_to_cell_type
+        用户提供的手动注释结果。
+
+        如果传入字典，字典的 key 是 cluster ID，value 是细胞类型名称。
+        例如::
+
+            {
+                "0": "CD4 T cells",
+                "1": "CD14+ Monocytes",
+                "2": "B cells",
+            }
+
+        如果传入 list 或 tuple，则会按照 ``obs[groupby]`` 中 cluster ID
+        的排序顺序依次赋值，类似 Scanpy 的 ``new_cluster_names`` 用法。
+        例如::
+
+            [
+                "CD4 T cells",
+                "CD14+ Monocytes",
+                "B cells",
+            ]
+
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
-    use_table
-        读取已有结果的数据库表名。
-    reference_name
-        marker 参考库名称。内置参考库可使用 ``"builtin_pbmc"``。
-    write_to_obs
-        是否把结果写回 ``obs`` 表。
+        ``obs`` 中保存聚类结果的列名。
+
+        如果使用 Leiden 聚类，通常是 ``"leiden"``。
+        如果当前数据库中使用的是 KMeans 聚类，则应设置为 ``"kmeans"``。
+
     obs_col
-        写入自动注释细胞类型的 ``obs`` 列名。
-    obs_conf_col
-        写入自动注释置信度的 ``obs`` 列名。
-    top_n
-        每个 cluster 用于自动注释或绘图的 top marker 数量。
+        写入手动细胞类型注释的 ``obs`` 列名。
+        默认写入 ``obs.cell_type_manual``。
+
+    table_name
+        可选的数据库表名，用于保存 cluster 到 cell type 的映射关系。
+        如果设置为 ``None``，则不额外保存映射表。
+
     unknown_label
-        无法可靠注释时使用的标签。
-    ambiguity_threshold_high
-        高置信度判定的分数差阈值。
-    ambiguity_threshold_medium
-        中等置信度判定的分数差阈值。
+        对未提供手动注释的 cluster 使用的标签。
+
+        如果为 ``None``，未注释的 cluster 会被写为 ``NULL``。
+        如果设置为 ``"Unknown"``，未注释的 cluster 会被写为 ``"Unknown"``。
+
+    return_df
+        是否返回注释结果汇总表。
 
     Returns
     -------
-    tuple[pandas.DataFrame, pandas.DataFrame]
-        第一个 DataFrame 为 cluster 注释摘要，第二个 DataFrame 为每个 cluster 的参考类型打分。
+    pandas.DataFrame or None
+        如果 ``return_df=True``，返回每个 cluster 的手动注释结果和细胞数量。
+        如果 ``return_df=False``，返回 ``None``。
 
     Examples
     --------
-    直接使用数据库中已有的差异基因结果进行注释::
+    使用显式字典进行手动注释::
 
-        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
-        summary_df, score_df = sap.tl.annotate_clusters(
+        mapping = {
+            "0": "CD4 T cells",
+            "1": "CD14+ Monocytes",
+            "2": "B cells",
+            "3": "CD8 T cells",
+            "4": "NK cells",
+            "5": "FCGR3A+ Monocytes",
+            "6": "Dendritic Cells",
+            "7": "Megakaryocytes",
+        }
+
+        summary = sap.tl.manual_annotate_clusters(
             atlas,
+            mapping,
             groupby="kmeans",
-            reference_name="builtin_pbmc",
-            write_to_obs=True,
+            obs_col="cell_type_manual",
         )
 
-    使用内存中的 rank result，并调整 top marker 数量::
+    使用 Scanpy 风格的有序列表进行手动注释::
 
-        result = sap.tl.rank_genes_groups(atlas, groupby="kmeans")
-        summary_df, score_df = sap.tl.annotate_clusters(
+        new_cluster_names = [
+            "CD4 T cells",
+            "CD14+ Monocytes",
+            "B cells",
+            "CD8 T cells",
+            "NK cells",
+            "FCGR3A+ Monocytes",
+            "Dendritic Cells",
+            "Megakaryocytes",
+        ]
+
+        summary = sap.tl.manual_annotate_clusters(
             atlas,
-            rank_result=result,
+            new_cluster_names,
             groupby="kmeans",
-            top_n=50,
-            obs_col="cell_type_auto",
-        )"""
+        )
 
-    start = datetime.now()
+    绘制手动注释后的 UMAP 图::
+
+        sap.pl.umap(atlas, color="cell_type_manual")
+    """
+
+    # ============================================================
+    # 1. 获取数据库连接
+    # ============================================================
+
     conn = atlas.connection
     if conn is None:
         atlas.connect("r+")
         conn = atlas.connection
 
-    def _q(name: str) -> str:
-        return '"' + str(name).replace('"', '""') + '"'
-
-    def _prepare_marker_df(marker_df: pd.DataFrame) -> pd.DataFrame:
-        """Normalize marker result columns for annotation scoring."""
-        if not isinstance(marker_df, pd.DataFrame):
-            raise TypeError("rank_result values must be pandas DataFrame objects")
-
-        marker_df = marker_df.copy()
-
-        if "atlas_gene_name" not in marker_df.columns and "names" in marker_df.columns:
-            marker_df["atlas_gene_name"] = marker_df["names"]
-
-        if "score" not in marker_df.columns and "scores" in marker_df.columns:
-            marker_df["score"] = marker_df["scores"]
-
-        if "log2fc" not in marker_df.columns and "logfoldchanges" in marker_df.columns:
-            marker_df["log2fc"] = marker_df["logfoldchanges"]
-
-        if "pct_diff" not in marker_df.columns:
-            if "pct_nz_in" in marker_df.columns and "pct_nz_ref" in marker_df.columns:
-                marker_df["pct_diff"] = marker_df["pct_nz_in"] - marker_df["pct_nz_ref"]
-            elif "pct_in" in marker_df.columns and "pct_rest" in marker_df.columns:
-                marker_df["pct_diff"] = marker_df["pct_in"] - marker_df["pct_rest"]
-
-        if "rank" in marker_df.columns:
-            marker_df = marker_df.sort_values("rank")
-
-        return marker_df.reset_index(drop=True)
-
-    if rank_result is None:
-        table_exists = conn.execute(
-            """
-            SELECT COUNT(*)
-            FROM information_schema.tables
-            WHERE table_name = ?
-            """,
-            [use_table],
-        ).fetchone()[0]
-
-        if table_exists == 0:
-            raise ValueError(
-                f"rank_result is None and database table {use_table!r} does not exist. "
-                "Please run sap.tl.rank_genes_groups(atlas) first."
-            )
-
-        rank_result = conn.execute(f"SELECT * FROM {_q(use_table)}").df()
-
-    if isinstance(rank_result, pd.DataFrame):
-        if len(rank_result) == 0:
-            raise ValueError("rank_result cannot be empty")
-
-        if "group" not in rank_result.columns:
-            raise ValueError("rank_result DataFrame must contain a 'group' column")
-
-        rank_result = {
-            str(group): _prepare_marker_df(marker_df)
-            for group, marker_df in rank_result.groupby("group", dropna=True)
-        }
-
-    elif isinstance(rank_result, dict):
-        rank_result = {
-            str(group): _prepare_marker_df(marker_df)
-            for group, marker_df in rank_result.items()
-        }
-
-    # 检查输入
-    if not isinstance(rank_result, dict) or len(rank_result) == 0:
-        raise ValueError("rank_result must be a non-empty DataFrame or marker dict")
+    # ============================================================
+    # 2. 检查 obs 表中是否存在 groupby 列
+    # ============================================================
 
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
+
     if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
+        raise ValueError(f"obs 中不存在聚类列: {groupby!r}")
 
-    # 读取内置 reference
-    if reference_name != "builtin_pbmc":
-        raise ValueError("Phase 1 当前只支持 reference_name='builtin_pbmc'")
+    group_col = _quote_identifier(groupby)
+    obs_label_col = _quote_identifier(obs_col)
 
-    ref_dict = _get_builtin_pbmc_marker_reference()
+    # ============================================================
+    # 3. 读取 obs 中真实存在的 cluster ID
+    #    排序方式尽量模拟 Scanpy：数字 cluster 按数字顺序排列
+    # ============================================================
 
-    # 计算 cluster × cell_type score
-    score_rows = []
-
-    for grp, marker_df in rank_result.items():
-        for cell_type, marker_genes in ref_dict.items():
-            score, support_markers, matched_markers, mean_support, match_fraction = _score_one_celltype_v2(
-                marker_df=marker_df,
-                marker_genes=marker_genes,
-                top_n=top_n,
-                single_marker_penalty=0.6
-            )
-
-            score_rows.append({
-                "groupby": groupby,
-                "cluster_id": str(grp),
-                "cell_type": cell_type,
-                "score": float(score),
-                "matched_markers": int(matched_markers),
-                "match_fraction": float(match_fraction),
-                "mean_support": float(mean_support),
-                "support_markers": ", ".join(support_markers)
-            })
-
-    score_df = pd.DataFrame(score_rows)
-
-    if len(score_df) == 0:
-        raise ValueError("score_df 为空，无法注释")
-
-    # 生成 summary
-    summary_rows = []
-
-    cluster_ids = list(score_df["cluster_id"].unique())
-
-    # 尽量按数字排序
-    def _sort_key(x: Any):
-        """生成分组或标签的自然排序键。
-
-        该内部函数属于细胞类型注释模块，用于支撑同一模块中的公共 API。
-
-        基于差异表达 marker 和参考 marker 集合为 cluster 分配细胞类型标签。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Parameters
-        ----------
-        x
-            需要排序、格式化或转换的单个输入值。
-
-        Returns
-        -------
-        sort_key
-            可用于自然排序的键。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    cluster_df = conn.execute(
+        f"""
+        SELECT CAST({group_col} AS TEXT) AS cluster_id
+        FROM obs
+        WHERE {group_col} IS NOT NULL
+        GROUP BY 1
+        ORDER BY TRY_CAST(cluster_id AS INTEGER), cluster_id
         """
-        try:
-            return (0, int(x))
-        except:
-            return (1, str(x))
+    ).df()
 
-    cluster_ids = sorted(cluster_ids, key=_sort_key)
+    if len(cluster_df) == 0:
+        raise ValueError(f"obs.{groupby} 中没有找到任何 cluster")
 
-    for grp in cluster_ids:
-        sub = score_df[score_df["cluster_id"] == grp].copy()
-        sub = sub.sort_values(
-            ["score", "matched_markers", "match_fraction", "mean_support"],
-            ascending=False
-        ).reset_index(drop=True)
+    cluster_ids = cluster_df["cluster_id"].astype(str).tolist()
 
-        best = sub.iloc[0]
-        runner_up = sub.iloc[1] if len(sub) > 1 else None
+    # ============================================================
+    # 4. 整理用户传入的手动注释
+    #    支持两种形式：
+    #    1）字典：{"0": "CD4 T cells", "1": "B cells"}
+    #    2）列表：["CD4 T cells", "B cells", ...]
+    # ============================================================
 
-        best_type = best["cell_type"]
-        best_score = float(best["score"])
-        best_support = best["support_markers"]
-        best_matched = int(best["matched_markers"])
-
-        runner_type = runner_up["cell_type"] if runner_up is not None else None
-        runner_score = float(runner_up["score"]) if runner_up is not None else 0.0
-
-        delta = best_score - runner_score
-
-        # 置信度规则
-        if best_score <= 0 or best_matched == 0:
-            predicted = unknown_label
-            confidence = "low"
-
-        elif best_matched == 1 and delta < ambiguity_threshold_high:
-            # 单 marker 命中且领先不明显 → 保守
-            predicted = best_type
-            confidence = "low"
-
-        elif delta >= ambiguity_threshold_high:
-            predicted = best_type
-            confidence = "high"
-
-        elif delta >= ambiguity_threshold_medium:
-            predicted = best_type
-            confidence = "medium"
-
-        else:
-            predicted = best_type
-            confidence = "low"
-
-        summary_rows.append({
-            "groupby": groupby,
-            "cluster_id": grp,
-            "best_cell_type": predicted,
-            "confidence": confidence,
-            "best_score": best_score,
-            "runner_up": runner_type,
-            "runner_up_score": runner_score,
-            "delta_score": delta,
-            "matched_markers": best_matched,
-            "support_markers": best_support
+    if isinstance(cluster_to_cell_type, Mapping):
+        mapping_df = pd.DataFrame({
+            "cluster_id": [str(k) for k in cluster_to_cell_type.keys()],
+            "cell_type": [str(v) for v in cluster_to_cell_type.values()],
         })
 
-    summary_df = pd.DataFrame(summary_rows)
+    else:
+        if isinstance(cluster_to_cell_type, (str, bytes)):
+            raise TypeError(
+                "cluster_to_cell_type 必须是字典，或者是细胞类型名称组成的列表 / 元组，"
+                "不能是单个字符串。"
+            )
 
-    # 写数据库：cluster_annotation_scores
-    conn.execute("DROP TABLE IF EXISTS cluster_annotation_scores")
-    conn.execute("""
-        CREATE TABLE cluster_annotation_scores (
-            groupby TEXT,
-            cluster_id TEXT,
-            cell_type TEXT,
-            score DOUBLE,
-            matched_markers INTEGER,
-            match_fraction DOUBLE,
-            mean_support DOUBLE,
-            support_markers TEXT
+        labels = [str(v) for v in cluster_to_cell_type]
+
+        if len(labels) != len(cluster_ids):
+            raise ValueError(
+                "手动注释标签数量与 cluster 数量不一致："
+                f"你提供了 {len(labels)} 个标签，"
+                f"但 obs.{groupby} 中有 {len(cluster_ids)} 个 cluster。"
+                f"当前 cluster 顺序为: {cluster_ids}"
+            )
+
+        mapping_df = pd.DataFrame({
+            "cluster_id": cluster_ids,
+            "cell_type": labels,
+        })
+
+    # ============================================================
+    # 5. 检查是否有重复的 cluster ID
+    # ============================================================
+
+    duplicated = mapping_df["cluster_id"][mapping_df["cluster_id"].duplicated()].tolist()
+
+    if duplicated:
+        raise ValueError(f"手动注释中存在重复的 cluster ID: {duplicated}")
+
+    # ============================================================
+    # 6. 检查用户提供的 cluster 是否真的存在于 obs[groupby]
+    # ============================================================
+
+    unknown_clusters = sorted(set(mapping_df["cluster_id"]) - set(cluster_ids))
+
+    if unknown_clusters:
+        raise ValueError(
+            f"手动注释中包含 obs.{groupby} 中不存在的 cluster: {unknown_clusters}"
         )
-    """)
-    conn.append("cluster_annotation_scores", score_df)
 
-    # 写数据库：cluster_annotation_summary
-    conn.execute("DROP TABLE IF EXISTS cluster_annotation_summary")
-    conn.execute("""
-        CREATE TABLE cluster_annotation_summary (
-            groupby TEXT,
-            cluster_id TEXT,
-            best_cell_type TEXT,
-            confidence TEXT,
-            best_score DOUBLE,
-            runner_up TEXT,
-            runner_up_score DOUBLE,
-            delta_score DOUBLE,
-            matched_markers INTEGER,
-            support_markers TEXT
+    # ============================================================
+    # 7. 提示哪些 cluster 没有被手动注释
+    #    这些 cluster 会被写成 NULL 或 unknown_label
+    # ============================================================
+
+    missing_clusters = sorted(set(cluster_ids) - set(mapping_df["cluster_id"]))
+
+    if missing_clusters:
+        if unknown_label is None:
+            print(
+                f"[manual_annotate_clusters] 提示：以下 cluster 没有提供手动注释，"
+                f"将被写为 NULL: {missing_clusters}"
+            )
+        else:
+            print(
+                f"[manual_annotate_clusters] 提示：以下 cluster 没有提供手动注释，"
+                f"将被写为 {unknown_label!r}: {missing_clusters}"
+            )
+
+    # ============================================================
+    # 8. 如果 obs_col 不存在，则创建该列
+    # ============================================================
+
+    if obs_col not in obs_cols:
+        conn.execute(f"ALTER TABLE obs ADD COLUMN {obs_label_col} TEXT")
+
+    # ============================================================
+    # 9. 每次运行都先清空旧注释
+    #    这样下一次运行会覆盖上一次，不会保留旧标签
+    # ============================================================
+
+    if unknown_label is None:
+        conn.execute(f"UPDATE obs SET {obs_label_col} = NULL")
+    else:
+        conn.execute(f"UPDATE obs SET {obs_label_col} = ?", [str(unknown_label)])
+
+    # ============================================================
+    # 10. 注册临时映射表，并把手动注释写回 obs
+    # ============================================================
+
+    conn.register("_manual_annotation_tmp", mapping_df)
+
+    try:
+        conn.execute(
+            f"""
+            UPDATE obs AS o
+            SET {obs_label_col} = m.cell_type
+            FROM _manual_annotation_tmp AS m
+            WHERE CAST(o.{group_col} AS TEXT) = CAST(m.cluster_id AS TEXT)
+            """
         )
-    """)
-    conn.append("cluster_annotation_summary", summary_df)
 
-    # 写入 obs
-    if write_to_obs:
-        obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
+        # ========================================================
+        # 11. 可选：保存 cluster -> cell type 的映射表
+        # ========================================================
 
-        if obs_col not in obs_cols:
-            conn.execute(f"ALTER TABLE obs ADD COLUMN {obs_col} TEXT")
-        if obs_conf_col not in obs_cols:
-            conn.execute(f"ALTER TABLE obs ADD COLUMN {obs_conf_col} TEXT")
+        if table_name is not None:
+            table = _quote_identifier(table_name)
 
-        conn.execute(f"UPDATE obs SET {obs_col} = NULL")
-        conn.execute(f"UPDATE obs SET {obs_conf_col} = NULL")
+            saved_mapping_df = mapping_df.copy()
+            saved_mapping_df.insert(0, "groupby", groupby)
+            saved_mapping_df["obs_col"] = obs_col
 
-        tmp_df = summary_df[["cluster_id", "best_cell_type", "confidence"]].copy()
-        conn.register("_cluster_annotation_tmp", tmp_df)
+            conn.register("_manual_annotation_save_tmp", saved_mapping_df)
 
-        conn.execute(f"""
-            UPDATE obs
-            SET
-                {obs_col} = t.best_cell_type,
-                {obs_conf_col} = t.confidence
-            FROM _cluster_annotation_tmp t
-            WHERE CAST(obs.{groupby} AS TEXT) = CAST(t.cluster_id AS TEXT)
-        """)
+            try:
+                conn.execute(f"DROP TABLE IF EXISTS {table}")
+                conn.execute(f"CREATE TABLE {table} AS SELECT * FROM _manual_annotation_save_tmp")
+            finally:
+                conn.unregister("_manual_annotation_save_tmp")
 
-        conn.unregister("_cluster_annotation_tmp")
+    finally:
+        conn.unregister("_manual_annotation_tmp")
 
-    return summary_df, score_df
+    # ============================================================
+    # 12. 保存数据库状态
+    # ============================================================
 
-# summary_df 是什么？
-# 每个 cluster 的最终注释结果总表
-# 它通常是一行一个 cluster，比如：
+    conn.execute("CHECKPOINT")
 
-# cluster_id	best_cell_type	confidence	best_score	runner_up	    delta_score 	support_markers
-# 0	            CD4 T cells	         high	 8.2	    CD8 T cells	        3.1	        IL7R
-# 1	            CD14+ Monocytes 	 high	 10.5	    FCGR3A+ Monocytes	4.3	        CD14, LYZ
-# 2	            B cells	             high	 7.6	    Dendritic Cells	    2.0	        MS4A1
-# 3	            NK cells	         high	 9.3	    CD8 T cells	        2.7	        GNLY, NKG7
+    # ============================================================
+    # 13. 是否返回汇总结果
+    # ============================================================
 
-# 也就是说：
-# summary_df = 最终“cluster 叫什么名字”的表
+    if not return_df:
+        return None
 
-# score_df 是什么？
-# cluster × cell_type 的打分明细表
-# 它不是只给你最终答案，而是把“候选答案都列出来”。
-
-# cluster_id	cell_type	    score	matched_markers	support_markers
-# 0	           CD4 T cells 	    8.2	    1	                IL7R
-# 0	           CD8 T cells	    2.4	    0
-# 0	           NK cells	        1.1	    0
-# 1	          CD14+ Monocytes	10.5	2	             CD14, LYZ
-# 1	         FCGR3A+ Monocytes	4.9	    1	              FCGR3A
-
-# score_df = “每个 cluster 对每个 cell type 的评分明细”
-
-
+    return conn.execute(
+        f"""
+        SELECT
+            CAST({group_col} AS TEXT) AS cluster_id,
+            {obs_label_col} AS cell_type,
+            COUNT(*) AS n_cells
+        FROM obs
+        GROUP BY 1, 2
+        ORDER BY TRY_CAST(cluster_id AS INTEGER), cluster_id, cell_type
+        """
+    ).df()
 

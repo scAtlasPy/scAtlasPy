@@ -48,6 +48,7 @@ class StreamingPCA:
                  n_components: int = 30,
                  fit_batches: int = 1000,
                  buffer_batch_num: int = 5,
+                 batch_size: int = 2048,
                  ):
 
         """初始化对象。
@@ -78,6 +79,7 @@ class StreamingPCA:
         self.ipca = IncrementalPCA(n_components=n_components) # 创建 sklearn 的增量 PCA 模型
         self.fit_batches = fit_batches
         self.buffer_batch_num = buffer_batch_num
+        self.batch_size = batch_size
 
         self.components_ = None                 # components_ = 坐标轴  → 方向（往哪里投影）
         self.explained_variance_ = None         # variance = 每个轴有多重要   → 强度（这个方向多重要）
@@ -382,6 +384,7 @@ class StreamingPCA:
                     pass_mode="multi-pass",
                     buffer_batch_num=self.buffer_batch_num,
                     max_batches=self.fit_batches,
+                    batch_size=self.batch_size,
                 ),
                 total=self.fit_batches,
                 desc="PCA"
@@ -670,6 +673,7 @@ def pca(
         atlas: Atlas,
         n_components: int = 50,
         fit_batches: int = 1000,
+        batch_size: int = 2048,
         buffer_batch_num: int = 5,
 ):
 
@@ -715,6 +719,7 @@ def pca(
         n_components=n_components,
         fit_batches=fit_batches,
         buffer_batch_num=buffer_batch_num,
+        batch_size=batch_size,
     )
 
     pca_runner.run(atlas)

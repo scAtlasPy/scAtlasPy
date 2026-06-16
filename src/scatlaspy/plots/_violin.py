@@ -931,3 +931,5 @@ def stacked_violin(
 
     plt.show()
 
+    return expr_df, median_df
+

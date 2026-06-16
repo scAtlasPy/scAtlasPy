@@ -11,7 +11,7 @@ from ._umap import (
 )
 
 from ._annotation import (
-    annotate_clusters,
+    manual_annotate_clusters,
 )
 
 from ._rank_genes_groups import (

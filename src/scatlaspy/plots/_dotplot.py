@@ -334,7 +334,7 @@ def dotplot(
             需要排序、格式化或转换的单个输入值。
 
         Returns
--------
+        -------
         sort_key
             可用于自然排序的键。
 
@@ -489,12 +489,27 @@ def dotplot(
 
     sizes = 4.0 + (pct / 100.0) ** 1.8 * 700.0
 
+    if colorbar_vmin is None:
+        vmin = float(np.nanmin(colors))
+    else:
+        vmin = float(colorbar_vmin)
+
+    if colorbar_vmax is None:
+        vmax = float(np.nanmax(colors))
+    else:
+        vmax = float(colorbar_vmax)
+
+    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
+
+    sizes = 4.0 + (pct / 100.0) ** 1.8 * 700.0
+
     ax.scatter(
         x,
         y,
         s=sizes,
         c=colors,
         cmap="Reds",
+        norm=norm,  # 修改：主图和 colorbar 使用同一个颜色范围
         edgecolors="#777777",
         linewidths=0.25
     )
@@ -580,18 +595,6 @@ def dotplot(
     )
 
     cbar_ax = ax_cbar_box.inset_axes([0.12, 0.16, 0.76, 0.12])
-
-    if colorbar_vmin is None:
-        vmin = float(np.nanmin(colors))
-    else:
-        vmin = float(colorbar_vmin)
-
-    if colorbar_vmax is None:
-        vmax = float(np.nanmax(colors))
-    else:
-        vmax = float(colorbar_vmax)
-
-    norm = mpl.colors.Normalize(vmin=vmin, vmax=vmax)
 
     cb = ColorbarBase(
         cbar_ax,

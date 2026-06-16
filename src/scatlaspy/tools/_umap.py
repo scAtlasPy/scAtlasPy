@@ -69,11 +69,13 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 # UMAP 抽样训练
 def umap(
         atlas: Atlas,
-        fit_sample_n: int | None = 50000,
+        fit_sample_n: int | None = None,
         transform_batch_size: int = 50000,
         n_components: int = 2,
+        n_pcs: int | None = None,
         n_neighbors: int = 15,
         min_dist: float = 0.5,
+        spread: float = 1.0,
         metric: str = "euclidean",
         random_state: int = 42,
         n_jobs: int = 1,
@@ -96,10 +98,14 @@ def umap(
         模型拟合后 transform 全量数据时的分块大小。
     n_components
         输出维度或参与计算的主成分数量。
+    n_pcs
+        用于 UMAP 的 PCA 维度数量。为 ``None`` 时使用 ``obsm_X_pca`` 中全部 PC。
     n_neighbors
         UMAP 构建局部邻域时使用的近邻数。
     min_dist
         UMAP 低维空间中点与点之间允许的最小距离。
+    spread
+        UMAP 低维空间的整体铺开尺度。通常要求 ``spread >= min_dist``。
     metric
         距离度量。PCA embedding 通常使用 ``"euclidean"``。
     random_state
@@ -175,7 +181,31 @@ def umap(
 
     # 保证 pc0, pc1, pc2 ... 按数字顺序排列
     pc_cols = sorted(pc_cols, key=lambda x: int(x.replace("pc", "")))
+
+    if n_pcs is not None:
+        n_pcs = int(n_pcs)
+
+        if n_pcs <= 0:
+            raise ValueError("n_pcs 必须大于 0")
+
+        if n_pcs > len(pc_cols):
+            raise ValueError(
+                f"n_pcs={n_pcs} 超过 obsm_X_pca 中可用 PC 数量: {len(pc_cols)}"
+            )
+
+        pc_cols = pc_cols[:n_pcs]
+
     pc_cols_sql = ", ".join(pc_cols)
+
+    logger.info(f"[UMAP] using n_pcs = {len(pc_cols)}")
+    logger.info(f"[UMAP] n_neighbors = {n_neighbors}")
+    logger.info(f"[UMAP] min_dist = {min_dist}")
+    logger.info(f"[UMAP] spread = {spread}")
+
+    if float(spread) < float(min_dist):
+        raise ValueError(
+            f"spread 必须大于或等于 min_dist，当前 spread={spread}, min_dist={min_dist}"
+        )
 
     # 拟合 UMAP：SQL 先抽样
     if fit_sample_n is None:
@@ -185,10 +215,13 @@ def umap(
             ORDER BY atlas_cell_id
         """
     else:
+        seed = 0 if random_state is None else int(random_state)
+
         fit_query = f"""
             SELECT atlas_cell_id, {pc_cols_sql}
             FROM obsm_X_pca
-            USING SAMPLE {int(fit_sample_n)} ROWS
+            ORDER BY hash(atlas_cell_id + {seed})
+            LIMIT {int(fit_sample_n)}
         """
 
     fit_df = conn.execute(fit_query).fetchdf()
@@ -203,6 +236,7 @@ def umap(
         n_components=n_components,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
+        spread=spread,
         metric=metric,
         random_state=random_state,
         n_jobs=n_jobs
@@ -280,8 +314,10 @@ def umap(
     params_df = pd.DataFrame({
         "param_name": [
             "n_components",
+            "n_pcs",
             "n_neighbors",
             "min_dist",
+            "spread",
             "metric",
             "random_state",
             "fit_sample_n",
@@ -292,8 +328,10 @@ def umap(
         ],
         "param_value": [
             str(n_components),
+            str(len(pc_cols)),
             str(n_neighbors),
             str(min_dist),
+            str(spread),
             str(metric),
             str(random_state),
             str(fit_sample_n),
