@@ -1,3 +1,11 @@
+# testing related folders and files
+/bug_reproduce
+/scripts
+/tests
+/tmp
+/.coverage
+
+
 # Python temp file
 __pycache__/
 *.pyc
@@ -11,6 +19,7 @@ dist/
 build/
 
 # dataset file
+/data
 *.h5ad
 *.h5
 *.hdf

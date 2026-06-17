@@ -30,10 +30,17 @@ test = [
     "pytest>=8",
     "pytest-cov",
     "hypothesis",
+    "psutil",
 ]
 
 docs = [
-    
+    "sphinx>=7",
+    "myst-parser",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "sphinx-autodoc-typehints",
+    "sphinx-book-theme",
+    "numpydoc",
 ]
 
 ml = [
@@ -56,3 +63,17 @@ scatlaspy = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
+markers = [
+    "l0: hand-checkable edge cases and exact storage assertions",
+    "l1: randomized and property-style tests",
+    "l2: reference parity tests against SciPy or Scanpy",
+    "l3: large streaming, memory, concurrency, and performance tests",
+    "l4: release stress tests for million-plus scale validation",
+    "slow: tests that are too slow for quick local iteration",
+    "stress: resource-intensive stress tests",
+    "ml: tests that exercise minibatch machine learning workflows",
+    "reference: tests that compare against mature reference implementations",
+    "realdata: opt-in tests against user-provided real datasets",
+    "import_benchmark: opt-in import time and RSS benchmark tests",
+]

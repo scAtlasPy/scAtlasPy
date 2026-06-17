@@ -16,10 +16,10 @@
 只有需要修改官网内容时才需要构建文档。普通使用者可以跳过这一节。
 
 ```bash
-cd <repo>/Package/scatlaspydocs
-python -m pip install -r requirements-docs.txt
-PYTHONPATH=../python-version-scAtlasAnalysis 
-python -m sphinx -b html . _build/html
+cd <repo>
+python -m pip install -e ".[docs]"
+cd docs
+make html
 ```
 
 本地预览：
@@ -29,4 +29,3 @@ python -m http.server --bind 0.0.0.0 8010 -d _build/html
 ```
 
 可通过服务器 IP 和端口访问供局域网内用户，例如 `http://192.168.1.23:8010/`。
-
