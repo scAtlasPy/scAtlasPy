@@ -14,4 +14,4 @@ clean:
 	rm -rf "api/generated"
 
 html:
-	PYTHONPATH=../python-version-scAtlasAnalysis $(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS)
+	PYTHONPATH=../src $(SPHINXBUILD) -b html "$(SOURCEDIR)" "$(BUILDDIR)/html" $(SPHINXOPTS)

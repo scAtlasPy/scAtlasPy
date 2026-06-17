@@ -1,3 +1,11 @@
+# testing related folders and files
+/bug_reproduce
+/scripts
+/tests
+/tmp
+/.coverage
+
+
 # Python temp file
 __pycache__/
 *.pyc
