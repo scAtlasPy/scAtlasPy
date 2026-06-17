@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-PACKAGE_ROOT = HERE.parent / "python-version-scAtlasAnalysis"
+PACKAGE_ROOT = HERE.parent / "src"
 sys.path.insert(0, str(PACKAGE_ROOT))
 
 os.environ.setdefault("MPLBACKEND", "Agg")

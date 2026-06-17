@@ -11,6 +11,7 @@ dist/
 build/
 
 # dataset file
+/data
 *.h5ad
 *.h5
 *.hdf
