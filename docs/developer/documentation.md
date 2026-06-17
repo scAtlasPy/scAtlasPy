@@ -1,0 +1,32 @@
+# 文档维护
+
+本页给维护者说明如何更新官网。用户教程应优先服务非计算机背景的研究者：先解释研究任务，再给代码，再说明哪些参数需要替换。
+
+## 写作原则
+
+1. 教程按研究任务组织，不按源码文件组织。
+2. 每段代码前说明它要解决什么问题。
+3. Python 代码片段中可以加入简短注释，帮助用户理解每一步。
+4. 不从根目录旧 `docs/` 迁移正文。
+5. 新增公开函数后，同时更新 `api/*.md`。
+6. API 以 `scatlaspy/*/__init__.py` 中真实导出的对象为准。
+
+## 构建本网站
+
+只有需要修改官网内容时才需要构建文档。普通使用者可以跳过这一节。
+
+```bash
+cd <repo>/Package/scatlaspydocs
+python -m pip install -r requirements-docs.txt
+PYTHONPATH=../python-version-scAtlasAnalysis 
+python -m sphinx -b html . _build/html
+```
+
+本地预览：
+
+```bash
+python -m http.server --bind 0.0.0.0 8010 -d _build/html
+```
+
+可通过服务器 IP 和端口访问供局域网内用户，例如 `http://192.168.1.23:8010/`。
+
