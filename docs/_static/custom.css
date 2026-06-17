@@ -1,0 +1,46 @@
+:root {
+  --scatlaspy-ink: #18212f;
+  --scatlaspy-accent: #247f76;
+  --scatlaspy-warm: #c26a34;
+  --scatlaspy-soft: #eef6f4;
+}
+
+.bd-main .bd-content .bd-article-container {
+  max-width: 88rem;
+}
+
+.sd-card {
+  border-radius: 8px;
+  border-color: rgba(24, 33, 47, 0.14);
+  box-shadow: none;
+}
+
+.sd-card-title {
+  color: var(--scatlaspy-ink);
+  font-weight: 700;
+}
+
+.sd-card:hover {
+  border-color: var(--scatlaspy-accent);
+}
+
+.bd-sidebar-primary .sidebar-logo {
+  max-width: 190px;
+}
+
+a {
+  color: var(--scatlaspy-accent);
+}
+
+a:hover {
+  color: var(--scatlaspy-warm);
+}
+
+.admonition.note {
+  border-left-color: var(--scatlaspy-accent);
+}
+
+.admonition.note > .admonition-title {
+  background-color: var(--scatlaspy-soft);
+}
+
