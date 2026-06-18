@@ -145,6 +145,10 @@ def write_h5ad(
 
         g_obsm = f.create_group("obsm")
 
+        # 安全引用 SQL 标识符
+        def _q(name: str) -> str:
+            return '"' + str(name).replace('"', '""') + '"'
+
         for (table_name,) in conn.execute("""
             SELECT table_name
             FROM information_schema.tables
@@ -152,16 +156,48 @@ def write_h5ad(
         """).fetchall():
 
             key = table_name.replace("obsm_", "")
+
+            value_cols = [
+                row[0]
+                for row in conn.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = ?
+                      AND column_name <> 'atlas_cell_id'
+                    ORDER BY ordinal_position
+                """, [table_name]).fetchall()
+            ]
+
+            if len(value_cols) == 0:
+                continue
+
+            select_values = ", ".join([
+                f"t.{_q(c)} AS {_q(c)}"
+                for c in value_cols
+            ])
+
             df = conn.execute(f"""
-                SELECT *
-                FROM {table_name}
-                ORDER BY atlas_cell_id
+                SELECT
+                    {select_values}
+                FROM obs AS o
+                LEFT JOIN {_q(table_name)} AS t
+                  ON o.atlas_cell_id = t.atlas_cell_id
+                ORDER BY o.atlas_cell_id
             """).df()
 
-            df = df.drop(columns=["atlas_cell_id"])
-            g_obsm.create_dataset(key, data=df.to_numpy())
+            arr = df.to_numpy(dtype=np.float32)
+
+            if arr.shape[0] != n_cells:
+                raise ValueError(
+                    f"obsm[{key}] 行数错误: {arr.shape[0]} != n_cells {n_cells}"
+                )
+
+            g_obsm.create_dataset(key, data=arr)
 
         g_varm = f.create_group("varm")
+
+        def _q(name: str) -> str:
+            return '"' + str(name).replace('"', '""') + '"'
 
         for (table_name,) in conn.execute("""
             SELECT table_name
@@ -170,14 +206,49 @@ def write_h5ad(
         """).fetchall():
 
             key = table_name.replace("varm_", "")
+
+            # AnnData 要求 varm[key] 的第一维必须等于 var 的行数。
+            # 读取 varm 表中除 atlas_gene_id 外的数值列
+            value_cols = [
+                row[0]
+                for row in conn.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = ?
+                      AND column_name <> 'atlas_gene_id'
+                    ORDER BY ordinal_position
+                """, [table_name]).fetchall()
+            ]
+
+            if len(value_cols) == 0:
+                continue
+
+            select_values = ", ".join([
+                f"t.{_q(c)} AS {_q(c)}"
+                for c in value_cols
+            ])
+
             df = conn.execute(f"""
-                SELECT *
-                FROM {table_name}
-                ORDER BY atlas_gene_id
+                SELECT
+                    {select_values}
+                FROM var AS v
+                LEFT JOIN {_q(table_name)} AS t
+                  ON v.atlas_gene_id = t.atlas_gene_id
+                ORDER BY v.atlas_gene_id
             """).df()
 
-            df = df.drop(columns=["atlas_gene_id"])
-            g_varm.create_dataset(key, data=df.to_numpy())
+            # ============================================================
+            #   HVG 基因     : 原始 PCA loading
+            #   非 HVG 基因  : NaN
+            # ============================================================
+            arr = df.to_numpy(dtype=np.float32)
+
+            if arr.shape[0] != n_genes:
+                raise ValueError(
+                    f"varm[{key}] 行数错误: {arr.shape[0]} != n_genes {n_genes}"
+                )
+
+            g_varm.create_dataset(key, data=arr)
 
     logger.info(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
@@ -524,7 +595,6 @@ def get_anndata(
         FROM X_HyS_data AS x
         JOIN _selected_cells AS s
           ON x.atlas_cell_id = s.atlas_cell_id
-        WHERE x.{_q(use_data)} IS NOT NULL
         ORDER BY s._cell_order, x.atlas_gene_id
     """
 
@@ -567,25 +637,48 @@ def get_anndata(
         for (table_name,) in obsm_tables:
             key = table_name.replace("obsm_", "")
 
+            # ============================================================
+            #  以 _selected_cells 为基准 LEFT JOIN obsm 表：
+            #   有 embedding 的 cell     -> 保留原值
+            #   没有 embedding 的 cell   -> NaN
+            # ============================================================
+
+            value_cols = [
+                row[0]
+                for row in conn.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = ?
+                      AND column_name <> 'atlas_cell_id'
+                    ORDER BY ordinal_position
+                """, [table_name]).fetchall()
+            ]
+
+            if len(value_cols) == 0:
+                continue
+
+            select_values = ", ".join([
+                f"t.{_q(c)} AS {_q(c)}"
+                for c in value_cols
+            ])
+
             df = conn.execute(f"""
-                SELECT t.*
-                FROM {_q(table_name)} AS t
-                JOIN _selected_cells AS s
-                  ON t.atlas_cell_id = s.atlas_cell_id
+                SELECT
+                    {select_values}
+                FROM _selected_cells AS s
+                LEFT JOIN {_q(table_name)} AS t
+                  ON s.atlas_cell_id = t.atlas_cell_id
                 ORDER BY s._cell_order
             """).df()
 
-            if df.shape[0] != n_cells:
-                logger.debug(
-                    f"跳过 obsm[{key}]："
-                    f"行数 {df.shape[0]:,} != selected cells {n_cells:,}"
+            arr = df.to_numpy(dtype=np.float32)
+
+            if arr.shape[0] != n_cells:
+                raise ValueError(
+                    f"obsm[{key}] 行数错误: {arr.shape[0]} != selected cells {n_cells}"
                 )
-                continue
 
-            if "atlas_cell_id" in df.columns:
-                df = df.drop(columns=["atlas_cell_id"])
-
-            adata.obsm[key] = df.to_numpy()
+            adata.obsm[key] = arr
 
     # 7. 读取 varm 全集
     if include_varm:
@@ -600,23 +693,42 @@ def get_anndata(
         for (table_name,) in varm_tables:
             key = table_name.replace("varm_", "")
 
-            df = conn.execute(f"""
-                SELECT *
-                FROM {_q(table_name)}
-                ORDER BY atlas_gene_id
-            """).df()
+            value_cols = [
+                row[0]
+                for row in conn.execute("""
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_name = ?
+                      AND column_name <> 'atlas_gene_id'
+                    ORDER BY ordinal_position
+                """, [table_name]).fetchall()
+            ]
 
-            if df.shape[0] != n_genes:
-                logger.debug(
-                    f"跳过 varm[{key}]："
-                    f"行数 {df.shape[0]:,} != genes {n_genes:,}"
-                )
+            if len(value_cols) == 0:
                 continue
 
-            if "atlas_gene_id" in df.columns:
-                df = df.drop(columns=["atlas_gene_id"])
+            select_values = ", ".join([
+                f"t.{_q(c)} AS {_q(c)}"
+                for c in value_cols
+            ])
 
-            adata.varm[key] = df.to_numpy()
+            df = conn.execute(f"""
+                SELECT
+                    {select_values}
+                FROM var AS v
+                LEFT JOIN {_q(table_name)} AS t
+                  ON v.atlas_gene_id = t.atlas_gene_id
+                ORDER BY v.atlas_gene_id
+            """).df()
+
+            arr = df.to_numpy(dtype=np.float32)
+
+            if arr.shape[0] != n_genes:
+                raise ValueError(
+                    f"varm[{key}] 行数错误: {arr.shape[0]} != genes {n_genes}"
+                )
+
+            adata.varm[key] = arr
 
     # 8. 清理临时表
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
