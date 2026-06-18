@@ -114,20 +114,25 @@ sap.tl.pca(atlas, n_components=50, fit_batches=1000)
 sap.tl.kmeans(atlas, n_clusters=10, fit_batches=1000)
 sap.tl.umap(atlas, fit_sample_n=50000)
 
-# 7. Marker gene 排名 + 自动注释
+# 7. Marker gene 排名 + 手动注释
 rank_result = sap.tl.rank_genes_groups(
     atlas, groupby="kmeans", n_genes=10
 )
-sap.tl.annotate_clusters(
+cluster_to_cell_type = {
+    "0": "CD4 T cells",
+    "1": "CD14+ Monocytes",
+    "2": "B cells",
+}
+sap.tl.manual_annotate_clusters(
     atlas,
-    rank_result=rank_result,
+    cluster_to_cell_type,
     groupby="kmeans",
-    reference_name="builtin_pbmc",
+    obs_col="cell_type_manual",
 )
 
 # 8. 可视化
 sap.pl.umap(atlas, color="kmeans", sample_n=50000)
-sap.pl.umap(atlas, color="cell_type_auto", sample_n=50000)
+sap.pl.umap(atlas, color="cell_type_manual", sample_n=50000)
 
 # 9. 关闭连接
 atlas.close()

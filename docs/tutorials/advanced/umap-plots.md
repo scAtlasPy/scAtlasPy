@@ -16,7 +16,7 @@ sap.pl.umap(atlas, color="kmeans", sample_n=100000, legend_loc="right_margin")
 sap.pl.umap(atlas, color="sample_id", sample_n=100000)
 
 # 按细胞类型注释
-sap.pl.umap(atlas, color="cell_type_auto", sample_n=100000)
+sap.pl.umap(atlas, color="cell_type_manual", sample_n=100000)
 
 # 加 where 条件筛选特定细胞
 sap.pl.umap(atlas, color="kmeans", sample_n=50000, where="kmeans IN (0, 1, 2)")
@@ -85,7 +85,7 @@ color 列表中的元素会自动判断是 obs 列还是基因名，然后分别
 # sample_n=None 时走全量 streaming 绘图，分批次画点，适合展示完整 UMAP 给报告用
 sap.pl.umap(
     atlas,
-    color="cell_type_auto",
+    color="cell_type_manual",
     sample_n=None,
     plot_batch_size=200000,
 )

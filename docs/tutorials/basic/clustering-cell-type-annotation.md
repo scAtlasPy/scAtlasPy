@@ -81,27 +81,36 @@ rank_result = sap.tl.rank_genes_groups(
 )
 ```
 
-`rank_result` 保存每个 cluster 的 marker gene 排名结果。你可以把它继续传给自动注释函数，也可以用 violin、dotplot 和 stacked violin 检查 marker 表达（详见 {doc}`../advanced/marker-gene-ranking`）。
+`rank_result` 保存每个 cluster 的 marker gene 排名结果。你可以根据 marker gene 排名结果手动指定每个 cluster 的细胞类型，也可以用 violin、dotplot 和 stacked violin 检查 marker 表达（详见 {doc}`../advanced/marker-gene-ranking`）。
 
-## 6. 自动细胞类型注释
+## 6. 手动细胞类型注释
 
 ```python
-summary_df, score_df = sap.tl.annotate_clusters(
+cluster_to_cell_type = {
+    "0": "CD4 T cells",
+    "1": "CD14+ Monocytes",
+    "2": "B cells",
+    "3": "CD8 T cells",
+    "4": "NK cells",
+    "5": "FCGR3A+ Monocytes",
+    "6": "Dendritic Cells",
+    "7": "Megakaryocytes",
+}
+
+summary_df = sap.tl.manual_annotate_clusters(
     atlas,
-    rank_result=rank_result,
+    cluster_to_cell_type,
     groupby="kmeans",
-    reference_name="builtin_pbmc",
+    obs_col="cell_type_manual",
 )
 ```
 
-`annotate_clusters()` 会根据 marker gene 排名结果，自动为每个 cluster 分配细胞类型。结果写入：
+`manual_annotate_clusters()` 会把你提供的 cluster 到细胞类型的映射写回数据库。结果写入：
 
-- `obs.cell_type_auto`：注释结果
-- `obs.cell_type_auto_confidence`：置信度（high/medium/low）
-- `cluster_annotation_summary`：每个 cluster 的最终注释总表
-- `cluster_annotation_scores`：每个 cluster 对每种细胞类型的打分明细
+- `obs.cell_type_manual`：手动注释结果
+- `manual_cluster_annotation`：cluster 到细胞类型的映射表
 
-`reference_name="builtin_pbmc"` 使用内置的 PBMC marker reference，包含以下细胞类型：
+PBMC 示例中常见的 marker gene 包括：
 
 | 细胞类型 | Marker Genes |
 |---|---|

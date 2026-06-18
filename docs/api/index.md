@@ -13,7 +13,7 @@ import scatlaspy as sap
 - `sap.Atlas`：创建或打开分析数据库。
 - `sap.io`：导入、导出数据。
 - `sap.pp`：质控、过滤、标准化、高变基因、scale。
-- `sap.tl`：PCA、聚类、UMAP、自动注释。
+- `sap.tl`：PCA、聚类、UMAP、手动注释。
 - `sap.pl`：QC 图、PCA 图、UMAP 图、marker gene 图。
 
 ```{note}

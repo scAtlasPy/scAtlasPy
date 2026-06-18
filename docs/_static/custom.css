@@ -28,6 +28,17 @@
   max-width: 190px;
 }
 
+.scatlaspy-home-logo {
+  display: block;
+  width: min(360px, 86%);
+  height: auto;
+  margin: 0.5rem auto 1.25rem;
+  background: transparent !important;
+  border-radius: 0 !important;
+  padding: 0 !important;
+  filter: none !important;
+}
+
 a {
   color: var(--scatlaspy-accent);
 }
@@ -44,3 +55,24 @@ a:hover {
   background-color: var(--scatlaspy-soft);
 }
 
+.feature-list {
+    margin-top: 1.5rem;
+}
+
+.feature-item {
+    padding: 0.4rem 0 0.4rem 1.25rem;
+    border-left: 3px solid var(--pst-color-primary);
+}
+
+.feature-item + .feature-item {
+    margin-top: 1.5rem;
+}
+
+.feature-item p:first-child {
+    margin-bottom: 0.3rem;
+    font-size: 1.05rem;
+}
+
+.feature-item p:last-child {
+    margin-bottom: 0;
+}

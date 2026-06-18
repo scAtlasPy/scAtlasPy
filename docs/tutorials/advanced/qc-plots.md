@@ -175,7 +175,7 @@ sap.pl.scatter_qc_metrics(
 | 聚类是否合理 | `umap(color="kmeans")` + `kmeans_cluster_size` | UMAP 上 cluster 是否分开，大小是否均匀 |
 | cluster 0 的 marker 是什么 | `tl.rank_genes_groups` + `pl.rank_genes_groups` | 排名靠前的基因名 |
 | 某基因是否是某 cluster 的 marker | `violin` + `dotplot` + `stacked_violin` | 该 cluster 中表达量和表达比例是否明显高于其他 |
-| 细胞类型注释是否正确 | `umap(color="cell_type_auto")` + `dotplot(genes=markers)` | 注释结果在 UMAP 上是否连续，marker 表达是否符合预期 |
+| 细胞类型注释是否正确 | `umap(color="cell_type_manual")` + `dotplot(genes=markers)` | 注释结果在 UMAP 上是否连续，marker 表达是否符合预期 |
 
 ---
 

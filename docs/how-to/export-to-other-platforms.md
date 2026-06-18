@@ -116,7 +116,7 @@ obs_df = atlas.get_obs_df()
 print(obs_df.head())
 
 # 只导出指定列
-obs_df = atlas.get_obs_df(columns=["kmeans", "cell_type_auto", "cell_total_counts"])
+obs_df = atlas.get_obs_df(columns=["kmeans", "cell_type_manual", "cell_total_counts"])
 ```
 
 ### `use_data` 可选值

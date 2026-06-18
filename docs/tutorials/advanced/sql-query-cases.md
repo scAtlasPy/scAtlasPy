@@ -8,7 +8,7 @@
 
 | 表名 | 存储内容 | 关键列 |
 |---|---|---|
-| `obs` | 细胞元数据 | `atlas_cell_id`, `atlas_cell_name`, `kmeans`, `cell_type_auto`, `filter_cells`, `cell_total_counts`, `pct_counts_mt` 等 |
+| `obs` | 细胞元数据 | `atlas_cell_id`, `atlas_cell_name`, `kmeans`, `cell_type_manual`, `filter_cells`, `cell_total_counts`, `pct_counts_mt` 等 |
 | `var` | 基因元数据 | `atlas_gene_id`, `atlas_gene_name`, `filter_genes`, `highly_variable_genes`, `zero_scale_transform` |
 | `X_HyS_data` | 稀疏表达值（长表） | `atlas_cell_id`, `atlas_gene_id`, `data`, `data_log1p`, `data_scale`, `data_normalize`, `data_sqrt` |
 | `X_HyS_indptr` | CSR 行指针 | `atlas_cell_id`, `indptr` |

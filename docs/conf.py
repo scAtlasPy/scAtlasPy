@@ -49,7 +49,7 @@ source_suffix = {
     ".md": "markdown",
 }
 master_doc = "index"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "index_structure.md"]
 
 myst_enable_extensions = [
     "colon_fence",
@@ -60,7 +60,7 @@ myst_enable_extensions = [
 myst_heading_anchors = 3
 
 html_theme = "sphinx_book_theme"
-html_title = "scAtlasPy"
+html_title = "A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits"
 html_logo = "_static/img/scAtlas_full_paths.svg"
 templates_path = ["_templates"]
 html_static_path = ["_static"]

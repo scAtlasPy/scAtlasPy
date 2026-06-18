@@ -1,4 +1,4 @@
-# 数据模型
+# Data-model
 
 scAtlasPy 把单细胞数据保存在 DuckDB 数据库中，文件后缀为 `.sasql`。这一页解释数据库表和 AnnData 结构之间的对应关系，适合算法开发者和贡献者阅读。
 
