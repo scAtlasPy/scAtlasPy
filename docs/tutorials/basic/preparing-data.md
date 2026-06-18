@@ -38,21 +38,21 @@ pbmc_demo.sasql
 
 | `load_type` | 含义 | 何时选用 |
 |---|---|---|
-| `"order"` | 顺序导入，保留原始细胞顺序 | 需要保留行顺序、导入 obsm/varm |
 | `"random"`（默认） | 随机窗口导入，打乱细胞顺序 | 单个 h5ad，希望随机化 |
+| `"order"` | 顺序导入，保留原始细胞顺序 | 需要保留行顺序、导入 obsm/varm |
 | `"list_random"` | 多文件全局随机混合导入 | 多个样本/批次合并 |
 
-#### 方式 A：顺序导入
-
-```python
-atlas.load_h5ad("pbmc3k.h5ad", load_type="order", store_type="count")
-```
-
-#### 方式 B：随机窗口导入（默认）
+#### 方式 A：随机窗口导入（默认）
 
 ```python
 atlas.load_h5ad("large.h5ad", store_type="count")
 # 等价于 load_type="random"，cells_per_block=500，blocks_per_pool=10
+```
+
+#### 方式 B：顺序导入
+
+```python
+atlas.load_h5ad("pbmc3k.h5ad", load_type="order", store_type="count")
 ```
 
 #### 方式 C：多个文件合并导入
@@ -74,10 +74,14 @@ atlas.load_h5ad(
 
 | 参数 | 默认值 | 含义 |
 |---|---|---|
-| `load_type` | `"random"` | 导入策略：`"order"` / `"random"` / `"list_random"` |
-| `store_type` | `"count"` | 目标表达尺度。`"count"` 存原始 counts，`"log"` 存 log1p 值。自动检测源数据并转换 |
+| `load_type` | `"random"` | 导入策略：`"random"` / `"order"` / `"list_random"` |
+| `store_type` | `"count"` | 目标表达尺度。`"count"` 存原始 counts，`"log"` 存 ln(1+x) 值。自动检测源数据并转换 |
 | `cells_per_block` | `500` | 每个连续读取 block 的细胞数。越大读速越快，内存越大 |
 | `blocks_per_pool` | `10` | 每次攒多少个 block 后写入。影响随机化程度和单次内存 |
+
+```{note}
+`store_type` 设为 `"log"` 时、以及后续 `sap.pp.log1p()` 预处理函数，默认使用自然对数（底数为 $e$，即 `ln(1 + x)`）。如果需要以其他数为底（例如 2 或 10），可在 `sap.pp.log1p()` 中传入 `base` 参数：`sap.pp.log1p(atlas, base=2)`。
+```
 
 ```{note}
 `store_type` 表示你希望写入数据库的表达尺度。代码会抽样判断源 `X` 是 count 还是 log，并在写入前自动做 `log1p` 或 `expm1` 转换。

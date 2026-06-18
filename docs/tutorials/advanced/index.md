@@ -20,28 +20,10 @@
 ::::{grid} 1 2 2 2
 :gutter: 2
 
-:::{grid-item-card} 质控图
-:link: qc-plots
+:::{grid-item-card} 画图的参数说明
+:link: plot-parameter-guide
 :link-type: doc
-绘制 highest_expr_genes、violin_qc_metrics、scatter_qc_metrics。含通用参数说明和画图决策速查表。
-:::
-
-:::{grid-item-card} 高变基因图
-:link: hvg-plots
-:link-type: doc
-绘制 highly_variable_genes 判断 HVG 选择是否合理。
-:::
-
-:::{grid-item-card} PCA 图
-:link: pca-plots
-:link-type: doc
-方差解释率图和 PCA 散点图，判断降维质量和批次效应。
-:::
-
-:::{grid-item-card} UMAP 图
-:link: umap-plots
-:link-type: doc
-按聚类、基因、样本上色，全量流式绘图，混合模式。
+通用参数说明、画图决策速查表，以及 QC、HVG、PCA、UMAP 各类图的画法和解读。
 :::
 
 :::{grid-item-card} Marker Gene 排名与验证
@@ -60,19 +42,13 @@ rank_genes_groups、violin、dotplot、stacked_violin 全套验证流程。
 :::{grid-item-card} Welford 在线统计算法
 :link: welford-online-statistics
 :link-type: doc
-单次遍历计算基因均值与方差，含底层 minibatch 机制说明。
+单次遍历计算基因均值与方差。
 :::
 
 :::{grid-item-card} 在线协方差矩阵
 :link: online-covariance-matrix
 :link-type: doc
 单次遍历构建基因-基因协方差矩阵，用于自定义降维。
-:::
-
-:::{grid-item-card} 收集全量矩阵
-:link: collect-full-matrix
-:link-type: doc
-收集所有 batch，vstack 为完整 dense 矩阵用于一次性分析。
 :::
 
 :::{grid-item-card} 模型全量预测
@@ -91,7 +67,7 @@ rank_genes_groups、violin、dotplot、stacked_violin 全套验证流程。
 :::{grid-item-card} 训练 Logistic Regression
 :link: train-logistic-regression
 :link-type: doc
-从 obs 表读取标签，与 minibatch 同步，SGD 训练分类器。含 ShuffleBuffer 机制说明。
+从 obs 表读取标签，与 minibatch 同步，SGD 训练分类器。
 :::
 
 :::{grid-item-card} 训练 PyTorch 神经网络
@@ -126,14 +102,10 @@ rank_genes_groups、violin、dotplot、stacked_violin 全套验证流程。
 :maxdepth: 1
 
 reconnect-database
-qc-plots
-hvg-plots
-pca-plots
-umap-plots
+plot-parameter-guide
 marker-gene-ranking
 welford-online-statistics
 online-covariance-matrix
-collect-full-matrix
 model-full-prediction
 train-logistic-regression
 train-pytorch-nn

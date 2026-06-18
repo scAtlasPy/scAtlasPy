@@ -39,7 +39,7 @@ advanced/index
 | 第一次把数据放进平台 | {doc}`basic/preparing-data` | 创建 `.sasql` 数据库，用 `load_h5ad()` 导入数据，`describe()` 检查状态 |
 | 跑常规单细胞流程 | {doc}`basic/quality-control-preprocessing` → {doc}`basic/clustering-cell-type-annotation` | 完成 QC、过滤、标准化、HVG、PCA、聚类、UMAP 和细胞类型注释 |
 | 重连已有数据库继续分析 | {doc}`advanced/reconnect-database` | 重连 `.sasql`，查看表结构和分析进度，从中断处继续 |
-| 判断分析结果是否合理 | {doc}`advanced/qc-plots` → {doc}`advanced/umap-plots` | 画 QC、HVG、PCA、UMAP 和 marker gene 图 |
+| 判断分析结果是否合理 | {doc}`advanced/plot-parameter-guide` → {doc}`advanced/marker-gene-ranking` | 画 QC、HVG、PCA、UMAP 和 marker gene 图 |
 | 数据太大，普通读入不稳定 | {doc}`basic/preparing-data` | 选择 `load_type` 参数，用流式导入写入数据库 |
 | 想接入自己的算法 | {doc}`advanced/welford-online-statistics` 或 {doc}`advanced/train-logistic-regression` | 获取分批表达矩阵，用于自定义模型或统计 |
 | 用 SQL 直接查询结果 | {doc}`advanced/sql-query-cases` | 按 cluster 统计、查询基因表达、导出中间结果 |
@@ -54,5 +54,5 @@ advanced/index
 - `X_HyS_data`：表达矩阵中的非零表达值（长表格式）。
 - `X_HyS_indptr`：CSR 行指针表，与 `X_HyS_data` 共同构成稀疏表达矩阵。
 - `data`：原始表达值，存储在 `X_HyS_data.data`。
-- `data_log1p`：标准化并取 `log1p` 后的表达值，常用于画基因表达图。
+- `data_log1p`：标准化并取 `log1p` 后的表达值（默认以 $e$ 为底），常用于画基因表达图。
 - `data_scale`：scale 后的表达值，常用于 PCA。

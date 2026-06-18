@@ -6,6 +6,7 @@
 :maxdepth: 1
 
 data-model
+minibatch-architecture
 performance
 documentation
 known-limitations
@@ -16,6 +17,7 @@ known-limitations
 | 目标 | 页面 |
 |---|---|
 | 理解数据库中保存了哪些表 | {doc}`data-model` |
+| 理解 minibatch 底层架构（single-pass / multi-pass / ShuffleBuffer） | {doc}`minibatch-architecture` |
 | 调整导入、批读取和分析速度 | {doc}`performance` |
 | 修改或新增官网文档 | {doc}`documentation` |
 | 查看当前还没有稳定支持的能力 | {doc}`known-limitations` |
