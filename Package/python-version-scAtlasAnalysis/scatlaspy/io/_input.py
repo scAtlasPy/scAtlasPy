@@ -32,8 +32,7 @@ def load_h5ad(
     *,
     load_type: Literal["order", "random", "list_random"] = "random",
     store_type: StoreType = "count",
-    cells_per_block: int = 500,
-    blocks_per_pool: int = 20,
+    cells_per_block: int | None = None,
 ) -> Any:
     """将 h5ad 文件导入 Atlas 数据库。
 
@@ -51,8 +50,6 @@ def load_h5ad(
         表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
     cells_per_block
         写入稀疏表达矩阵时每个细胞块包含的细胞数。
-    blocks_per_pool
-        批量写入时每个处理池包含的块数量。
 
     Returns
     -------
@@ -75,7 +72,6 @@ def load_h5ad(
         atlas.load_h5ad(
             [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
             cells_per_block=1000,
-            blocks_per_pool=20,
         )"""
 
     start_time = datetime.now()
@@ -100,21 +96,14 @@ def load_h5ad(
             f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
         )
 
-    if not isinstance(cells_per_block, int):
+    if cells_per_block is not None and not isinstance(cells_per_block, int):
         raise TypeError(
-            f"cells_per_block 必须是 int，当前类型为: {type(cells_per_block)}"
+            f"cells_per_block 必须是 int 或 None，当前类型为: {type(cells_per_block)}"
         )
 
-    if cells_per_block <= 0:
+    if cells_per_block is not None and cells_per_block <= 0:
         raise ValueError("cells_per_block 必须 > 0")
 
-    if not isinstance(blocks_per_pool, int):
-        raise TypeError(
-            f"blocks_per_pool 必须是 int，当前类型为: {type(blocks_per_pool)}"
-        )
-
-    if blocks_per_pool <= 0:
-        raise ValueError("blocks_per_pool 必须 > 0")
 
     # =====================================================
     # 2. list_random：多文件随机导入
@@ -127,7 +116,6 @@ def load_h5ad(
             h5ad_paths=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            blocks_per_pool=blocks_per_pool,
             store_type=store_type,
         )
 
@@ -147,6 +135,18 @@ def load_h5ad(
 
     h5ad_path = os.fspath(h5ad_path)
 
+    # ===== unified parameter normalization =====
+    if load_type != "list_random":
+
+        # 轻量读取 n_cells
+        if isinstance(h5ad_path, (str, PathLike)):
+            adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+            n_cells = adata_backed.n_obs
+        else:
+            raise ValueError("list_random 请走专用逻辑")
+
+        cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
+
     # =====================================================
     # 4. order：顺序导入
     # =====================================================
@@ -158,7 +158,6 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            blocks_per_pool=blocks_per_pool,
             store_type=store_type,
         )
 
@@ -173,7 +172,6 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            blocks_per_pool=blocks_per_pool,
             store_type=store_type,
         )
 
@@ -186,8 +184,7 @@ def _load_h5ad_list_random(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
-    cells_per_block: int = 500,
-    blocks_per_pool: int = 20,    # 每次从全局随机 block 池读取多少个 block 后 flush
+    cells_per_block: int | None = None,
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
@@ -210,9 +207,6 @@ def _load_h5ad_list_random(
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    blocks_per_pool
-        多文件随机导入时每次合并并 flush 的 block 数量。
 
     store_type
         目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
@@ -243,8 +237,19 @@ def _load_h5ad_list_random(
     if len(h5ad_paths) == 0:
         raise ValueError("h5ad_paths 不能为空")
 
-    if blocks_per_pool <= 0:
-        raise ValueError("blocks_per_pool 必须 > 0")
+    # ===== 统计全局 n_cells =====
+    total_n_cells = 0
+    file_cell_counts = []
+
+    for path in h5ad_paths:
+        ad = sc.read_h5ad(path, backed="r")
+        n = ad.n_obs
+        total_n_cells += n
+        file_cell_counts.append(n)
+        ad.file.close()
+
+    # ===== 全局 cells_per_block 计算  =====
+    cells_per_block = _normalize_cells_per_block(cells_per_block, total_n_cells)
 
     commit_every = 5  # 每多少次 pool flush 提交一次
     gc_every = 5    # 每多少次 pool flush 做一次 gc
@@ -281,6 +286,7 @@ def _load_h5ad_list_random(
 
     # 全局 block 索引池 ; 每个元素记录一个 block 来自哪个文件、起止位置是多少
     all_block_refs = []
+    max_estimated_bytes_per_cell = 0.0
 
     try:
         for file_idx, h5ad_path in enumerate(h5ad_paths):
@@ -292,10 +298,15 @@ def _load_h5ad_list_random(
 
             logger.info(f"[INFO] 当前文件维度 : {n_cells:,} × {n_genes:,}")
 
-            # 每个文件单独检测 X 是 count 还是 log
-            source_store_type = _detect_x_store_type_from_backed(
+            # 每个文件单独检测 X scale，并估算内存占用
+            x_info = _inspect_x_from_backed(
                 adata_backed,
                 sample_n=5000,
+            )
+            source_store_type = x_info["store_type"]
+            max_estimated_bytes_per_cell = max(
+                max_estimated_bytes_per_cell,
+                float(x_info["estimated_bytes_per_cell"]),
             )
 
             logger.info(f"[INFO] 当前文件 X 判断为: {source_store_type}")
@@ -356,6 +367,12 @@ def _load_h5ad_list_random(
 
         if total_blocks == 0:
             raise ValueError("所有 h5ad 文件的 cell 数量为 0，无法导入")
+
+        estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
+            memory_limit=_get_atlas_memory_limit(atlas),
+            cells_per_block=cells_per_block,
+            estimated_bytes_per_cell=max_estimated_bytes_per_cell,
+        )
 
         rng.shuffle(all_block_refs)
 
@@ -653,8 +670,7 @@ def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
-    cells_per_block: int = 500,
-    blocks_per_pool: int = 20,   # 固定窗口级随机，默认 5 个 batch
+    cells_per_block: int | None = None,
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
@@ -676,9 +692,6 @@ def _load_h5ad_random(
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    blocks_per_pool
-        单文件随机导入时每个 shuffle window 包含的 block 数量。
 
     store_type
         目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
@@ -725,10 +738,18 @@ def _load_h5ad_random(
             f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
         )
 
-    # 预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
-    source_store_type = _detect_x_store_type_from_backed(
+    # 预读取 sample_n 个细胞，同时判断 X scale 和估算导入内存
+    x_info = _inspect_x_from_backed(
         adata_backed,
         sample_n=5000,
+    )
+
+    source_store_type = x_info["store_type"]
+
+    estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
+        memory_limit=_get_atlas_memory_limit(atlas),
+        cells_per_block=cells_per_block,
+        estimated_bytes_per_cell=x_info["estimated_bytes_per_cell"],
     )
 
     logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
@@ -828,15 +849,21 @@ def _load_h5ad_random(
                 window_batch_count = 0
 
                 # 每 commit_every 个 batch 提交一次,等价于 blocks_per_pool=5 时，每 2 个 window commit
-                if total_batch_counter % commit_every == 0:
+                if window_counter % commit_every == 0:
                     conn.execute("COMMIT")
                     conn.execute("BEGIN TRANSACTION")
-                    logger.info(f"[COMMIT] processed_batches={total_batch_counter:,}")
+                    logger.info(
+                        f"[COMMIT] processed_windows={window_counter:,}, "
+                        f"processed_batches={total_batch_counter:,}"
+                    )
 
                 # 每 gc_every 个 batch gc 一次
-                if total_batch_counter % gc_every == 0:
+                if window_counter % gc_every == 0:
                     gc.collect()
-                    logger.info(f"[GC] processed_batches={total_batch_counter:,}")
+                    logger.info(
+                        f"[GC] processed_windows={window_counter:,}, "
+                        f"processed_batches={total_batch_counter:,}"
+                    )
 
         # 处理最后不足 5 个 batch 的剩余 window
         if window_batch_count > 0:
@@ -934,8 +961,7 @@ def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
-    cells_per_block: int = 500,
-    blocks_per_pool: int = 20,
+    cells_per_block: int | None = None,
 ):
 
     """按原始细胞顺序导入单个 h5ad 文件。
@@ -955,9 +981,6 @@ def _load_h5ad_order(
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    blocks_per_pool
-        顺序导入时用于计算 mega-batch 大小的倍数。
 
     store_type
         目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
@@ -981,9 +1004,6 @@ def _load_h5ad_order(
             f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
         )
 
-    # mega_batch_size 改成可控
-    mega_batch_size = cells_per_block * blocks_per_pool
-
     conn = atlas.connect("r+")
     atlas.connection = conn
 
@@ -1001,10 +1021,21 @@ def _load_h5ad_order(
     x_format = _print_h5ad_x_format(h5ad_path)
 
     # 预读取 1000 个细胞，判断文件里的 X 是 count 还是 log
-    source_store_type = _detect_x_store_type_from_backed(
+    x_info = _inspect_x_from_backed(
         adata_backed,
         sample_n=5000,
     )
+
+    source_store_type = x_info["store_type"]
+
+    estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
+        memory_limit=_get_atlas_memory_limit(atlas),
+        cells_per_block=cells_per_block,
+        estimated_bytes_per_cell=x_info["estimated_bytes_per_cell"],
+    )
+
+    # order 模式下，window_cells 就是 mega-batch 大小
+    mega_batch_size = estimated_window_cells
 
     logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
     logger.info(f"[INFO] 目标存储类型 store_type = {store_type}")
@@ -1116,7 +1147,11 @@ def _load_h5ad_order(
     conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
 
     # 顺序导入没有打乱 cell，所以 obsm 可以正常导入
-    _add_obsm_from_h5ad(h5ad_path, atlas)
+    _add_obsm_from_h5ad(
+        h5ad_path,
+        atlas,
+        cells_per_block=cells_per_block,
+    )
     _add_varm_from_h5ad(h5ad_path, atlas)
 
     try:
@@ -1293,7 +1328,468 @@ def _write_shuffle_window_to_duckdb(
     )
 
 
-# 预读取 sample_n 个细胞，自动判断 X 是 count scale 还是 log scale。
+# 读取 Atlas 对象中的内存限制参数。
+# 该函数主要用于 h5ad 导入时，根据 Atlas 初始化时设置的 db_memory_limit
+# 自动估算一次导入窗口 window_cells 和 blocks_per_pool。
+def _get_atlas_memory_limit(atlas: Atlas) -> str | int | None:
+    """获取 Atlas 对象中保存的内存限制参数。
+
+    该函数用于从 Atlas 对象中读取内存限制值，例如 ``"32GB"``、``"8G"``、
+    ``16`` 或 ``None``。
+
+    之所以单独写成 helper，是为了让导入模块尽量兼容不同版本的 Atlas 类：
+    1. 旧版本可能使用 ``__memory_limit``；
+    2. 新版本可能使用 ``__db_memory_limit``；
+    3. 有些版本可能提供公开属性 ``memory_limit``；
+    4. 当前推荐版本使用公开属性 ``db_memory_limit``。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。通常由 ``load_h5ad(..., atlas=atlas)`` 或
+        ``atlas.load_h5ad(...)`` 传入。
+
+    Returns
+    -------
+    memory_limit
+        Atlas 中保存的内存限制参数。
+
+        可能返回：
+        - ``str``，例如 ``"32GB"``、``"8G"``、``"1024MB"``；
+        - ``int``，例如 ``32``，表示 32GB；
+        - ``None``，表示没有设置可用的内存限制。
+
+    Notes
+    -----
+    该函数只负责“读取”内存限制，不负责把内存限制应用到 DuckDB。
+    真正执行 DuckDB ``SET memory_limit`` 的逻辑应该在 Atlas 类的
+    ``_apply_memory_limit()`` 中完成。
+
+    这里返回的值主要用于后续估算 Python 导入窗口大小，例如：
+
+    ``memory_limit -> memory_limit_bytes -> window_cells -> blocks_per_pool``。
+    """
+
+    # 1. 优先尝试读取私有属性。
+    #    这样可以兼容旧版本 Atlas 类中可能存在的字段。
+    for attr_name in ("_Atlas__memory_limit", "_Atlas__db_memory_limit"):
+        try:
+            value = getattr(atlas, attr_name)
+        except Exception:
+            value = None
+
+        if value not in (None, "", "None"):
+            return value
+
+    # 2. 再尝试读取公开属性。
+    #    当前推荐使用 atlas.db_memory_limit。
+    for attr_name in ("memory_limit", "db_memory_limit"):
+        try:
+            value = getattr(atlas, attr_name)
+        except RecursionError:
+            # 防止旧 property 写错导致递归报错。
+            value = None
+        except Exception:
+            value = None
+
+        if value not in (None, "", "None"):
+            return value
+
+    # 3. 如果都没有读到，则认为没有设置内存限制。
+    return None
+
+
+def _parse_memory_limit_to_bytes(memory_limit: str | int | None) -> int | None:
+    """将内存限制参数转换为字节数。
+
+    该函数用于把 Atlas 中保存的 ``db_memory_limit`` 转成字节数，
+    方便后续计算导入窗口大小。
+
+    支持的输入形式包括：
+
+    - ``None``：表示没有内存限制，返回 ``None``；
+    - ``int``：按 GB 解释，例如 ``32`` 表示 ``32GB``；
+    - 无单位数字字符串：按 GB 解释，例如 ``"32"`` 表示 ``32GB``；
+    - 带单位字符串：例如 ``"32GB"``、``"32G"``、``"1024MB"``、``"512M"``。
+
+    Parameters
+    ----------
+    memory_limit
+        Atlas 中保存的内存限制值。
+
+        常见形式包括：
+        - ``"32GB"``
+        - ``"16G"``
+        - ``"8000MB"``
+        - ``32``
+        - ``None``
+
+    Returns
+    -------
+    memory_limit_bytes
+        转换后的字节数。
+
+        如果 ``memory_limit`` 为 ``None``、空字符串或 ``"None"``，
+        则返回 ``None``。
+
+    Notes
+    -----
+    注意：这里的 ``int`` 不按“字节数”解释，而是按“GB”解释。
+    这是为了和 Atlas 类中 ``db_memory_limit`` 的设计保持一致：
+
+    ``db_memory_limit=32`` 等价于 ``db_memory_limit="32GB"``。
+    """
+
+    if memory_limit is None:
+        return None
+
+    # int 按 GB 解释，例如 32 -> 32GB。
+    if isinstance(memory_limit, int):
+        if memory_limit <= 0:
+            raise ValueError("memory_limit 必须 > 0")
+        return int(memory_limit * 1024 ** 3)
+
+    if not isinstance(memory_limit, str):
+        raise TypeError(
+            f"memory_limit 必须是 str、int 或 None，当前类型为: {type(memory_limit)}"
+        )
+
+    value_text = memory_limit.strip().upper().replace(" ", "")
+
+    if value_text in {"", "NONE"}:
+        return None
+
+    units = {
+        "KB": 1024,
+        "K": 1024,
+        "MB": 1024 ** 2,
+        "M": 1024 ** 2,
+        "GB": 1024 ** 3,
+        "G": 1024 ** 3,
+    }
+
+    # 处理带单位的字符串，例如 "32GB"、"16G"、"1024MB"。
+    for unit, factor in units.items():
+        if value_text.endswith(unit):
+            value = float(value_text[: -len(unit)])
+            if value <= 0:
+                raise ValueError("memory_limit 必须 > 0")
+            return int(value * factor)
+
+    # 没有单位时，也按 GB 解释。
+    value = float(value_text)
+    if value <= 0:
+        raise ValueError("memory_limit 必须 > 0")
+    return int(value * 1024 ** 3)
+
+
+# 读取部分细胞，同时判断 X 的尺度并估算每个细胞的内存占用
+def _inspect_x_from_backed(
+    adata_backed: AnnData,
+    sample_n: int = 5000,
+    overhead_factor: float = 4.0,
+) -> dict[str, Any]:
+    """预读取部分细胞，同时判断 X 的尺度并估算每个细胞的内存占用。
+
+    该函数会从 backed 模式打开的 AnnData 中读取前 ``sample_n`` 个细胞，
+    然后基于这部分样本完成两个任务：
+
+    1. 判断 ``adata.X`` 当前是 count scale 还是 log scale；
+    2. 估算每个 cell 在导入过程中大约会占用多少内存。
+
+    这样做的好处是：
+    - 不需要额外读取两次 sample；
+    - 判断 X scale 和估算导入窗口可以共用同一份 sample；
+    - 后续可以根据 ``estimated_bytes_per_cell`` 和 ``db_memory_limit``
+      自动计算 ``window_cells`` 和 ``blocks_per_pool``。
+
+    Parameters
+    ----------
+    adata_backed
+        以 backed 模式打开的 AnnData 对象。
+
+        通常来自：
+
+        ``adata_backed = sc.read_h5ad(h5ad_path, backed="r")``
+
+    sample_n
+        预读取的细胞数量。
+
+        实际读取数量为：
+
+        ``min(sample_n, adata_backed.n_obs)``
+
+        默认读取前 5000 个细胞。
+
+    overhead_factor
+        内存放大系数。
+
+        因为导入过程中不只保存原始 ``X``，还会产生一些临时对象，例如：
+
+        - ``window_adatas``
+        - ``sc.concat(...)`` 或 ``sparse.vstack(...)``
+        - ``adata_window.copy()``
+        - ``obs_df``
+        - Arrow table
+        - DuckDB register 临时对象
+
+        所以不能只按 ``X`` 本身的内存估算。这里默认乘以 ``4.0``，
+        用于更保守地估算导入时每个 cell 的实际内存占用。
+
+    Returns
+    -------
+    info
+        一个字典，包含以下字段：
+
+        - ``store_type``：判断得到的 X 尺度，通常为 ``"count"`` 或 ``"log"``；
+        - ``sample_cells``：实际抽样的细胞数量；
+        - ``nonzero_n``：sample 中非零表达值数量；
+        - ``max``：sample 中非零表达值最大值；
+        - ``q95``：sample 中非零表达值的 95 分位数；
+        - ``frac_le_10``：sample 中非零表达值小于等于 10 的比例；
+        - ``x_bytes``：sample 中 X 按目标导入结构估算的基础字节数；
+        - ``x_bytes_per_cell``：单个 cell 的基础 X 内存估算；
+        - ``estimated_bytes_per_cell``：乘以 overhead_factor 后的单个 cell 内存估算。
+
+    Notes
+    -----
+    稀疏矩阵的内存估算按 Atlas 写入结构来估计：
+
+    - ``data`` 按 ``float32`` 估算；
+    - ``indices`` 按 ``uint16`` 估算，对应 ``atlas_gene_id`` / ``USMALLINT``；
+    - ``indptr`` 按 ``int64`` 估算。
+
+    这个估算不追求精确到 Python 对象级别，而是用于得到一个足够稳的
+    ``window_cells`` 和 ``blocks_per_pool``。
+    """
+
+    n = min(sample_n, adata_backed.n_obs)
+
+    if n <= 0:
+        raise ValueError("[ERROR] h5ad 中没有细胞，无法检测 X。")
+
+    # 预读取前 n 个细胞。
+    adata_sample = adata_backed[:n].to_memory()
+    X = adata_sample.X
+
+    if sparse.issparse(X):
+        # 稀疏矩阵统一转成 CSR，方便统计 data / indices / indptr。
+        X = X.tocsr()
+
+        # 非零表达值，用于判断 count / log。
+        values = np.asarray(X.data, dtype=np.float32)
+
+        # 按 Atlas 最终写入结构估算 X 的基础内存：
+        # data    -> float32
+        # indices -> uint16
+        # indptr  -> int64
+        x_bytes = (
+            X.data.size * np.dtype(np.float32).itemsize
+            + X.indices.size * np.dtype(np.uint16).itemsize
+            + X.indptr.size * np.dtype(np.int64).itemsize
+        )
+    else:
+        # dense 矩阵按 float32 估算。
+        X_arr = np.asarray(X)
+
+        # 只取非零值用于判断 count / log。
+        values = X_arr[X_arr != 0].astype(np.float32, copy=False)
+
+        x_bytes = X_arr.size * np.dtype(np.float32).itemsize
+
+    if values.size == 0:
+        del adata_sample
+        gc.collect()
+        raise ValueError(
+            "[ERROR] 预读取的细胞中没有非零表达值，无法判断 X 是 count 还是 log。"
+        )
+
+    vmax = float(np.max(values))
+    q95 = float(np.percentile(values, 95))
+    frac_le_10 = float(np.mean(values <= 10))
+
+    # 经验判断：
+    # count 数据中通常会出现较大的整数计数；
+    # log 数据通常绝大多数非零值都不会太大。
+    if vmax > 50 or q95 > 10:
+        store_type: StoreType = "count"
+    else:
+        store_type: StoreType = "log"
+
+    # 估算单个 cell 的基础 X 内存。
+    x_bytes_per_cell = float(x_bytes / n)
+
+    # 加上导入过程中各种临时对象的经验放大系数。
+    estimated_bytes_per_cell = max(1.0, x_bytes_per_cell * overhead_factor)
+
+    logger.info("[INFO] X scale / memory 预检测结果:")
+    logger.info(f"  - sample_cells = {n:,}")
+    logger.info(f"  - nonzero_n    = {values.size:,}")
+    logger.info(f"  - max          = {vmax:.4f}")
+    logger.info(f"  - q95          = {q95:.4f}")
+    logger.info(f"  - frac <= 10   = {frac_le_10:.4f}")
+    logger.info(f"  - store_type   = {store_type}")
+    logger.info(f"  - x_bytes_per_cell = {x_bytes_per_cell:.2f}")
+    logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
+
+    del adata_sample
+    gc.collect()
+
+    return {
+        "store_type": store_type,
+        "sample_cells": n,
+        "nonzero_n": int(values.size),
+        "max": vmax,
+        "q95": q95,
+        "frac_le_10": frac_le_10,
+        "x_bytes": int(x_bytes),
+        "x_bytes_per_cell": x_bytes_per_cell,
+        "estimated_bytes_per_cell": estimated_bytes_per_cell,
+    }
+
+
+# 根据内存限制估算导入窗口大小和 blocks_per_pool
+def _estimate_window_cells_and_blocks_per_pool(
+    *,
+    memory_limit: str | int | None,
+    cells_per_block: int,
+    estimated_bytes_per_cell: float,
+    memory_fraction: float = 0.25,      #
+    default_blocks_per_pool: int = 20,  #
+    max_blocks_per_pool: int = 100,     # min = 5
+) -> tuple[int, int]:
+    """根据内存限制估算导入窗口大小和 blocks_per_pool。
+
+    该函数根据 Atlas 的 ``db_memory_limit``、用户输入的 ``cells_per_block``，
+    以及 sample 估算得到的 ``estimated_bytes_per_cell``，自动计算：
+
+    1. ``window_cells``：一次导入窗口中最多包含多少个细胞；
+    2. ``blocks_per_pool``：一个窗口中包含多少个 block。
+
+    它们之间的关系是：
+
+    ``window_cells = cells_per_block * blocks_per_pool``
+
+    Parameters
+    ----------
+    memory_limit
+        Atlas 中保存的内存限制。
+
+        常见形式包括：
+        - ``"32GB"``
+        - ``"16G"``
+        - ``32``
+        - ``None``
+
+    cells_per_block
+        用户输入的每个连续读取 block 中包含的 cell 数量。
+
+        例如：
+
+        ``cells_per_block = 500``
+
+    estimated_bytes_per_cell
+        由 ``_inspect_x_from_backed()`` 估算得到的单个 cell 内存占用。
+
+        该值已经乘过 ``overhead_factor``，因此比单纯的 X 内存更保守。
+
+    memory_fraction
+        用于估算导入窗口的内存比例。
+
+        例如 ``memory_limit="32GB"`` 且 ``memory_fraction=0.25`` 时，
+        表示最多使用约 8GB 来估算导入窗口。
+
+        这里不建议使用 1.0，因为 Python、NumPy、pandas、AnnData、
+        Arrow 和 DuckDB 都会额外占用内存。
+
+    default_blocks_per_pool
+        当 ``memory_limit`` 为 ``None`` 时使用的默认窗口 block 数量。
+
+        默认值为 20，等价于旧版本的默认行为：
+
+        ``window_cells = cells_per_block * 20``
+
+    max_blocks_per_pool
+        ``blocks_per_pool`` 的最大上限。
+
+        该参数用于避免内存估算过于乐观，导致一次窗口包含过多 block，
+        从而造成 ``sc.concat``、``sparse.vstack`` 或 Arrow 写入时内存峰值过高。
+
+    Returns
+    -------
+    window_cells
+        一个导入窗口中实际使用的 cell 数量。
+
+        该值会被重新对齐为：
+
+        ``cells_per_block * blocks_per_pool``
+
+    blocks_per_pool
+        一个导入窗口中包含的 block 数量。
+
+        计算方式近似为：
+
+        ``blocks_per_pool = window_cells // cells_per_block``
+
+    Notes
+    -----
+    该函数只负责估算导入窗口大小，不直接读取 h5ad，也不直接写入数据库。
+
+    在不同导入模式中的含义：
+
+    - ``random`` 模式：表示一个 shuffle window 中包含多少个 block；
+    - ``list_random`` 模式：表示一次从全局 block pool 中读取多少个 block；
+    - ``order`` 模式：``window_cells`` 直接作为 ``mega_batch_size`` 使用。
+    """
+
+    if cells_per_block <= 0:
+        raise ValueError("cells_per_block 必须 > 0")
+
+    if estimated_bytes_per_cell <= 0:
+        raise ValueError("estimated_bytes_per_cell 必须 > 0")
+
+    memory_limit_bytes = _parse_memory_limit_to_bytes(memory_limit)
+
+    # 没有设置内存限制时，保持旧版本默认行为。
+    if memory_limit_bytes is None:
+        blocks_per_pool = default_blocks_per_pool
+        window_cells = cells_per_block * blocks_per_pool
+        return window_cells, blocks_per_pool
+
+    if not 0 < memory_fraction <= 1:
+        raise ValueError("memory_fraction 必须在 (0, 1] 范围内")
+
+    # 只使用 memory_limit 的一部分估算导入窗口，避免内存峰值过高。
+    usable_memory_bytes = memory_limit_bytes * memory_fraction
+
+    # 根据单个 cell 的估算内存，反推一个窗口中最多能容纳多少个 cell。
+    window_cells = int(usable_memory_bytes // estimated_bytes_per_cell)
+
+    # 至少保证一个 block。
+    window_cells = max(cells_per_block, window_cells)
+
+    # 根据 window_cells 和 cells_per_block 计算 blocks_per_pool。
+    blocks_per_pool = window_cells // cells_per_block
+    blocks_per_pool = max(1, blocks_per_pool)
+
+    # 设置上限，避免 window 过大。
+    blocks_per_pool = min(blocks_per_pool, max_blocks_per_pool)
+
+    # 重新对齐 window_cells，保证它一定等于 cells_per_block * blocks_per_pool。
+    window_cells = cells_per_block * blocks_per_pool
+
+    logger.info("[INFO] 自动估算 h5ad 导入窗口参数:")
+    logger.info(f"  - memory_limit = {memory_limit}")
+    logger.info(f"  - memory_limit_bytes = {memory_limit_bytes:,}")
+    logger.info(f"  - memory_fraction = {memory_fraction}")
+    logger.info(f"  - cells_per_block = {cells_per_block:,}")
+    logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
+    logger.info(f"  - window_cells = {window_cells:,}")
+    logger.info(f"  - blocks_per_pool = {blocks_per_pool:,}")
+
+    return window_cells, blocks_per_pool
+
+
 def _detect_x_store_type_from_backed(
     adata_backed: AnnData,
     sample_n: int = 5000,
@@ -1325,47 +1821,23 @@ def _detect_x_store_type_from_backed(
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
-    n = min(sample_n, adata_backed.n_obs)
+    x_info = _inspect_x_from_backed(
+        adata_backed,
+        sample_n=sample_n,
+    )
 
-    # 预读取前 n 个细胞
-    adata_sample = adata_backed[:n].to_memory()
-    X = adata_sample.X
+    return x_info["store_type"]
 
-    if sparse.issparse(X):
-        values = np.asarray(X.data, dtype=np.float32)
-    else:
-        X_arr = np.asarray(X)
-        values = X_arr[X_arr != 0].astype(np.float32, copy=False)
 
-    if values.size == 0:
-        del adata_sample
-        gc.collect()
-        raise ValueError(
-            "[ERROR] 预读取的细胞中没有非零值，无法判断 X 是 count 还是 log。"
-        )
+def _normalize_cells_per_block(cells_per_block, n_cells):
 
-    vmax = float(np.max(values))
-    q95 = float(np.percentile(values, 95))
-    frac_le_10 = float(np.mean(values <= 10))
+    if cells_per_block is None:
+        cells_per_block = int(0.001 * n_cells)
+        cells_per_block = max(512, min(cells_per_block, 4096))
 
-    logger.info("[INFO] X scale 预检测结果:")
-    logger.info(f"  - sample_cells = {n:,}")
-    logger.info(f"  - nonzero_n    = {values.size:,}")
-    logger.info(f"  - max          = {vmax:.4f}")
-    logger.info(f"  - q95          = {q95:.4f}")
-    logger.info(f"  - frac <= 10   = {frac_le_10:.4f}")
-
-    del adata_sample
-    gc.collect()
-
-    # 经验判断：
-    # log 数据通常绝大多数非零值 <= 10
-    # count 数据只要 max 或高分位明显超过 log 范围，就判断为 count
-    if vmax > 50 or q95 > 10:
-        return "count"
-    else:
-        return "log"
-
+    cells_per_block = int(cells_per_block)
+    logger.info(f"cells_per_block = {cells_per_block}")
+    return cells_per_block
 
 # 根据 source_store_type 和 target_store_type 原地转换 adata.X。 log转换的 底数为 e
 def _convert_x_store_type_inplace(

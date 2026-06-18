@@ -70,7 +70,7 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 def umap(
         atlas: Atlas,
         fit_sample_n: int | None = None,
-        transform_batch_size: int = 50000,
+        transform_batch_size: int = 500_000,
         n_components: int = 2,
         n_pcs: int | None = None,
         n_neighbors: int = 15,

@@ -41,7 +41,7 @@ def set_verbosity(
     Returns
     -------
     None
-        结果直接写入 Atlas 数据库或当前图形窗口。
+        该函数直接修改 ``Atlas`` logger 的输出级别，不返回对象。
 
     Examples
     --------
@@ -112,8 +112,8 @@ class Atlas:
 
     使用对象式 API 导入 h5ad 文件::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc", verbosity="info")
-        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad")
 
     查看数据库内容并关闭连接::
 
@@ -124,21 +124,21 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            verbosity: Literal["error", "warning", "info", "debug"] | None = None,
-            memory_limit: str | int | None = None,
+            db_memory_limit: str | int | None = "32GB",
     ):
         """初始化 Atlas 数据库对象。
 
-        构造函数会根据 ``file_name`` 推断 ``.sasql`` 数据库路径，创建父目录，并建立 DuckDB 连接。如果数据库文件尚不存在，会自动创建空数据库。
+        构造函数会根据 ``file_name`` 推断 ``.sasql`` 数据库路径，
+        创建父目录，并建立 DuckDB 连接。如果数据库文件尚不存在，
+        会自动创建空数据库。
 
         Parameters
         ----------
         file_name
-            Atlas 数据库文件路径或数据库名称。可以传入完整 ``.sasql`` 路径，也可以传入不带后缀的路径；函数会自动补全 ``.sasql``
-            后缀。
-        verbosity
-            初始化 Atlas 时设置的日志级别。
-        memory_limit
+            Atlas 数据库文件路径或数据库名称。可以传入完整 ``.sasql`` 路径，
+            也可以传入不带后缀的路径；函数会自动补全 ``.sasql`` 后缀。
+
+        db_memory_limit
             DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如
             ``"4GB"``；也可以传入整数，整数会按 GB 解释，
             例如 ``4`` 等价于 ``"4GB"``。
@@ -156,23 +156,29 @@ class Atlas:
 
             atlas = sap.Atlas(r"F:\\data\\test_10W")
 
-        传入完整 ``.sasql`` 文件路径，并打开更详细日志::
+        传入完整 ``.sasql`` 文件路径::
 
-            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql", verbosity="info")
+            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
+
+        全局打开更详细日志::
+
+            sap.set_verbosity("info")
+            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
 
         限制 DuckDB 查询和中间计算最多使用 4GB 内存::
 
-            atlas = sap.Atlas(r"F:\\data\\test_10W", memory_limit="4GB")"""
-
-        set_verbosity(verbosity)
+            atlas = sap.Atlas(r"F:\\data\\test_10W", db_memory_limit="4GB")
+        """
 
         self.__file_path = self._resolve_file_path(file_name)
         self.__connection = None
         self.__mode: Literal["r+", "r"] = "r+"
-        self.__memory_limit = memory_limit
+        self.__db_memory_limit = db_memory_limit
 
         logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
 
+        # 修改：保留原来的数据库创建 / 连接逻辑
+        # 注意：这里不再设置 verbosity，日志级别完全由 sap.set_verbosity(...) 全局控制
         if not os.path.exists(self.file_path):
             logger.info(f"数据库文件不存在，开始创建新数据库: {self.file_path}")
             try:
@@ -232,7 +238,7 @@ class Atlas:
         Returns
         -------
         str
-            数据库或对象的文本摘要。
+            当前 Atlas 对象对应的 ``.sasql`` 数据库绝对路径。
 
         Examples
         --------
@@ -265,35 +271,38 @@ class Atlas:
 
     @connection.setter
     def connection(self, value: Optional[duckdb.DuckDBPyConnection]) -> None:
-        """返回当前 DuckDB 连接。
+        """设置当前 DuckDB 连接对象。
 
-        该属性保存 Atlas 当前使用的 DuckDB 连接对象。通常不需要直接操作它，除非需要调用 DuckDB 的底层 API。
+        该 setter 主要用于内部流程或高级用户手动替换 Atlas 当前连接。
+        一般情况下不建议直接修改 ``atlas.connection``，应优先使用
+        ``atlas.connect(...)`` 和 ``atlas.close()`` 管理连接。
 
         Parameters
         ----------
         value
-            参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
+            需要保存到当前 Atlas 对象中的 DuckDB 连接对象；也可以为 ``None``，
+            表示清空当前连接。
 
         Returns
         -------
-        duckdb.DuckDBPyConnection
-            当前 Atlas 数据库连接。
-
-        Examples
-        --------
-        使用底层 DuckDB 连接执行查询::
-
-            con = atlas.connection
-            con.sql("SELECT COUNT(*) FROM obs").fetchone()"""
+        None
+            该属性 setter 只更新内部连接引用，不返回对象。
+        """
         self.__connection = value
+
+    @property
+    def db_memory_limit(self) -> str | int | None:
+        """返回当前 Atlas 对象设置的 DuckDB 内存上限。"""
+
+        return self.__db_memory_limit
 
 
     def _apply_memory_limit(self) -> None:
         """应用 DuckDB 内存限制。
 
-        ``memory_limit`` 只限制 DuckDB 查询和中间计算可使用的内存，
+        ``db_memory_limit`` 只限制 DuckDB 查询和中间计算可使用的内存，
         不限制 Python、NumPy 或 pandas 本身占用的内存。
-        如果 ``memory_limit`` 是整数，则按 GB 解释，例如 ``4`` 会被转换为
+        如果 ``db_memory_limit`` 是整数，则按 GB 解释，例如 ``4`` 会被转换为
         ``"4GB"``。
 
         Returns
@@ -305,38 +314,38 @@ class Atlas:
         --------
         初始化 Atlas 时限制 DuckDB 查询内存::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc", memory_limit="4GB")
+            atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit="4GB")
 
         使用整数设置 GB 单位的内存限制::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc", memory_limit=4)
+            atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit=4)
 
         连接已经存在的数据库时也会自动应用该限制::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc.sasql", memory_limit="1024MB")
+            atlas = sap.Atlas(r"F:\\data\\pbmc.sasql", db_memory_limit="1024MB")
         """
 
         if self.__connection is None:
             return
 
-        if self.__memory_limit is None:
+        if self.db_memory_limit is None:
             return
 
-        if isinstance(self.__memory_limit, int):
-            memory_limit = f"{self.__memory_limit}GB"
+        if isinstance(self.db_memory_limit, int):
+            db_memory_limit = f"{self.db_memory_limit}GB"
         else:
-            memory_limit = str(self.__memory_limit).strip()
+            db_memory_limit = str(self.db_memory_limit).strip()
 
-        if memory_limit == "":
+        if db_memory_limit == "":
             return
 
-        memory_limit_sql = memory_limit.replace("'", "''")
+        memory_limit_sql = db_memory_limit.replace("'", "''")
 
         self.__connection.execute(
             f"SET memory_limit = '{memory_limit_sql}'"
         )
 
-        logger.info(f"DuckDB memory_limit 设置为: {memory_limit}")
+        logger.info(f"DuckDB db_memory_limit 设置为: {db_memory_limit}")
 
 
     def _create(self) -> duckdb.DuckDBPyConnection:
@@ -344,7 +353,7 @@ class Atlas:
 
         该方法在 ``self.file_path`` 指向的位置创建新的 ``.sasql`` 数据库文件。
         连接创建完成后，会立即调用 ``self._apply_memory_limit()``，确保
-        初始化时传入的 ``memory_limit`` 对新连接生效。
+        初始化时传入的 ``db_memory_limit`` 对新连接生效。
 
         Returns
         -------
@@ -381,7 +390,7 @@ class Atlas:
         """连接 Atlas 数据库。
 
         根据当前 ``file_path`` 建立 DuckDB 连接，并把连接对象保存到 ``atlas.connection``。已有连接会被复用或替换为新的连接。
-        如果初始化 Atlas 时设置了 ``memory_limit``，每次重新建立连接后都会自动应用该限制。
+        如果初始化 Atlas 时设置了 ``db_memory_limit``，每次重新建立连接后都会自动应用该限制。
 
         Parameters
         ----------
@@ -539,10 +548,10 @@ class Atlas:
 
         该方法只检查 ``atlas.file_path`` 指向的文件是否存在，不验证数据库内部表结构是否完整。
 
-        Returns
         -------
-        bool 或 None
-            检查结果。无法完成检查时可能返回 ``None``。
+        bool
+            如果 ``atlas.file_path`` 指向的数据库文件存在，则返回 ``True``；
+            否则返回 ``False``。
 
         Examples
         --------
@@ -651,6 +660,9 @@ class Atlas:
         # 1. 数据库路径
         file_name = self.file_path
 
+        # 1.1 DuckDB 内存限制
+        db_memory_limit = self.db_memory_limit
+
         # 2. 查询所有表
         try:
             tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
@@ -679,101 +691,56 @@ class Atlas:
 
         # 5. 格式化输出
         def fmt(x: Any):
-            """执行 ``fmt`` 的核心功能。
-
-            负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-            函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-            整体用法和 Scanpy 中相近的 ``sap.fmt`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
-
-            Parameters
-            ----------
-            x
-                需要排序、格式化或转换的单个输入值。
-
-            Returns
-            -------
-            result
-                函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-            Examples
-            --------
-            调用该函数：::
-
-                sap.fmt(...)
-            """
+            """将计数值格式化为带千位分隔符的字符串。"""
             return "NA" if x is None else f"{int(x):,}"
 
         text = (
-            f"file_name    : {file_name}\n"
-            f"tables      : {len(tables)}\n"
-            f"table names : {table_names}\n"
-            f"n_cells     : {fmt(n_cells)}\n"
-            f"n_genes     : {fmt(n_genes)}"
+            f"file_name       : {file_name}\n"
+            f"db_memory_limit : {db_memory_limit}\n"
+            f"tables          : {len(tables)}\n"
+            f"table names     : {table_names}\n"
+            f"n_cells         : {fmt(n_cells)}\n"
+            f"n_genes         : {fmt(n_genes)}"
         )
 
         return text
 
 
     def __repr__(self) -> str:
-        """执行 ``__repr__`` 的核心功能。
+        """返回 Atlas 对象的数据库摘要字符串。
 
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        该方法调用 ``self.describe()``，用于在交互式环境中显示
+        当前数据库路径、表数量、细胞数和基因数等信息。
         """
         return self.describe()
 
 
     def __str__(self) -> str:
-        """执行 ``__str__`` 的核心功能。
+        """返回 Atlas 对象的可读字符串摘要。
 
-        该内部函数属于Atlas 数据库核心模块，用于支撑同一模块中的公共 API。
-
-        负责 ``.sasql`` 数据库对象、DuckDB 连接、SQL 查询、表结构查看、过滤索引和 minibatch 入口。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        该方法调用 ``self.describe()``，使 ``print(atlas)`` 可以直接显示
+        当前数据库的基本信息。
         """
         return self.describe()
 
 
     def head(self, table_name: str, n: int = 5):
-        """查看数据库表的前几行。
+        """打印数据库表的前几行。
 
-        该方法打印并返回指定表的前 ``n`` 行，同时展示表名、列名和行数信息，适合快速检查导入结果或分析结果。
+        该方法查询指定表的前 ``n`` 行，并在控制台打印表名、列名和数据内容，
+        适合快速检查导入结果或分析结果。
 
         Parameters
         ----------
         table_name
             数据库表名。
         n
-            返回或展示的记录数量。
+            打印的记录数量。
 
         Returns
         -------
-        pandas.DataFrame
-            包含查询、统计或绘图所需数据的表格。
+        None
+            该方法只打印结果，不返回 DataFrame。
 
         Examples
         --------
@@ -783,7 +750,8 @@ class Atlas:
 
         查看差异基因结果前 10 行::
 
-            atlas.head("rank_genes_groups", n=10)"""
+            atlas.head("rank_genes_groups", n=10)
+        """
 
         if self.__connection is None:
             self.connect("r+")
@@ -833,6 +801,64 @@ class Atlas:
         ):
             print(df.to_string(index=True))
 
+    def _save_read_index_meta(
+            self,
+            *,
+            cell_condition: str | None,
+            gene_condition: str | None,
+            use_hvg: bool,
+            use_data: str,
+    ) -> None:
+        """保存当前 read index 构建参数。
+
+        该方法把本次 ``build_read_index`` 使用的细胞过滤条件、基因过滤条件、
+        是否使用 HVG 以及表达值列名保存到 ``atlas_read_index_meta`` 表中，
+        用于后续检查当前读取索引对应的数据范围和表达层。
+
+        Parameters
+        ----------
+        cell_condition
+            本次构建读取索引时使用的细胞过滤列名。
+        gene_condition
+            本次构建读取索引时使用的基因过滤列名。
+        use_hvg
+            是否叠加使用 ``highly_variable_genes`` 过滤。
+        use_data
+            本次构建过滤表达矩阵时读取的表达值列名。
+
+        Returns
+        -------
+        None
+            结果直接写入 ``atlas_read_index_meta`` 表。
+        """
+
+        if self.__connection is None:
+            self.connect("r+")
+
+        conn = self.__connection
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS atlas_read_index_meta (
+                key VARCHAR PRIMARY KEY,
+                value VARCHAR
+            )
+        """)
+
+        rows = [
+            ("cell_condition", str(cell_condition)),
+            ("gene_condition", str(gene_condition)),
+            ("use_hvg", str(bool(use_hvg))),
+            ("use_data", str(use_data)),
+        ]
+
+        for key, value in rows:
+            conn.execute("""
+                INSERT OR REPLACE INTO atlas_read_index_meta(key, value)
+                VALUES (?, ?)
+            """, [key, value])
+
+        conn.commit()
+
 
     def build_read_index(
             self,
@@ -848,14 +874,17 @@ class Atlas:
         Parameters
         ----------
         cell_condition
-            用于筛选细胞的 ``obs`` 条件列名或 SQL 条件；为 ``None`` 时不按细胞过滤。
+            ``obs`` 表中用于筛选细胞的布尔列名。默认 ``"filter_cells"``。
+            为 ``None`` 时不进行细胞过滤。
         gene_condition
-            用于筛选基因的 ``var`` 条件列名或 SQL 条件；为 ``None`` 时不按基因过滤。
+            ``var`` 表中用于筛选基因的布尔列名。默认 ``"filter_genes"``。
+            为 ``None`` 时不进行基因过滤。
         use_hvg
-            是否优先使用高变基因列构建读取索引或是否只使用高变基因。
+            是否在 ``gene_condition`` 之外继续叠加 ``highly_variable_genes=TRUE``。
+            为 ``True`` 时，最终基因集合需要同时满足基因过滤条件和 HVG 条件。
         use_data
-            读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
-            ``"data_scale"``。
+            从 ``X_HyS_data`` 表中读取的表达值列名。常用值包括
+            ``"data"``、``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
 
         Returns
         -------
@@ -883,6 +912,14 @@ class Atlas:
             use_data=use_data,
         )
         builder.run()
+
+        # 把本次读取索引用到的参数持久化到数据库
+        self._save_read_index_meta(
+            cell_condition=cell_condition,
+            gene_condition=gene_condition,
+            use_hvg=use_hvg,
+            use_data=use_data,
+        )
 
 
     def get_minibatch_csr(self, x_type: str = "CSR"):
@@ -1042,8 +1079,7 @@ class Atlas:
         *,
         load_type: Literal["order", "random", "list_random"] = "random",
         store_type: StoreType = "count",
-        cells_per_block: int = 500,
-        blocks_per_pool: int = 10,
+        cells_per_block: int | None = None,
     ) -> Any:
         """通过 Atlas 对象导入 h5ad 文件。
 
@@ -1059,8 +1095,6 @@ class Atlas:
             表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
         cells_per_block
             写入稀疏表达矩阵时每个细胞块包含的细胞数。
-        blocks_per_pool
-            批量写入时每个处理池包含的块数量。
 
         Returns
         -------
@@ -1086,7 +1120,6 @@ class Atlas:
             load_type=load_type,
             store_type=store_type,
             cells_per_block=cells_per_block,
-            blocks_per_pool=blocks_per_pool,
         )
 
 
@@ -1250,6 +1283,8 @@ class Atlas:
         include_varm: bool = True,
     ) -> AnnData:
         """通过 Atlas 对象构建 AnnData。
+
+        该函数不是遍历函数，仅用于取用较小的数据子集；
 
         这是底层 AnnData 构建函数的对象式入口，用于从 Atlas 数据库读取指定细胞、表达矩阵和 embedding，构建内存中的 AnnData 对象。
 
