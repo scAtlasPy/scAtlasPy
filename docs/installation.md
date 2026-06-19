@@ -99,6 +99,6 @@ data/quickstart_out.h5ad
 
 - 将你的数据集文件写入 Atlas 数据库，阅读 {doc}`tutorials/basic/preparing-data`。
 - 继续完成标准单细胞流程：{doc}`tutorials/basic/quality-control-preprocessing` → {doc}`tutorials/basic/clustering-cell-type-annotation`。
-- 学习如何画 QC、HVG、PCA、UMAP 和 marker gene 图：{doc}`tutorials/advanced/qc-plots`。
+- 学习如何画 QC、HVG、PCA、UMAP 和 marker gene 图：{doc}`tutorials/advanced/plot-parameter-guide`。
 - 数据集太大时，在导入教程中选择流式导入：{doc}`tutorials/basic/preparing-data`。
 - 已经熟悉 Scanpy 的用户，查看迁移对照：{doc}`how-to/migrate-from-other-platforms`。

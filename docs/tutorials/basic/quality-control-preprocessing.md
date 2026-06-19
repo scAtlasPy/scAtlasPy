@@ -53,7 +53,7 @@ sap.pp.calculate_qc_metrics(
 sap.pl.highest_expr_genes(atlas, n_top=20)
 ```
 
-![最高表达基因](../_static/pbmc3k/highest_expr_genes.png)
+![最高表达基因](../../_static/pbmc3k/highest_expr_genes.png)
 
 每个基因的箱线图显示它在各细胞中占总 counts 的百分比。如果前 1–2 个基因占比显著高于其他（比如占了 30% 以上），可能存在核糖体 RNA 污染等技术偏差。
 
@@ -67,7 +67,7 @@ sap.pl.violin_qc_metrics(
 )
 ```
 
-![QC 小提琴图](../_static/pbmc3k/violin_qc_metrics.png)
+![QC 小提琴图](../../_static/pbmc3k/violin_qc_metrics.png)
 
 - `n_genes_by_counts`：每个细胞检测到的基因数。典型 PBMC 中位数约 500–1500，低于 200 说明数据质量可能有问题。
 - `cell_total_counts`：每个细胞的总 UMI 数，分布应有明显峰值，没有极端高值尾巴。
@@ -79,7 +79,7 @@ sap.pl.violin_qc_metrics(
 sap.pl.scatter_qc_metrics(atlas, sample_n=50000)
 ```
 
-![QC 散点图](../_static/pbmc3k/scatter_qc_metrics.png)
+![QC 散点图](../../_static/pbmc3k/scatter_qc_metrics.png)
 
 - 左图 `cell_total_counts` vs `pct_counts_mt`：如果线粒体比例随 counts 降低而升高，说明低测序深度细胞倾向于受损，属正常现象，但要确认过滤阈值合理。
 - 右图 `cell_total_counts` vs `n_genes_by_counts`：应为正相关。如果 counts 高但基因数很低，可能是技术噪音。
@@ -132,7 +132,7 @@ sap.pp.highly_variable_genes_seurat(atlas, n_top_genes=2000)
 sap.pl.highly_variable_genes(atlas, flavor="seurat")
 ```
 
-![高变基因图](../_static/pbmc3k/highly_variable_genes.png)
+![高变基因图](../../_static/pbmc3k/highly_variable_genes.png)
 
 高变基因（橙色高亮）应该在中等表达量区域集中出现。如果高变基因全部集中在极高表达量区域（最右侧），说明可能在原始 counts 空间做了选择，应该先标准化。如果调整了 `n_top_genes`，可以用此图确认选择范围是否合理。
 

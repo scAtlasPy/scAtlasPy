@@ -127,6 +127,8 @@ sap.pl.highest_expr_genes(
 | `show_outliers=False` | 是否绘制离群点，大数据建议关闭 |
 | `sample_cells` | 大数据可抽样（如 `sample_cells=100000`），避免全量 dense grid OOM |
 
+![最高表达基因](../../_static/pbmc3k/highest_expr_genes.png)
+
 ### QC 指标小提琴图
 
 ```python
@@ -152,6 +154,8 @@ sap.pl.violin_qc_metrics(
 | `sample_n=50000` | 抽样细胞数，小提琴图不需要全量 |
 | `use_filtered=True` | 设为 True 只画通过 `filter_cells` 的细胞 |
 | `multi_panel=True` | True 为并排面板，False 为上下堆叠 |
+
+![QC 小提琴图](../../_static/pbmc3k/violin_qc_metrics.png)
 
 ### QC 指标散点图
 
@@ -180,6 +184,8 @@ sap.pl.scatter_qc_metrics(
     sample_n=50000,
 )
 ```
+
+![QC 散点图](../../_static/pbmc3k/scatter_qc_metrics.png)
 
 ---
 
@@ -216,6 +222,8 @@ sap.pl.highly_variable_genes(atlas, flavor="var")
 `sap.pl.highly_variable_genes()` 是画图函数，从 `var` 表中读取已有结果进行绘制。
 ```
 
+![高变基因图](../../_static/pbmc3k/highly_variable_genes.png)
+
 ---
 
 ## PCA 图
@@ -245,6 +253,10 @@ sap.pl.pca_variance_ratio(atlas, n_pcs=50, save=".pdf")
 sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=50, save="my_pca_cum.png")
 ```
 
+![PCA 方差解释率](../../_static/pbmc3k/pca_variance_ratio.png)
+
+![PCA 累计方差解释率](../../_static/pbmc3k/pca_variance_ratio_cumsum.png)
+
 ### PCA 散点图
 
 ```python
@@ -273,6 +285,8 @@ plot_df = sap.pl.pca(atlas, color="kmeans", return_df=True)
 | `"right_margin"` | 图例在右侧（默认），适合类别数适中 |
 | `"on_data"` | 标签直接标在各类别的中位数位置，适合类别较多 |
 | `None` | 不显示图例 |
+
+![PCA 散点图（按 KMeans 上色）](../../_static/pbmc3k/pca.png)
 
 ---
 
@@ -314,6 +328,8 @@ sap.pl.umap(atlas, color="kmeans", legend_loc="right_margin")
 sap.pl.umap(atlas, color="kmeans", legend_loc="on_data")
 ```
 
+![UMAP（KMeans）](../../_static/pbmc3k/umap_kmeans.png)
+
 ### 按基因表达上色
 
 ```python
@@ -341,6 +357,8 @@ sap.pl.umap(
 - 多个基因时放在一起对比，确认每个基因的高表达区域是否对应预期的细胞类型。
 
 **`ncols` 参数**：控制每行放几个子图。基因较多时建议 `ncols=3` 或 `ncols=4`。
+
+![UMAP（CST3 基因表达）](../../_static/pbmc3k/umap_gene_CST3.png)
 
 ### 混合模式
 
