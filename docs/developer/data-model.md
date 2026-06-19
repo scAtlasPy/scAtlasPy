@@ -18,14 +18,14 @@ scAtlasPy 把单细胞数据保存在 DuckDB 数据库中，文件后缀为 `.sa
 
 `obs` 表保存细胞信息，通常包含：
 
-- `atlas_cell_id`：平台内部使用的细胞 ID。
-- `atlas_cell_name`：原始细胞名。
+- `atlas_cell_id`：平台内部自动生成的细胞 ID。
+- `atlas_cell_name`：提取自原始 AnnData 的 `obs.index`（即细胞条形码/名称）。
 - 用户自己的 metadata 列，例如样本、批次、分组、细胞类型。
 
 `var` 表保存基因信息，通常包含：
 
-- `atlas_gene_id`：平台内部使用的基因 ID。
-- `atlas_gene_name`：原始基因名。
+- `atlas_gene_id`：平台内部自动生成的基因 ID。
+- `atlas_gene_name`：提取自原始 AnnData 的 `var.index`（即基因符号/名称）。
 - 用户自己的 gene metadata 列。
 
 ## 表达矩阵
@@ -34,7 +34,7 @@ scAtlasPy 把单细胞数据保存在 DuckDB 数据库中，文件后缀为 `.sa
 
 - `data`：导入时保存的表达值。
 - `data_normalize`：标准化后的表达值。
-- `data_log1p`：标准化并 log 转换后的表达值。
+- `data_log1p`：标准化并 log 转换后的表达值（默认以 $e$ 为底，即 `ln(1+x)`）。
 - `data_scale`：scale 后的表达值。
 - `data_sqrt`：平方根转换后的表达值。
 
@@ -49,4 +49,3 @@ scAtlasPy 把单细胞数据保存在 DuckDB 数据库中，文件后缀为 `.sa
 ```
 
 这个值通常不是 0。scAtlasPy 把它保存在 `var.zero_scale_transform`，这样在重建 dense batch 时，可以正确填充那些原本没有存储的 0 表达位置。
-

@@ -8,7 +8,7 @@
 - DuckDB `PRAGMA threads`：控制数据库查询线程数。
 - h5ad 导入的 `batch_size`：每次读取多少细胞。
 - 大 h5ad 导入的 `mega_batch_factor`：控制更大读取块的组合方式。
-- `filter_build_index()` 的 `cell_condition`、`gene_condition`、`use_hvg`、`select_data`：控制使用哪些细胞、哪些基因和哪个表达字段构建过滤矩阵，直接影响后续 PCA 和 minibatch 读取的数据规模。
+- `build_read_index()` 的 `cell_condition`、`gene_condition`、`use_hvg`、`use_data`：控制使用哪些细胞、哪些基因和哪个表达字段构建过滤矩阵，直接影响后续 PCA 和 minibatch 读取的数据规模。
 - `minibatch_dense()` 的 `batch_size`、`buffer_batch_num`、`max_batches`：`batch_size` 影响单批内存占用和吞吐，`buffer_batch_num` 影响 multi-pass 下随机化程度，`max_batches` 控制总输出 batch 数上限。
 - PCA / KMeans 的 `fit_batches`：控制训练时读取多少批数据。
 - UMAP 的 `fit_sample_n`、`transform_batch_size`：控制拟合样本量和分批 transform 大小。

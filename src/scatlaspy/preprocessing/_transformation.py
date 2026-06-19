@@ -658,7 +658,7 @@ def expm1(
 #   data_exp1	     对表达值进行 log(1+x) 转换 的 还原
 
 
-''' normalize_and_log1p： normalize 法 4 + log1p 法 2 ===='''
+''' normalize_and_log1p ===='''
 def normalize_and_log1p(
             atlas: Atlas,
             target_sum: Optional[float] = 10000,

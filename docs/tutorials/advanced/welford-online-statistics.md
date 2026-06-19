@@ -1,8 +1,8 @@
 # Welford 在线统计算法
 
-本页说明如何用单次遍历（single-pass）计算每个基因的均值和方差。本页也包含 `get_minibatch_dense` 的底层机制说明和关键参数，这些知识适用于所有单次遍历案例。
+本页说明如何用单次遍历（single-pass）计算每个基因的均值和方差。
 
-面向希望把自己的算法接入 scAtlasPy 的开发者。
+> 底层实现细节（生产者-消费者-RingBuffer 流程、速度信息解读等）见 {doc}`../../developer/minibatch-architecture`。
 
 ## 开始前需要完成
 
@@ -20,17 +20,6 @@ atlas.build_read_index(
     use_data="data_scale",
 )
 ```
-
-## 底层机制简述
-
-了解底层有助于写出高效代码。`get_minibatch_dense` 在 single-pass 模式下的工作流程：
-
-1. **10 个生产者线程**按 `tid` 分片并行从 DuckDB 读取 `X_HyS_data_filtered` 表
-2. **1 个消费者线程**从共享队列取出数据，通过 RingBuffer 按序组装成 CSR，再转为 dense 宽表
-3. 宽表中隐式零值（某细胞未表达某基因）用 `var.zero_scale_transform` 填充
-4. 最后通过 `out_queue` 将 batch 逐个 yield 给调用者
-
-关键点：**每个 batch 只读一遍，按细胞顺序输出**。不涉及随机打乱。
 
 ## 基础用法
 
@@ -124,17 +113,6 @@ print(f"Std range:  [{std.min():.4f}, {std.max():.4f}]")
 **为什么用 float64**：长期累加的在线统计算法对精度敏感。初始数据是 float32，转 float64 避免累积误差。
 
 ## 性能与调试
-
-### 输出速度
-
-minibatch 系统每输出若干个 batch 会在控制台打印速度信息：
-
-```
-[Speed] output_batches=5, [ current=2.35 batch/s, 4812 cells/s, ][ avg=2.41 batch/s, 4935 cells/s ]
-```
-
-- `current`：最近一个 batch 的瞬时速度
-- `avg`：自开始以来的平均速度
 
 ### 常见问题
 

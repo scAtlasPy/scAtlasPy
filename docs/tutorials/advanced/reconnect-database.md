@@ -60,7 +60,7 @@ atlas.connect("r+")
 | 只导入了数据，无 QC | 从 {doc}`../basic/quality-control-preprocessing` 开始 |
 | 已完成 QC 和标准化，无 PCA | 运行 `build_read_index()` → `sap.tl.pca()` |
 | 已完成 PCA，无聚类 | 运行 `sap.tl.kmeans()` → `sap.tl.umap()` |
-| 已完成全部分析 | 直接画图 {doc}`qc-plots` 或导出 {doc}`../../how-to/export-to-other-platforms` |
+| 已完成全部分析 | 直接画图 {doc}`plot-parameter-guide` 或导出 {doc}`../../how-to/export-to-other-platforms` |
 
 ## 在已有数据库基础上补充分析
 
@@ -73,7 +73,7 @@ atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
-    use_data="data_scale",
+    use_data="data_log1p",
 )
 
 # 补充 PCA
@@ -94,6 +94,6 @@ atlas.close()
 
 ## 下一步
 
-- 继续画图分析：{doc}`qc-plots`
+- 继续画图分析：{doc}`plot-parameter-guide`
 - 导出结果到其他平台：{doc}`../../how-to/export-to-other-platforms`
 - 用 SQL 查询结果：{doc}`sql-query-cases`

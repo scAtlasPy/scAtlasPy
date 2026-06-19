@@ -165,7 +165,7 @@ class ShuffleBuffer:
         数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -339,6 +339,7 @@ class MultiThreadedMinibatchFetcher:
         self.batch_size = batch_size
         self.producer_num = 10  # 线程数量
         self.gene_num = self._get_gene_num()  # 获取基因数量
+        self.index_data = self._get_index_data()  # 从数据库读取 build_read_index(use_data=...) 保存的信息 “data_log1p”或者“data_scale”等等
         self.zero_scale_transform = self._get_zero_scale_transform()
         # 获取 var 表的 zero_scale_transform ，就是每个基因的 ( 0 - g.mean) / g.std
 
@@ -378,36 +379,79 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _get_zero_scale_transform(self):
-        """获取数据库或对象中的内部信息。
+        """获取 dense 矩阵中稀疏 0 位点的填充值。
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        如果当前 build_read_index 使用的是 data_scale，
+        说明数据已经 scale，稀疏矩阵中原来的 0 值需要填成
+        var.zero_scale_transform。
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        当前实现中会访问或生成的关键表包括：``var``。
-
-        Returns
-        -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        如果当前使用的是 data、data_normalize、data_log1p 等未 scale 数据，
+        稀疏矩阵中原来的 0 位点应该填成 0.0。
         """
+
+        logger.info(
+            f"[Minibatch] index_data = {self.index_data!r}; "
+        )
+
+        # 只有 data_scale 才需要读取 zero_scale_transform
+        if self.index_data != "data_scale":
+            logger.info(
+                f"[Minibatch] read index use_data={self.index_data!r}; "
+                "use 0.0 as dense fill value."
+            )
+            return np.zeros(self.gene_num, dtype=np.float32)
+
         conn = duckdb.connect(self.file_path)
 
-        arr = conn.execute("""
-            SELECT zero_scale_transform
-            FROM var
-            WHERE filter_gene_id IS NOT NULL
-            ORDER BY filter_gene_id
-        """).fetchnumpy()["zero_scale_transform"]
+        try:
+            # 新增：即使是 data_scale，也先检查字段是否存在
+            var_columns = conn.execute("PRAGMA table_info('var')").fetchdf()["name"].tolist()
 
-        conn.close()
-        return arr.astype("float32")
+            if "zero_scale_transform" not in var_columns:
+                logger.info(
+                    "[Minibatch] read index use_data='data_scale', "
+                    "but var.zero_scale_transform not found; "
+                    "use 0.0 as dense fill value."
+                )
+                return np.zeros(self.gene_num, dtype=np.float32)
+
+            arr = conn.execute("""
+                   SELECT zero_scale_transform
+                   FROM var
+                   WHERE filter_gene_id IS NOT NULL
+                   ORDER BY filter_gene_id
+               """).fetchnumpy()["zero_scale_transform"]
+
+            return arr.astype("float32")
+
+        finally:
+            conn.close()
+
+
+    def _get_index_data(self) -> str | None:
+        """从数据库读取当前 read index 使用的表达值字段。"""
+
+        conn = duckdb.connect(self.file_path)
+
+        try:
+            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+
+            if "atlas_read_index_meta" not in tables:
+                return None
+
+            row = conn.execute("""
+                SELECT value
+                FROM atlas_read_index_meta
+                WHERE key = 'use_data'
+            """).fetchone()
+
+            if row is None:
+                return None
+
+            return row[0]
+
+        finally:
+            conn.close()
 
 
     def _get_gene_num(self):
@@ -786,6 +830,7 @@ class MultiThreadedMinibatchFetcher:
                     X_dense = np.empty((current_batch_cells, self.gene_num), dtype=np.float32)
                     X_dense[:] = self.zero_scale_transform  # 按 gene_id 填充，self.zero_scale_transform
                     #  zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
+                    # 如果没有运行过 scale()，说明当前数据仍然是 normalize/log1p 等未中心化数据，则 self.zero_scale_transform 为全0填充
                     # X_dense =
                     # [ 填充每个基因的 zero_scale_transform
                     #  [-0.5, 0.2, -1.1, ...],

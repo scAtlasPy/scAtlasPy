@@ -50,4 +50,4 @@ print(f"Covariance matrix shape: {cov_matrix.shape}")
 
 ## 下一步
 
-继续阅读 {doc}`collect-full-matrix` 了解如何收集所有 batch 做一次性分析。
+继续阅读 {doc}`model-full-prediction` 了解如何收集所有 batch 做一次性分析。

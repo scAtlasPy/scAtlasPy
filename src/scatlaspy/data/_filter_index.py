@@ -27,7 +27,8 @@ class FilterIndexBuilder:
     use_hvg
         是否在基因过滤条件之外继续限制为高变基因。
     use_data
-        用于构建过滤表达矩阵的表达值列或数据层名称。
+    从 ``X_HyS_data`` 表中读取的表达值列名，例如 ``"data"``、
+    ``"data_normalize"``、``"data_log1p"`` 或 ``"data_scale"``。
 
     Notes
     -----
@@ -66,35 +67,33 @@ class FilterIndexBuilder:
         use_hvg: bool = True,
         use_data: str = "data_log1p",
     ):
-        """初始化对象。
+        """初始化过滤索引构建器。
 
-        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
-
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        该构造函数保存 Atlas 数据库路径、过滤条件、HVG 设置和表达值列名，
+        并建立一个新的 DuckDB 连接。实际的索引重建流程由 ``run()`` 执行。
 
         Parameters
         ----------
         file_path
-            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+            Atlas ``.sasql`` 数据库文件路径。
 
         cell_condition
-            ``obs`` 中用于筛选细胞的布尔列名或条件。
+            ``obs`` 表中用于筛选细胞的布尔列名。为 ``None`` 时保留全部细胞。
 
         gene_condition
-            ``var`` 中用于筛选基因的布尔列名或条件。
+            ``var`` 表中用于筛选基因的布尔列名。为 ``None`` 时保留全部基因。
 
         use_hvg
-            是否只处理高变基因。
+            是否在基因过滤条件之外继续叠加 ``highly_variable_genes=TRUE``。
 
         use_data
-            从 ``X_HyS_data`` 中读取的表达字段。
+            从 ``X_HyS_data`` 表中读取的表达值列名。
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        该类通常由 ``Atlas.build_read_index(...)`` 调用，普通用户一般不需要直接实例化。
         """
+
         self.file_path = fspath(file_path)       # sasql 文件绝对路径
         self.producer_num = 10           # minibatch 流式读取的线程数
         self.fetch_size = 1_0000_0000    # minibatch 流式读取的size
@@ -114,21 +113,21 @@ class FilterIndexBuilder:
     # 外部入口
     def run(self):
 
-        """执行 ``run`` 的核心功能。
+        """执行完整的读取索引构建流程。
 
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+        该方法依次完成：
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+        1. 重建 ``obs.filter_cell_id``
+        2. 重建 ``var.filter_gene_id``
+        3. 构建过滤后的表达矩阵表 ``X_HyS_data_filtered``
+        4. 构建过滤后的 indptr 表 ``X_HyS_indptr_filtered``
 
-        整体用法和 Scanpy 中相近的 ``sap.run`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        执行完成后会关闭当前 DuckDB 连接。
 
-        当前实现中会访问或生成的关键表包括：``obs``、``var``。
-
-        Examples
-        --------
-        调用该函数：::
-
-            sap.run(...)
+        Returns
+        -------
+        None
+            结果直接写入 Atlas ``.sasql`` 数据库。
         """
 
         start = datetime.now()
@@ -148,19 +147,18 @@ class FilterIndexBuilder:
     # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
     def _rebuild_obs_filter_id(self):
 
-        """执行 ``_rebuild_obs_filter_id`` 的核心功能。
+        """重建 ``obs.filter_cell_id``。
 
-        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+        该方法先删除旧的 ``filter_cell_id`` 列，再重新创建该列。
+        随后根据 ``cell_condition`` 选择需要保留的细胞，并按 ``atlas_cell_id``
+        顺序生成从 0 开始的连续 ``filter_cell_id``。
 
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+        未通过过滤条件的细胞，其 ``filter_cell_id`` 保持为 ``NULL``。
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        当前实现中会访问或生成的关键表包括：``obs``。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        Returns
+        -------
+        None
+            结果直接写入 ``obs`` 表。
         """
 
         # 删除旧列
@@ -195,19 +193,23 @@ class FilterIndexBuilder:
     # 2.重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
     def _rebuild_var_filter_id(self):
 
-        """执行 ``_rebuild_var_filter_id`` 的核心功能。
+        """重建 ``var.filter_gene_id``。
 
-        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+        该方法先删除旧的 ``filter_gene_id`` 列，再重新创建该列。
+        随后根据 ``gene_condition`` 和 ``use_hvg`` 选择需要保留的基因，
+        并按 ``atlas_gene_id`` 顺序生成从 0 开始的连续 ``filter_gene_id``。
 
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+        当 ``use_hvg=True`` 时，基因需要同时满足：
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        - ``gene_condition=TRUE``
+        - ``highly_variable_genes=TRUE``
 
-        当前实现中会访问或生成的关键表包括：``var``。
+        未通过过滤条件的基因，其 ``filter_gene_id`` 保持为 ``NULL``。
 
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        Returns
+        -------
+        None
+            结果直接写入 ``var`` 表。
         """
 
         # 删除旧列 + 新增列
@@ -251,19 +253,25 @@ class FilterIndexBuilder:
     # 3.重建新表：X_HyS_data_filtered
     def _rebuild_x_hys_data_filtered(self):
 
-        """执行 ``_rebuild_x_hys_data_filtered`` 的核心功能。
+        """构建过滤后的表达矩阵表 ``X_HyS_data_filtered``。
 
-        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+        该方法从原始 ``X_HyS_data`` 表中读取表达记录，并通过
+        ``obs.filter_cell_id`` 和 ``var.filter_gene_id`` 只保留通过过滤的细胞和基因。
 
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+        输出表包含：
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        - ``filter_cell_id``：过滤后的连续细胞索引
+        - ``filter_gene_id``：过滤后的连续基因索引
+        - ``data``：由 ``use_data`` 指定的表达值列
+        - ``tid``：用于后续 minibatch 流式读取的分片编号
 
-        当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_data_filtered``、``obs``、``var``。
+        实现上会先创建 ``_obs_keep`` 和 ``_var_keep`` 临时映射表，
+        然后按 ``X_HyS_data.rowid`` 分块扫描和插入，避免一次性处理过大的表达矩阵。
 
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        Returns
+        -------
+        None
+            结果直接写入 ``X_HyS_data_filtered`` 表。
         """
 
         conn = self.conn
@@ -379,19 +387,22 @@ class FilterIndexBuilder:
 
     # 4.重建新表：X_HyS_indptr_filtered
     def _rebuild_x_hys_indptr_filtered(self):
-        """执行 ``_rebuild_x_hys_indptr_filtered`` 的核心功能。
+        """构建过滤后的 CSR-like indptr 表 ``X_HyS_indptr_filtered``。
 
-        该内部函数属于过滤索引模块，用于支撑同一模块中的公共 API。
+        该方法统计 ``X_HyS_data_filtered`` 中每个 ``filter_cell_id`` 的非零元素数量，
+        并从 ``obs`` 表出发补齐所有保留下来的细胞。即使某些细胞没有任何非零表达值，
+        也会在 indptr 表中保留对应记录。
 
-        根据 ``obs``、``var`` 中的过滤标记重建连续 cell/gene 索引，并生成过滤后的 HyS 表。
+        最终生成的 ``indptr`` 表示每个细胞的累计结束位置，即 end pointer：
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        - 第 0 个细胞的起始位置默认为 0
+        - 第 i 个细胞的结束位置为 ``indptr[i]``
+        - 第 i 个细胞的起始位置需要由前一个细胞的 ``indptr[i-1]`` 得到
 
-        当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``、``X_HyS_indptr_filtered``、``obs``。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        Returns
+        -------
+        None
+            结果直接写入 ``X_HyS_indptr_filtered`` 表。
         """
 
         conn = self.conn
