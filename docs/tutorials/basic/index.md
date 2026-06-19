@@ -23,6 +23,12 @@ QC 指标、过滤细胞和基因、标准化、log1p、高变基因、scale 和
 PCA 降维、KMeans 聚类、UMAP 可视化、marker gene 排名和自动细胞类型注释。
 :::
 
+:::{grid-item-card} Notebook Output Example
+:link: notebook-output-example
+:link-type: doc
+Render a Jupyter notebook with executed code, tables, and figures.
+:::
+
 ::::
 
 ```{toctree}
@@ -32,4 +38,5 @@ PCA 降维、KMeans 聚类、UMAP 可视化、marker gene 排名和自动细胞�
 preparing-data
 quality-control-preprocessing
 clustering-cell-type-annotation
+notebook-output-example
 ```

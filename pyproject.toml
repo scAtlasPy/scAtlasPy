@@ -36,17 +36,13 @@ test = [
 docs = [
     "sphinx>=7",
     "myst-parser",
+    "myst-nb",
     "sphinx-copybutton",
     "sphinx-design",
     "sphinx-autodoc-typehints",
     "sphinx-book-theme",
     "numpydoc",
 ]
-
-ml = [
-    "torch",
-]
-
 
 [tool.setuptools.packages.find]
 where = ["src"]

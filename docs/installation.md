@@ -1,104 +1,176 @@
 # Installation
 
-本页说明如何安装配置 scAtlasPy，并确认当前环境可以完整运行。下面的命令假设你已经拿到了项目代码，并且当前目录记为 `<repo>`。
+scAtlasPy requires Python 3.10 or later. It can be added to an existing
+single-cell analysis environment or installed in a new environment created for
+an analysis project.
 
+## Install scAtlasPy
 
-## 环境要求
-
-推荐使用 Python 3.10 或更高版本。当前源码包的运行依赖在仓库根目录的 `pyproject.toml` 中声明，主要包括：
-
-- `duckdb`：保存和查询 Atlas 数据库。
-- `scanpy`、`anndata`：读取和导出常见单细胞数据格式。
-- `numpy`、`pandas`、`scipy`、`scikit-learn`：矩阵计算、表格处理和机器学习。
-- `matplotlib`、`umap-learn`：可视化和 UMAP。
-
-
-## 安装运行依赖
-
-进入仓库根目录：
+Activate the Python environment used for your project, then install the latest
+stable release from PyPI:
 
 ```bash
-cd <repo>
+pip install scatlaspy
 ```
 
-以 editable mode 安装当前源码包和运行依赖：
+Required runtime dependencies are installed automatically.
+
+To upgrade an existing installation:
 
 ```bash
-python -m pip install -e .
+pip install --upgrade scatlaspy
 ```
 
-editable mode 会让 Python 直接使用 `src/scatlaspy/` 中的源码。修改源码后通常不需要重新安装。
+```{note}
+Before the first public PyPI release, install the current version from GitHub as
+described in {ref}`install-from-source`.
+```
 
-如果你只是临时运行源码而不安装包，也可以手动设置 `PYTHONPATH`：
+## Verify the Installation
+
+Start Python and import scAtlasPy:
+
+```python
+import scatlaspy as sap
+
+print(sap.__version__)
+```
+
+The installed version should be printed without an import error.
+
+## Create a New Project Environment
+
+Skip this section when you already have a suitable Python environment for your
+analysis project.
+
+A project environment provides control over package versions while allowing
+scAtlasPy and the other analysis, visualization, and machine-learning tools used
+in the same workflow to be installed together.
+
+For conda or mamba:
 
 ```bash
-export PYTHONPATH=$PWD/src:$PYTHONPATH
+conda create -n atlas-project python=3.11 pip
+conda activate atlas-project
+pip install --upgrade pip
+pip install scatlaspy
 ```
 
-如果你不在仓库根目录，也可以写成绝对路径：
+Replace `conda` with `mamba` when using Mamba.
+
+For Python's built-in `venv`:
 
 ```bash
-export PYTHONPATH=<repo>/src:$PYTHONPATH
+python -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install scatlaspy
 ```
 
-## 检查环境
+## Optional Dependencies
 
-先确认 `scatlaspy` 可以导入：
+The standard installation includes the dependencies required for core
+scAtlasPy workflows. Some computational methods may require additional
+frameworks that are not installed automatically.
+
+For example, machine-learning workflows may require PyTorch. Install such
+frameworks according to the requirements of the corresponding workflow and your
+computing environment. GPU-enabled packages should be selected to match the
+available hardware and CUDA configuration.
+
+The documentation for each optional workflow identifies any additional
+dependencies that are required.
+
+(install-from-source)=
+## Install from Source
+
+Install the current development version directly from GitHub to use features
+that have not yet been included in a stable release:
 
 ```bash
-python -c "import scatlaspy as sap; print(sap.Atlas)"
+pip install "scatlaspy @ git+https://github.com/GaoLab-XDU/scAtlasPy.git"
 ```
 
-如果命令能正常输出 `sap.Atlas`，说明包已经可以被当前 Python 环境找到。
+To modify scAtlasPy itself, clone the repository and install it in editable
+mode:
 
-## 可选：用 PBMC3k 流程测试安装环境
-
-PBMC3k 是一个常用的单细胞 RNA-seq 入门数据集，包含约 3,000 个外周血单个核细胞。PBMC 中通常能看到 T 细胞、B 细胞、NK 细胞、单核细胞等免疫细胞类型，因此它经常被用来测试与演示单细胞数据的质控、标准化、降维和聚类流程。
-
-此处用于确认 scAtlasPy 是否可以在当前环境中正常运行。完成后，通常会得到一个 scAtlasPy 数据库文件和一个从数据库导出的 h5ad 文件。
-
-你可以在 Python 脚本或 notebook 中运行一个小型 PBMC3k 流程，确认 scAtlasPy 可以创建 Atlas 数据库、导入 h5ad、执行 QC 和导出结果。运行过程中可以打印类似日志：
-
-```text
-[quickstart] load Scanpy PBMC3k dataset
-[quickstart] create Atlas database
-[quickstart] import h5ad into Atlas
-[quickstart] calculate QC metrics
-[quickstart] filter cells and genes
-[quickstart] normalize and log1p
-[quickstart] find highly variable genes
-[quickstart] scale
-[quickstart] export h5ad: data/quickstart_out.h5ad
-[quickstart] done
+```bash
+git clone https://github.com/GaoLab-XDU/scAtlasPy.git
+cd scAtlasPy
+pip install -e .
 ```
 
-看到 `[quickstart] done` 表示示例流程已经完整跑完。
+Editable mode makes the active environment import scAtlasPy directly from the
+source tree. Changes to Python source files are therefore available without
+reinstalling the package.
 
-示例流程通常会在当前目录创建：
+Install the additional dependencies required for testing or documentation
+development with:
 
-```text
-data/quickstart_pbmc3k.h5ad
-data/quickstart_demo.sasql
-data/quickstart_out.h5ad
+```bash
+pip install -e ".[test]"
+pip install -e ".[docs]"
 ```
 
-其中：
+The dependency groups can also be installed together:
 
-- `quickstart_pbmc3k.h5ad` 是示例输入数据。
-- `quickstart_demo.sasql` 是 scAtlasPy 保存分析结果的 Atlas 数据库。
-- `quickstart_out.h5ad` 是从 Atlas 数据库导出的 h5ad 文件。
-
-```{warning}
-如果你的示例脚本会删除同名的 `data/quickstart_demo.sasql` 后重新创建数据库，请确认该文件不是你需要保留的分析结果。
+```bash
+pip install -e ".[test,docs]"
 ```
 
+Instructions for running the test suite and building the documentation are
+provided in the contributor documentation.
 
-## 下一步
+## Troubleshooting
 
-如果安装或 quickstart 运行失败，优先检查依赖是否安装完整、包是否通过 `python -m pip install -e .` 安装到当前环境，或者 `PYTHONPATH` 是否指向 `<repo>/src`。
+### `scatlaspy` cannot be imported
 
-- 将你的数据集文件写入 Atlas 数据库，阅读 {doc}`tutorials/basic/preparing-data`。
-- 继续完成标准单细胞流程：{doc}`tutorials/basic/quality-control-preprocessing` → {doc}`tutorials/basic/clustering-cell-type-annotation`。
-- 学习如何画 QC、HVG、PCA、UMAP 和 marker gene 图：{doc}`tutorials/advanced/qc-plots`。
-- 数据集太大时，在导入教程中选择流式导入：{doc}`tutorials/basic/preparing-data`。
-- 已经熟悉 Scanpy 的用户，查看迁移对照：{doc}`how-to/migrate-from-other-platforms`。
+Confirm that scAtlasPy is installed in the environment used to run the
+analysis:
+
+```bash
+pip show scatlaspy
+python -c "import sys; print(sys.executable)"
+```
+
+When multiple Python installations are available, invoke `pip` through the
+intended interpreter:
+
+```bash
+python -m pip install scatlaspy
+```
+
+This ensures that scAtlasPy is installed for that Python interpreter.
+
+### No matching distribution is available
+
+Check the Python version:
+
+```bash
+python --version
+```
+
+scAtlasPy requires Python 3.10 or later. Updating `pip` may also resolve package
+discovery or compatibility problems:
+
+```bash
+pip install --upgrade pip
+pip install scatlaspy
+```
+
+Before the first public PyPI release, install scAtlasPy directly from GitHub:
+
+```bash
+pip install "scatlaspy @ git+https://github.com/GaoLab-XDU/scAtlasPy.git"
+```
+
+## Next Steps
+
+After installing scAtlasPy:
+
+- Follow the {doc}`tutorials/index` to run a complete analysis workflow.
+- Prepare an atlas from your own data with
+  {doc}`tutorials/basic/preparing-data`.
+- Learn how scAtlasPy organizes and accesses atlas-scale data in
+  {doc}`developer/data-model`.
+- Explore the {doc}`api/index` for available classes and analysis functions.

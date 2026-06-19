@@ -18,7 +18,7 @@ release = "0.1.0"
 version = release
 
 extensions = [
-    "myst_parser",
+    "myst_nb",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
@@ -46,10 +46,11 @@ except Exception:
 
 source_suffix = {
     ".rst": "restructuredtext",
-    ".md": "markdown",
+    ".md": "myst-nb",
+    ".ipynb": "myst-nb",
 }
 master_doc = "index"
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "index_structure.md"]
+exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "structure"]
 
 myst_enable_extensions = [
     "colon_fence",
@@ -58,6 +59,9 @@ myst_enable_extensions = [
     "amsmath",
 ]
 myst_heading_anchors = 3
+nb_execution_mode = "off"
+nb_execution_timeout = 120
+nb_output_stderr = "remove"
 
 html_theme = "sphinx_book_theme"
 html_title = "A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits"

@@ -68,17 +68,15 @@ Install with documentation dependencies:
 pip install -e ".[docs]"
 ```
 
-Install with machine-learning dependencies:
-
-```bash
-pip install -e ".[ml]"
-```
-
 Install everything commonly needed for development:
 
 ```bash
-pip install -e ".[test,docs,ml]"
+pip install -e ".[test,docs]"
 ```
+
+Machine-learning workflows may require external packages such as PyTorch.
+Install those packages separately using the instructions appropriate for your
+operating system, hardware, and CUDA version.
 
 ## 5. Run Tests
 

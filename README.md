@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/_static/scAtlas_logo.svg" alt="scAtlasPy logo" width="320">
+  <img src="docs/_static/img/scAtlas_full_paths.svg" alt="scAtlasPy logo" width="320">
 </p>
 
 # scAtlasPy
