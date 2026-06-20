@@ -1,5 +1,5 @@
 from sklearn.cluster import MiniBatchKMeans
-from tqdm import tqdm
+from ..io import progress
 from ..data import Atlas
 import numpy as np
 import pandas as pd
@@ -247,7 +247,7 @@ class StreamingKMeans:
         batch_count = 0
 
         # minibatch kmeans 聚类 训练
-        for X_batch in tqdm(
+        for X_batch in progress(
                 atlas.get_minibatch_dense(
                     batch_size=self.batch_size,
                     pass_mode="multi-pass",
@@ -361,7 +361,7 @@ class StreamingKMeans:
         predict_batch_count = 0
 
         # 转换阶段 使用 single-pass
-        for X_batch in tqdm(
+        for X_batch in progress(
                 atlas.get_minibatch_dense(
                     batch_size=self.batch_size,
                     pass_mode="single-pass",

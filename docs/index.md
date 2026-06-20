@@ -119,6 +119,14 @@ Look up public classes and functions in `sap.io`, `sap.pp`, `sap.tl`, and
 `sap.pl`.
 :::
 
+:::{grid-item-card} FAQ
+:link: faq/index
+:link-type: doc
+
+Find concise explanations for common observations, parameter choices, and
+workflow differences from in-memory single-cell tools.
+:::
+
 :::{grid-item-card} Method Development
 :link: developer/index
 :link-type: doc
@@ -166,4 +174,11 @@ api/index
 developer/index
 release-notes/index
 references
+```
+
+```{toctree}
+:hidden:
+:maxdepth: 1
+
+faq/index
 ```

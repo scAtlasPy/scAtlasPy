@@ -1,3 +1,5 @@
+from ._progress import progress, set_progress
+
 from ._input import (
     load_anndata,
     gene_names_duplicated,

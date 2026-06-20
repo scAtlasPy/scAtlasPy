@@ -7,7 +7,7 @@ from typing import Optional
 import logging
 import math
 import gc
-from tqdm import tqdm
+from ..io import progress
 
 
 def _cleanup_qc_after_step(
@@ -184,7 +184,7 @@ def filter_cells(
     keep_total = 0
 
     # 4. 分块聚合 + 分块写回
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="filter_cells",
@@ -488,7 +488,7 @@ def calculate_cell_total_counts(
 
     # Step 2：分块聚合 + 分块写回
 
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="calculate_cell_total_counts",
@@ -787,7 +787,7 @@ def calculate_qc_metrics(
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     # cell-wise QC：分块处理
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="calculate_qc_metrics",

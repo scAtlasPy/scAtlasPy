@@ -6,6 +6,7 @@ from . import tools as tl
 from . import plots as pl
 
 from .data import Atlas, set_verbosity
+from .io import set_progress
 
 try:
     __version__ = version("scatlaspy")

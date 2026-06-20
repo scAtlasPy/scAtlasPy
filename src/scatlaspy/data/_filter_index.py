@@ -1,6 +1,6 @@
 import duckdb
 from os import PathLike, fspath
-from tqdm import tqdm
+from ..io import progress
 from datetime import datetime
 import logging
 
@@ -334,7 +334,7 @@ class FilterIndexBuilder:
         logger.debug(f"总扫描行数: {total_rows:,}")
         logger.debug(f"chunk_size = {self.chunk_size:,}")
 
-        pbar = tqdm(
+        pbar = progress(
             total=total_rows,
             unit="rows",
             desc="build_read_index",

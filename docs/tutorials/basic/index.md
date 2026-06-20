@@ -29,6 +29,12 @@ PCA 降维、KMeans 聚类、UMAP 可视化、marker gene 排名和自动细胞�
 Render a Jupyter notebook with executed code, tables, and figures.
 :::
 
+:::{grid-item-card} PBMC3K end-to-end workflow
+:link: pbmc3k-basic-workflow
+:link-type: doc
+Run a complete on-disk PBMC3K analysis from h5ad import through QC, preprocessing, PCA, clustering, UMAP, marker ranking, and manual annotation.
+:::
+
 ::::
 
 ```{toctree}
@@ -39,4 +45,5 @@ preparing-data
 quality-control-preprocessing
 clustering-cell-type-annotation
 notebook-output-example
+pbmc3k-basic-workflow
 ```

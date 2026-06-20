@@ -1,6 +1,6 @@
 from _duckdb import DuckDBPyConnection
 from ..data import Atlas
-from tqdm import tqdm
+from ..io import progress
 from typing import Literal
 from typing import Optional
 import logging
@@ -187,7 +187,7 @@ def normalize_total(
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     # 5. cell 分块：小 _cell_sum_chunk + 写入目标表
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="normalize_total",
@@ -344,7 +344,7 @@ def normalize_total_scale_factor(
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
     # 3. 分块计算 total + 写回 obs
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="normalize_total_scale_factor",
@@ -494,7 +494,7 @@ def log1p(
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
     # 4. 分块 UPDATE
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="log1p",
@@ -623,7 +623,7 @@ def expm1(
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
     # 4. 分块 UPDATE
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="expm1",
@@ -768,7 +768,7 @@ def normalize_and_log1p(
 
     # 5. 分块 UPDATE
     # cell-wise QC：分块处理
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="normalize_and_log1p",
@@ -1930,7 +1930,7 @@ def scale(
     done_chunks = 0
     update_start_all = datetime.now()
 
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="scale",
@@ -2095,7 +2095,7 @@ def sqrt(
 
     # 4. 分块 UPDATE
     # cell-wise QC：分块处理
-    pbar = tqdm(
+    pbar = progress(
         range(n_chunks),
         total=n_chunks,
         desc="sqrt",

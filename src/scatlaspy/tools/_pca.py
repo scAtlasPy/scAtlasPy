@@ -1,7 +1,7 @@
 from ..data import Atlas
 from sklearn.decomposition import IncrementalPCA
 import numpy as np
-from tqdm import tqdm
+from ..io import progress
 import pandas as pd
 import time
 import logging
@@ -379,7 +379,7 @@ class StreamingPCA:
 
         batch_count = 0
 
-        for X_batch in tqdm(
+        for X_batch in progress(
                 atlas.get_minibatch_dense(
                     pass_mode="multi-pass",
                     buffer_batch_num=self.buffer_batch_num,
@@ -462,7 +462,7 @@ class StreamingPCA:
 
         cell_offset = 0  # 关键：全局递增
 
-        for X_batch in tqdm(atlas.get_minibatch_dense(pass_mode="single-pass")):
+        for X_batch in progress(atlas.get_minibatch_dense(pass_mode="single-pass")):
 
             X_pca = self.ipca.transform(X_batch)
 

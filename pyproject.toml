@@ -42,6 +42,7 @@ docs = [
     "sphinx-autodoc-typehints",
     "sphinx-book-theme",
     "numpydoc",
+    "ipywidgets",
 ]
 
 [tool.setuptools.packages.find]

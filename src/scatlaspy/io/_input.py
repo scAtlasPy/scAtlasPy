@@ -13,7 +13,7 @@ import scanpy as sc
 from anndata import AnnData
 from os import PathLike
 from scipy import sparse
-from tqdm import tqdm
+from . import progress
 from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:   # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
     from ..data import Atlas
@@ -518,7 +518,7 @@ def _load_h5ad_list_random(
         processed_blocks = 0
         flush_counter = 0
 
-        pbar = tqdm(total=total_blocks, desc="load_h5ad")
+        pbar = progress(total=total_blocks, desc="load_h5ad")
 
         # 事务：多个 flush 共用事务
         conn.execute("BEGIN TRANSACTION")
@@ -782,7 +782,7 @@ def _load_h5ad_random(
 
     try:
         for block_i, block_start in enumerate(
-            tqdm(
+            progress(
                 block_starts,
                 desc="load_h5ad",
             )
@@ -1059,7 +1059,7 @@ def _load_h5ad_order(
 
     try:
         for mega_i, mega_start in enumerate(
-            tqdm(
+            progress(
                 range(0, n_cells, mega_batch_size),
                 desc="load_h5ad",
             )
@@ -3007,7 +3007,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         global_data_counter = np.int64(0)
         global_indptr_offset = np.int64(0)
 
-        for chunk_idx in tqdm(range(total_chunks), desc="load"):
+        for chunk_idx in progress(range(total_chunks), desc="load"):
             start = chunk_idx * chunk_size
             end = min(start + chunk_size, n_cells)
             size = end - start

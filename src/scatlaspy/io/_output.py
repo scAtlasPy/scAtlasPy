@@ -1,6 +1,6 @@
 from __future__ import annotations
 import h5py
-from tqdm import tqdm
+from . import progress
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -112,7 +112,7 @@ def write_h5ad(
 
         offset = 0
 
-        for start in tqdm(
+        for start in progress(
             range(0, nnz, batch_cells),
             desc="write_h5ad"
         ):

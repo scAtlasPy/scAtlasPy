@@ -1,7 +1,6 @@
 # testing related folders and files
 /bug_reproduce
 /scripts
-/tests
 /tmp
 /.coverage
 
