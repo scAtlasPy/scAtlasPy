@@ -57,7 +57,7 @@ atlas.connect("r+")
 
 | 当前状态 | 下一步 |
 |---|---|
-| 只导入了数据，无 QC | 从 {doc}`../basic/quality-control-preprocessing` 开始 |
+| 只导入了数据，无 QC | 从 {doc}`../basic/basic_exploration` 开始 |
 | 已完成 QC 和标准化，无 PCA | 运行 `build_read_index()` → `sap.tl.pca()` |
 | 已完成 PCA，无聚类 | 运行 `sap.tl.kmeans()` → `sap.tl.umap()` |
 | 已完成全部分析 | 直接画图 {doc}`plot-parameter-guide` 或导出 {doc}`../../how-to/export-to-other-platforms` |

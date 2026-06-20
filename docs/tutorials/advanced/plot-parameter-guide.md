@@ -127,7 +127,9 @@ sap.pl.highest_expr_genes(
 | `show_outliers=False` | 是否绘制离群点，大数据建议关闭 |
 | `sample_cells` | 大数据可抽样（如 `sample_cells=100000`），避免全量 dense grid OOM |
 
+<!-- TODO: Restore when the static example image is available.
 ![最高表达基因](../../_static/pbmc3k/highest_expr_genes.png)
+-->
 
 ### QC 指标小提琴图
 
@@ -155,7 +157,9 @@ sap.pl.violin_qc_metrics(
 | `use_filtered=True` | 设为 True 只画通过 `filter_cells` 的细胞 |
 | `multi_panel=True` | True 为并排面板，False 为上下堆叠 |
 
+<!-- TODO: Restore when the static example image is available.
 ![QC 小提琴图](../../_static/pbmc3k/violin_qc_metrics.png)
+-->
 
 ### QC 指标散点图
 
@@ -185,7 +189,9 @@ sap.pl.scatter_qc_metrics(
 )
 ```
 
+<!-- TODO: Restore when the static example image is available.
 ![QC 散点图](../../_static/pbmc3k/scatter_qc_metrics.png)
+-->
 
 ---
 
@@ -222,13 +228,15 @@ sap.pl.highly_variable_genes(atlas, flavor="var")
 `sap.pl.highly_variable_genes()` 是画图函数，从 `var` 表中读取已有结果进行绘制。
 ```
 
+<!-- TODO: Restore when the static example image is available.
 ![高变基因图](../../_static/pbmc3k/highly_variable_genes.png)
+-->
 
 ---
 
 ## PCA 图
 
-需要已完成 PCA 降维步骤（参考 {doc}`../basic/clustering-cell-type-annotation`）。
+需要已完成 PCA 降维步骤（参考 {doc}`../basic/basic_exploration`）。
 
 ### 方差解释率
 
@@ -253,9 +261,13 @@ sap.pl.pca_variance_ratio(atlas, n_pcs=50, save=".pdf")
 sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=50, save="my_pca_cum.png")
 ```
 
+<!-- TODO: Restore when the static example image is available.
 ![PCA 方差解释率](../../_static/pbmc3k/pca_variance_ratio.png)
+-->
 
+<!-- TODO: Restore when the static example image is available.
 ![PCA 累计方差解释率](../../_static/pbmc3k/pca_variance_ratio_cumsum.png)
+-->
 
 ### PCA 散点图
 
@@ -286,7 +298,9 @@ plot_df = sap.pl.pca(atlas, color="kmeans", return_df=True)
 | `"on_data"` | 标签直接标在各类别的中位数位置，适合类别较多 |
 | `None` | 不显示图例 |
 
+<!-- TODO: Restore when the static example image is available.
 ![PCA 散点图（按 KMeans 上色）](../../_static/pbmc3k/pca.png)
+-->
 
 ---
 
@@ -294,7 +308,7 @@ plot_df = sap.pl.pca(atlas, color="kmeans", return_df=True)
 
 UMAP 是 scAtlasPy 最核心的可视化工具。同一个函数可以根据 `color` 参数自动切换绘制模式。
 
-需要已完成 UMAP 降维步骤（参考 {doc}`../basic/clustering-cell-type-annotation`）。
+需要已完成 UMAP 降维步骤（参考 {doc}`../basic/basic_exploration`）。
 
 ### 按 obs 列上色
 
@@ -328,7 +342,9 @@ sap.pl.umap(atlas, color="kmeans", legend_loc="right_margin")
 sap.pl.umap(atlas, color="kmeans", legend_loc="on_data")
 ```
 
+<!-- TODO: Restore when the static example image is available.
 ![UMAP（KMeans）](../../_static/pbmc3k/umap_kmeans.png)
+-->
 
 ### 按基因表达上色
 
@@ -358,7 +374,9 @@ sap.pl.umap(
 
 **`ncols` 参数**：控制每行放几个子图。基因较多时建议 `ncols=3` 或 `ncols=4`。
 
+<!-- TODO: Restore when the static example image is available.
 ![UMAP（CST3 基因表达）](../../_static/pbmc3k/umap_gene_CST3.png)
+-->
 
 ### 混合模式
 

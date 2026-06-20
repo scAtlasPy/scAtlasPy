@@ -4,7 +4,7 @@
 
 ```{note}
 Scanpy 用 `sc.read_h5ad()` 一步把数据读入内存 AnnData；scAtlasPy 需要先创建 Atlas 数据库再导入，
-数据保存在 `.sasql` 文件中。具体导入方式的选择见 {doc}`../tutorials/basic/preparing-data`。
+数据保存在 `.sasql` 文件中。具体导入方式的选择见 {doc}`../tutorials/basic/import-data-from-multiple-formats`。
 ```
 
 scAtlasPy 适用于任意规模数据的导入、质控、标准化、降维和聚类。

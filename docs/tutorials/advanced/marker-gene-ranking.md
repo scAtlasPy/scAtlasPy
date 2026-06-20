@@ -2,9 +2,6 @@
 
 本页说明如何找到每个 cluster 的 marker gene，并用多种图形验证 marker 是否真的在该 cluster 高表达。
 
-## 开始前需要完成
-
-需要已完成聚类步骤（参考 {doc}`../basic/clustering-cell-type-annotation`）。
 
 ## 工作流程
 

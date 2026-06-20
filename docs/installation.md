@@ -170,7 +170,7 @@ After installing scAtlasPy:
 
 - Follow the {doc}`tutorials/index` to run a complete analysis workflow.
 - Prepare an atlas from your own data with
-  {doc}`tutorials/basic/preparing-data`.
+  {doc}`tutorials/basic/import-data-from-multiple-formats`.
 - Learn how scAtlasPy organizes and accesses atlas-scale data in
   {doc}`developer/data-model`.
 - Explore the {doc}`api/index` for available classes and analysis functions.

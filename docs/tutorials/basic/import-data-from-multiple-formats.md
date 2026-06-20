@@ -1,6 +1,6 @@
-# Preparing Data
+# Import Data from Multiple Formats
 
-本教程回答一个问题：怎样使用 `load_h5ad()` 创建新的 Atlas 数据库并导入 h5ad 数据。
+本教程介绍如何创建新的 Atlas 数据库，从 h5ad、多文件数据或其他 Scanpy 支持的格式导入数据，以及连接已有数据库继续分析。
 
 导入完成后，数据会保存为一个 `.sasql` 数据库文件。后续质控、过滤、标准化、降维、聚类和绘图都围绕这个 Atlas 数据库继续进行。
 
@@ -151,6 +151,6 @@ atlas.close()
 
 ## 下一步
 
-导入完成后，继续阅读 {doc}`quality-control-preprocessing`，完成质控、过滤和标准化。
+导入完成后，继续阅读 {doc}`basic_exploration`，查看从质控、过滤、标准化到降维、聚类和注释的完整流程。
 
 如果想重新连接已有数据库继续分析，参考 {doc}`../advanced/reconnect-database`。
