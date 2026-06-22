@@ -1,4 +1,4 @@
-# scAtlasPy
+# scAtlasPy (要检查所有占位的东西，比如占位的链接是否指向最终的公开地址！)
 
 **A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits**
 
@@ -135,12 +135,12 @@ Find concise explanations for common observations, parameter choices, and
 workflow differences from in-memory single-cell tools.
 :::
 
-:::{grid-item-card} Method Development
-:link: developer/index
+:::{grid-item-card} Architecture and Development
+:link: architecture-and-development/index
 :link-type: doc
 
-Use query-based data access and streaming minibatches to build computational
-methods that operate directly on atlas-scale datasets.
+Understand the atlas data model, streaming architecture, performance behavior,
+documentation workflow, and current implementation limits.
 :::
 
 :::{grid-item-card} Release Notes
@@ -167,9 +167,9 @@ standard single-cell workflows and custom methods through the same Python
 environment, allowing analysis code to operate directly on atlas-scale data
 under practical memory constraints.
 
-See {doc}`developer/data-model` for the atlas representation and
-{doc}`developer/index` for interfaces intended for computational method
-development.
+See {doc}`architecture-and-development/data-model` for the atlas representation
+and {doc}`architecture-and-development/index` for architecture and development
+notes.
 
 ```{toctree}
 :hidden:
@@ -179,9 +179,10 @@ installation
 tutorials/index
 cross-platform-workflows/index
 api/index
-developer/index
+architecture-and-development/index
+community-and-contributions
 release-notes/index
-references
+citation
 ```
 
 ```{toctree}
