@@ -111,13 +111,12 @@ reduction, clustering, marker analysis, visualization, and atlas-scale
 computation.
 :::
 
-:::{grid-item-card} How-to Guides
-:link: how-to/index
+:::{grid-item-card} Cross-platform Workflows
+:link: cross-platform-workflows/index
 :link-type: doc
 
-Import and combine datasets, configure memory-aware execution, query atlas
-metadata, stream expression data, and exchange results with other single-cell
-tools.
+Move workflows between scAtlasPy and other single-cell platforms, including
+external methods, result write-back, and third-party integrations.
 :::
 
 :::{grid-item-card} API Reference
@@ -178,7 +177,7 @@ development.
 
 installation
 tutorials/index
-how-to/index
+cross-platform-workflows/index
 api/index
 developer/index
 release-notes/index

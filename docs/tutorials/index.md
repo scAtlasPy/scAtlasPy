@@ -48,10 +48,9 @@ integrating a custom method that cannot load the full expression matrix into
 memory.
 
 ```{tip}
-Tutorials are designed as guided learning workflows. For instructions on a
-specific task—such as reconnecting an existing atlas, querying results with
-SQL, exporting data, or migrating an existing workflow—see the
-{doc}`../how-to/index`.
+Tutorials are designed as guided learning workflows. For instructions on moving
+data or workflows between scAtlasPy and other single-cell platforms, see the
+{doc}`../cross-platform-workflows/index`.
 ```
 
 ```{toctree}

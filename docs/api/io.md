@@ -1,6 +1,22 @@
-# 数据导入和导出：`sap.io`
+# Input and Output: `sap.io`
 
-`sap.io` 负责 h5ad、AnnData 和 Atlas 数据库之间的数据转换。所有 IO 函数同时提供 `sap.io.xxx(atlas, ...)` 和 `atlas.xxx(...)` 两种调用方式，推荐使用更简洁的 `atlas.xxx()` 写法。
+## Overview
+
+`sap.io` provides the public interfaces for importing data into an Atlas and
+retrieving or exporting stored data.
+
+Most functions are also available as convenience methods on `Atlas`. The
+instance-method form is recommended in user workflows because it makes the
+target Atlas explicit:
+
+```python
+atlas.load_h5ad("input.h5ad")
+adata = atlas.get_anndata(cell_ids)
+```
+
+The equivalent module-level functions remain available through `sap.io`.
+
+## Import Data
 
 ```{eval-rst}
 .. currentmodule:: scatlaspy
@@ -10,50 +26,146 @@
    :nosignatures:
 
    io.load_h5ad
-   io.load_multi_format
    io.load_anndata
-   io.gene_names_duplicated
-   io.write_h5ad
-   io.get_obs_df
-   io.get_anndata
+   io.load_multi_format
 ```
 
-## 选择哪个导入函数
+Choose an import function according to the source data:
 
-| 数据情况 | 推荐函数 |
+| Input | Recommended interface |
 |---|---|
-| 单个 h5ad，任意规模 | `atlas.load_h5ad(path, load_type="order")` |
-| 单个 h5ad，需要随机化 | `atlas.load_h5ad(path)` （默认 `load_type="random"`） |
-| 多个 h5ad 合并 | `atlas.load_h5ad([paths], load_type="list_random")` |
-| 已有内存中的 AnnData | `atlas.load_anndata(adata)` |
-| 非 h5ad 小文件（.loom/.mtx/.csv 等） | `atlas.load_multi_format(path)` |
+| One h5ad file | `atlas.load_h5ad(path)` |
+| Multiple h5ad files | `atlas.load_h5ad(paths, load_type="list_random")` |
+| An in-memory `AnnData` object | `atlas.load_anndata(adata)` |
+| Another supported format | `atlas.load_multi_format(path)` |
 
-## load_h5ad 的 load_type
+### h5ad Load Modes
 
-| `load_type` | 说明 |
+`load_h5ad()` supports different strategies for reading cells into the Atlas:
+
+| `load_type` | Description |
 |---|---|
-| `"order"` | 顺序导入单个 h5ad，保留细胞顺序，导入 obsm/varm |
-| `"random"`（默认） | 单个 h5ad 随机窗口导入 |
-| `"list_random"` | 多个 h5ad 文件全局随机混合导入 |
+| `"order"` | Read a single h5ad file in its existing cell order |
+| `"random"` | Read a single h5ad file through randomized windows |
+| `"list_random"` | Read and mix cells from multiple h5ad files |
 
-## 两种调用方式
+Consult {meth}`scatlaspy.io.load_h5ad` for the complete parameters, defaults,
+and supported combinations.
 
-推荐使用 `atlas.xxx()` 实例方法，更短、更直观：
+## Check Gene Names
 
-| `atlas.xxx()` 写法（推荐） | `sap.io.xxx(atlas, ...)` 写法 |
+```{eval-rst}
+.. currentmodule:: scatlaspy
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   io.gene_names_duplicated
+```
+
+Use `gene_names_duplicated()` to inspect duplicated gene names when validating
+imported data or preparing an export.
+
+## Retrieve and Export Data
+
+```{eval-rst}
+.. currentmodule:: scatlaspy
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   io.get_obs_df
+   io.get_anndata
+   io.write_h5ad
+```
+
+| Goal | Recommended interface |
 |---|---|
-| `atlas.load_h5ad("file.h5ad", load_type="order")` | `sap.io.load_h5ad("file.h5ad", atlas, load_type="order")` |
+| Retrieve cell metadata as a pandas DataFrame | `atlas.get_obs_df()` |
+| Create an in-memory AnnData object | `atlas.get_anndata(...)` |
+| Write Atlas data to an h5ad file | `atlas.write_h5ad(path)` |
+
+### Retrieve Cell Metadata
+
+Use `get_obs_df()` to retrieve all or selected columns from `obs`:
+
+```python
+obs = atlas.get_obs_df(
+    columns=[
+        "atlas_cell_id",
+        "sample",
+        "cell_type_manual",
+    ]
+)
+```
+
+### Create an AnnData Object
+
+Use `get_anndata()` to materialize selected Atlas data as an in-memory AnnData
+object:
+
+```python
+adata = atlas.get_anndata(
+    cell_ids,
+    use_data="data_log1p",
+    include_obsm=True,
+    include_varm=False,
+)
+```
+
+`use_data` selects the expression representation placed in `adata.X`.
+`include_obsm` and `include_varm` control whether corresponding
+multidimensional results are included.
+
+```{warning}
+`get_anndata()` materializes the requested expression matrix in memory. Select
+a cell population and feature set that fit within the available memory.
+```
+
+### Write an h5ad File
+
+Use `write_h5ad()` for direct file export:
+
+```python
+atlas.write_h5ad("output.h5ad")
+```
+
+When a specific expression representation is required, create an AnnData object
+with `get_anndata(use_data=...)` and write it using AnnData:
+
+```python
+adata = atlas.get_anndata(
+    cell_ids,
+    use_data="data_log1p",
+)
+
+adata.write_h5ad("selected_log1p.h5ad")
+```
+
+## Calling Styles
+
+The following forms are equivalent:
+
+| Atlas method | Module-level function |
+|---|---|
+| `atlas.load_h5ad(path)` | `sap.io.load_h5ad(path, atlas)` |
 | `atlas.load_anndata(adata)` | `sap.io.load_anndata(adata, atlas)` |
-| `atlas.load_multi_format("file.loom")` | `sap.io.load_multi_format("file.loom", atlas)` |
-| `atlas.write_h5ad("out.h5ad")` | `sap.io.write_h5ad(atlas, "out.h5ad")` |
+| `atlas.load_multi_format(path)` | `sap.io.load_multi_format(path, atlas)` |
 | `atlas.get_obs_df()` | `sap.io.get_obs_df(atlas)` |
-| `atlas.get_anndata(ids, use_data="data_log1p")` | `sap.io.get_anndata(atlas, ids, use_data="data_log1p")` |
+| `atlas.get_anndata(cell_ids)` | `sap.io.get_anndata(atlas, cell_ids)` |
+| `atlas.write_h5ad(path)` | `sap.io.write_h5ad(atlas, path)` |
 | `atlas.gene_names_duplicated()` | `sap.io.gene_names_duplicated(atlas)` |
 
-## 导出说明
+The Atlas-method form is generally preferred in tutorials and interactive
+analysis. The module-level form can be useful for functional APIs and
+third-party integrations.
 
-`write_h5ad()` 当前主路径默认把 `X_HyS_data.data` 写入 h5ad 的 `X`。如需指定其他表达字段（如 `data_log1p` 或 `data_scale`），使用 `get_anndata(use_data=...)`。
+## Related Documentation
 
-`get_obs_df()` 导出 obs 细胞信息表为 pandas DataFrame，支持 `columns` 参数指定只导出某些列。
-
-`get_anndata()` 导出细胞子集为 AnnData 对象，支持 `use_data` 选择表达字段，`include_obsm`/`include_varm` 控制是否附带降维结果。
+- {doc}`../tutorials/basic/import-data-from-multiple-formats` explains how to
+  import common source formats.
+- {doc}`../cross-platform-workflows/use-external-methods-on-atlas-subsets`
+  explains how to retrieve a focused population for an in-memory method.
+- {doc}`atlas` provides the complete `Atlas` method index.

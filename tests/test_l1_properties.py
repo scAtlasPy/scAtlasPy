@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pandas as pd
 import pytest
 
 hypothesis = pytest.importorskip("hypothesis")
@@ -68,7 +69,12 @@ def test_minibatch_boundaries_cover_all_rows_once(tmp_path, batch_size):
     atlas.connection.execute(
         "ALTER TABLE var ADD COLUMN IF NOT EXISTS zero_scale_transform REAL DEFAULT 0.0"
     )
-    atlas.build_read_index(use_hvg=False, use_data="data")
+    atlas.build_read_index(
+        cell_condition=None,
+        gene_condition=None,
+        use_hvg=False,
+        use_data="data",
+    )
 
     batches = list(
         atlas.get_minibatch_dense(
@@ -86,6 +92,60 @@ def test_minibatch_boundaries_cover_all_rows_once(tmp_path, batch_size):
 
     expected_last = adata.n_obs % batch_size or min(batch_size, adata.n_obs)
     assert batches[-1].shape[0] == expected_last
+    atlas.close()
+
+
+@pytest.mark.l1
+def test_atlas_inspection_helpers_report_tables_columns_and_read_index(tmp_path):
+    adata, _ = make_random_counts_anndata(
+        seed=2345, n_cells=45, n_genes=12, density=0.2, dtype="float32"
+    )
+    atlas = sap.Atlas(tmp_path / "inspection.sasql")
+    atlas.load_anndata(adata)
+
+    assert atlas.has_table("obs")
+    assert atlas.has_table("var")
+    assert not atlas.has_table("missing_table")
+    assert "obs" in atlas.table_names()
+
+    obs_info = atlas.table_info("obs")
+    assert "atlas_cell_id" in obs_info["name"].tolist()
+    assert atlas.has_column("obs", "atlas_cell_id")
+    assert not atlas.has_column("obs", "missing_column")
+    assert not atlas.has_column("missing_table", "atlas_cell_id")
+
+    obs_head = atlas.head("obs", n=3)
+    assert isinstance(obs_head, pd.DataFrame)
+    assert obs_head.shape[0] == 3
+    assert "atlas_cell_id" in obs_head.columns
+
+    empty_read_index = atlas.read_index_info()
+    assert empty_read_index.empty
+    assert empty_read_index.columns.tolist() == ["key", "value"]
+
+    state = atlas.workflow_state()
+    present_by_artifact = dict(zip(state["artifact"], state["present"]))
+    assert present_by_artifact["imported_data"] is True
+    assert present_by_artifact["read_index"] is False
+
+    atlas.build_read_index(
+        cell_condition=None,
+        gene_condition=None,
+        use_hvg=False,
+        use_data="data",
+    )
+    read_index = atlas.read_index_info()
+    assert set(read_index["key"]) == {
+        "cell_condition",
+        "gene_condition",
+        "use_hvg",
+        "use_data",
+    }
+    assert read_index.set_index("key").loc["use_data", "value"] == "data"
+
+    state = atlas.workflow_state()
+    present_by_artifact = dict(zip(state["artifact"], state["present"]))
+    assert present_by_artifact["read_index"] is True
     atlas.close()
 
 

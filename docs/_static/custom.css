@@ -76,3 +76,7 @@ a:hover {
 .feature-item p:last-child {
     margin-bottom: 0;
 }
+
+.bd-sidebar-primary li.toctree-l1 > a[href$="api/index.html"] + details li.toctree-l2 > details {
+  display: none;
+}

@@ -548,6 +548,7 @@ class Atlas:
 
         该方法只检查 ``atlas.file_path`` 指向的文件是否存在，不验证数据库内部表结构是否完整。
 
+        Returns
         -------
         bool
             如果 ``atlas.file_path`` 指向的数据库文件存在，则返回 ``True``；

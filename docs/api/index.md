@@ -1,31 +1,64 @@
-# API
+# API Reference
 
-API 页面用于查函数名和参数，不建议作为入门教程。第一次使用请先阅读 {doc}`../installation` 和 {doc}`../tutorials/index`。
+Use the API reference to look up the public classes, methods, functions, and
+configuration options provided by scAtlasPy.
 
-scAtlasPy 通常这样导入：
+If you are new to scAtlasPy, begin with {doc}`../installation` and the
+{doc}`../tutorials/index` before consulting individual API pages.
+
+scAtlasPy is conventionally imported as:
 
 ```python
 import scatlaspy as sap
 ```
 
-常用入口：
+## API Sections
 
-- `sap.Atlas`：创建或打开分析数据库。
-- `sap.io`：导入、导出数据。
-- `sap.pp`：质控、过滤、标准化、高变基因、scale。
-- `sap.tl`：PCA、聚类、UMAP、手动注释。
-- `sap.pl`：QC 图、PCA 图、UMAP 图、marker gene 图。
+- {doc}`Global settings <settings>`  
+  Configure progress bars, logging, and other package-wide behavior.
+
+- {doc}`Atlas object <atlas>`  
+  Create, open, inspect, query, and manage an Atlas through `sap.Atlas`.
+
+- {doc}`Input and output <io>`  
+  Import data into an Atlas and export selected data or analysis results through
+  `sap.io`.
+
+- {doc}`Preprocessing <preprocessing>`  
+  Perform quality control, filtering, normalization, transformation, highly
+  variable gene selection, and scaling through `sap.pp`.
+
+- {doc}`Analysis tools <tools>`  
+  Run dimensionality reduction, clustering, marker analysis, annotation, and
+  other downstream computations through `sap.tl`.
+
+- {doc}`Plotting <plotting>`  
+  Visualize quality-control metrics, dimensionality reductions, clusters,
+  annotations, and marker expression through `sap.pl`.
 
 ```{note}
-多数函数会把结果写入 Atlas 数据库，而不是返回新的 AnnData 对象。需要检查结果时，可以使用 `atlas.query(...)`。
+Many scAtlasPy operations update the current Atlas and persist their outputs in
+the `.sasql` database rather than returning a new `AnnData` object.
+
+Each API entry should be consulted for its Python return value, results written
+to the Atlas, required preprocessing state, and whether existing results may be
+replaced.
+```
+
+```{important}
+This reference documents the supported public API. Internal tables, helper
+functions, and undocumented storage details should not be treated as stable
+interfaces.
 ```
 
 ```{toctree}
-:maxdepth: 2
+:hidden:
+:maxdepth: 1
 
-atlas
-io
-preprocessing
-tools
-plotting
+Global Settings <settings>
+Atlas <atlas>
+I/O <io>
+Preprocessing <preprocessing>
+Tools <tools>
+Plotting <plotting>
 ```
