@@ -632,6 +632,164 @@ class Atlas:
         return result
 
 
+    @staticmethod
+    def _quote_identifier(name: str) -> str:
+        """Return a safely quoted DuckDB identifier."""
+
+        return '"' + str(name).replace('"', '""') + '"'
+
+
+    def table_names(self) -> list[str]:
+        """Return the names of tables stored in the Atlas database.
+
+        This is a convenience wrapper around ``SHOW TABLES`` for tutorials,
+        notebooks, and interactive inspection.
+        """
+
+        if self.__connection is None:
+            self.connect("r+")
+
+        return [r[0] for r in self.connection.execute("SHOW TABLES").fetchall()]
+
+
+    def has_table(self, table_name: str) -> bool:
+        """Return whether a table exists in the Atlas database."""
+
+        return str(table_name) in set(self.table_names())
+
+
+    def table_info(self, table_name: str) -> pd.DataFrame:
+        """Return column metadata for an Atlas database table.
+
+        Parameters
+        ----------
+        table_name
+            Name of the table to inspect.
+
+        Returns
+        -------
+        pandas.DataFrame
+            DuckDB ``PRAGMA table_info`` output for the table.
+        """
+
+        if not self.has_table(table_name):
+            available = ", ".join(self.table_names()) or "None"
+            raise ValueError(
+                f"Table does not exist: {table_name}. "
+                f"Available tables: {available}"
+            )
+
+        table_sql = self._quote_identifier(table_name)
+        return self.connection.execute(f"PRAGMA table_info({table_sql})").df()
+
+
+    def has_column(self, table_name: str, column_name: str) -> bool:
+        """Return whether ``table_name`` contains ``column_name``."""
+
+        if not self.has_table(table_name):
+            return False
+
+        info = self.table_info(table_name)
+        return str(column_name) in set(info["name"].astype(str))
+
+
+    def read_index_info(self) -> pd.DataFrame:
+        """Return the persisted ``build_read_index`` configuration.
+
+        Returns an empty DataFrame with columns ``key`` and ``value`` when the
+        read index metadata table is not present.
+        """
+
+        columns = ["key", "value"]
+        if not self.has_table("atlas_read_index_meta"):
+            return pd.DataFrame(columns=columns)
+
+        return self.query("""
+            SELECT key, value
+            FROM atlas_read_index_meta
+            ORDER BY key
+        """)
+
+
+    def workflow_state(self) -> pd.DataFrame:
+        """Summarize common persisted workflow artifacts.
+
+        This method provides a compact checklist for reopening an existing Atlas:
+        it reports whether common tables or metadata columns produced by import,
+        preprocessing, dimensionality reduction, clustering, and annotation are
+        present. Presence is a useful resume hint, but it does not prove that a
+        result matches the current read index or the intended parameters.
+        """
+
+        rows = [
+            {
+                "artifact": "imported_data",
+                "present": self.has_table("obs") and self.has_table("var"),
+                "evidence": "obs and var tables",
+                "meaning": "Data have been imported.",
+            },
+            {
+                "artifact": "cell_filter",
+                "present": self.has_column("obs", "filter_cells"),
+                "evidence": "obs.filter_cells",
+                "meaning": "Cell filtering has been computed.",
+            },
+            {
+                "artifact": "gene_filter",
+                "present": self.has_column("var", "filter_genes"),
+                "evidence": "var.filter_genes",
+                "meaning": "Gene filtering has been computed.",
+            },
+            {
+                "artifact": "highly_variable_genes",
+                "present": self.has_column("var", "highly_variable_genes"),
+                "evidence": "var.highly_variable_genes",
+                "meaning": "HVG selection has been computed.",
+            },
+            {
+                "artifact": "read_index",
+                "present": self.has_table("atlas_read_index_meta"),
+                "evidence": "atlas_read_index_meta table",
+                "meaning": "A read index has been constructed.",
+            },
+            {
+                "artifact": "pca",
+                "present": self.has_table("obsm_X_pca") and self.has_table("varm_PCs"),
+                "evidence": "obsm_X_pca and varm_PCs tables",
+                "meaning": "PCA coordinates and loadings have been stored.",
+            },
+            {
+                "artifact": "kmeans",
+                "present": self.has_column("obs", "kmeans"),
+                "evidence": "obs.kmeans",
+                "meaning": "KMeans cluster labels have been stored.",
+            },
+            {
+                "artifact": "umap",
+                "present": self.has_table("obsm_X_umap"),
+                "evidence": "obsm_X_umap table",
+                "meaning": "UMAP coordinates have been stored.",
+            },
+            {
+                "artifact": "rank_genes_groups",
+                "present": self.has_table("rank_genes_groups"),
+                "evidence": "rank_genes_groups table",
+                "meaning": "Marker-gene ranking results have been stored.",
+            },
+            {
+                "artifact": "manual_annotation",
+                "present": (
+                    self.has_table("manual_cluster_annotation")
+                    or self.has_column("obs", "cell_type_manual")
+                ),
+                "evidence": "manual_cluster_annotation table or obs.cell_type_manual",
+                "meaning": "Manual annotation results have been stored.",
+            },
+        ]
+
+        return pd.DataFrame(rows)
+
+
     def describe(self) -> str:
         """汇总 Atlas 数据库中的表结构。
 
@@ -665,7 +823,7 @@ class Atlas:
 
         # 2. 查询所有表
         try:
-            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+            tables = self.table_names()
         except Exception:
             tables = []
 
@@ -724,31 +882,32 @@ class Atlas:
         return self.describe()
 
 
-    def head(self, table_name: str, n: int = 5):
-        """打印数据库表的前几行。
+    def head(self, table_name: str, n: int = 5) -> pd.DataFrame:
+        """Return the first rows of an Atlas database table.
 
-        该方法查询指定表的前 ``n`` 行，并在控制台打印表名、列名和数据内容，
-        适合快速检查导入结果或分析结果。
+        This method queries the first ``n`` rows of a table and returns them as
+        a :class:`pandas.DataFrame`, which is convenient for interactive
+        notebooks and quick inspection.
 
         Parameters
         ----------
         table_name
-            数据库表名。
+            Name of the database table to inspect.
         n
-            打印的记录数量。
+            Number of rows to return.
 
         Returns
         -------
-        None
-            该方法只打印结果，不返回 DataFrame。
+        pandas.DataFrame
+            The first ``n`` rows from ``table_name``.
 
         Examples
         --------
-        查看 ``obs`` 前 5 行::
+        Inspect the first 5 rows of ``obs``::
 
             atlas.head("obs")
 
-        查看差异基因结果前 10 行::
+        Inspect the first 10 rows of marker-gene results::
 
             atlas.head("rank_genes_groups", n=10)
         """
@@ -756,50 +915,19 @@ class Atlas:
         if self.__connection is None:
             self.connect("r+")
 
-        conn = self.__connection
-
-        # 1. 检查表是否存在
-        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
-
-        if table_name not in tables:
+        if not self.has_table(table_name):
+            tables = self.table_names()
             raise ValueError(
-                f"数据库中不存在表: {table_name}\n"
-                f"当前可用表: {', '.join(tables) if len(tables) > 0 else 'None'}"
+                f"Table does not exist: {table_name}. "
+                f"Available tables: {', '.join(tables) if len(tables) > 0 else 'None'}"
             )
 
-        # 2. 安全引用表名
-        table_sql = '"' + table_name.replace('"', '""') + '"'
-
-        # 3. 获取字段名
-        columns = [
-            r[0]
-            for r in conn.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = ?
-                ORDER BY ordinal_position
-            """, [table_name]).fetchall()
-        ]
-
-        # 4. 查询前 n 行
-        df = conn.execute(f"""
+        table_sql = self._quote_identifier(table_name)
+        return self.connection.execute(f"""
             SELECT *
             FROM {table_sql}
             LIMIT {int(n)}
         """).df()
-
-        # 5. 打印结果
-        print(f"table   : {table_name}")
-        print(f"columns : {', '.join(columns)}")
-        print(f"rows    : first {int(n)}")
-
-        with pd.option_context(
-                "display.max_columns", None,
-                "display.max_rows", int(n),
-                "display.width", 0,
-                "display.max_colwidth", None,
-        ):
-            print(df.to_string(index=True))
 
     def _save_read_index_meta(
             self,
@@ -862,8 +990,8 @@ class Atlas:
 
     def build_read_index(
             self,
-            cell_condition: str  = "filter_cells",
-            gene_condition: str  = "filter_genes",
+            cell_condition: str | None  = "filter_cells",
+            gene_condition: str | None = "filter_genes",
             use_hvg: bool = True,
             use_data: str = "data_log1p",
     ):
@@ -1323,4 +1451,3 @@ class Atlas:
             include_obsm=include_obsm,
             include_varm=include_varm,
         )
-
