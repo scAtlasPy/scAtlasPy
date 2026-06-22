@@ -5,7 +5,7 @@ BUILDDIR      = _build
 HOST          = 0.0.0.0
 PORT          = 8010
 
-.PHONY: help clean html serve
+.PHONY: help clean html serve fresh-serve
 
 help:
 	@$(SPHINXBUILD) -M help "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS)
@@ -20,3 +20,5 @@ html:
 
 serve:
 	python -m http.server --bind "$(HOST)" "$(PORT)" -d "$(BUILDDIR)/html"
+
+fresh-serve: clean html serve

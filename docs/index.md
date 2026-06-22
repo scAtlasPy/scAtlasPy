@@ -18,6 +18,15 @@ are available to both built-in workflows and newly developed computational metho
 
 ## Quick Start
 
+Install scAtlasPy in the Python environment used for your analysis:
+
+```bash
+pip install scatlaspy
+```
+
+The example below creates a small atlas database and runs a compact
+preprocessing, clustering, and visualization workflow:
+
 ```python
 import scatlaspy as sap
 

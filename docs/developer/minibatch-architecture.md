@@ -109,5 +109,5 @@ Consumer Thread (×1)
 
 ## 相关页面
 
-- {doc}`../tutorials/advanced/welford-online-statistics` — single-pass 实战案例
-- {doc}`../tutorials/advanced/train-logistic-regression` — multi-pass 实战案例
+- {doc}`../tutorials/advanced/stream-mean-and-variance` — single-pass 实战案例
+- {doc}`../tutorials/advanced/train-logistic-regression-with-minibatches` — multi-pass 实战案例

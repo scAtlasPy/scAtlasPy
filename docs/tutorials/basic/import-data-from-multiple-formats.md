@@ -1,156 +1,454 @@
-# Import Data from Multiple Formats
+# Import Data from Different Sources
 
-本教程介绍如何创建新的 Atlas 数据库，从 h5ad、多文件数据或其他 Scanpy 支持的格式导入数据，以及连接已有数据库继续分析。
+This tutorial explains how to import data into scAtlasPy from several common
+single-cell data sources. It is intended as a companion to the complete basic
+analysis tutorial, which follows a single `.h5ad` dataset from import through
+cell-type annotation.
 
-导入完成后，数据会保存为一个 `.sasql` 数据库文件。后续质控、过滤、标准化、降维、聚类和绘图都围绕这个 Atlas 数据库继续进行。
+The examples below are **alternative import workflows**. Choose the section that
+matches your data source; you do not need to run every example.
 
-## 创建 Atlas 数据库并导入数据
+By the end of this tutorial, you will be able to:
 
-### 1. 创建新的 Atlas 数据库
+- choose an import method for your data;
+- import one or several `.h5ad` files;
+- import an existing `AnnData` object;
+- import data from other supported formats;
+- verify that the resulting Atlas contains the expected data and metadata.
 
-```python
-import scatlaspy as sap
+## Before Importing
 
-atlas = sap.Atlas("pbmc_demo", "./data")
+Before choosing an import method, inspect the source data and confirm:
 
-# 设置 DuckDB 可使用的内存上限；通常不要超过服务器可用内存
-atlas.execute_sql("SET memory_limit = '8GB'")
+- which expression representation you want to store in the Atlas;
+- whether cell and gene identifiers are unique;
+- whether required sample, donor, batch, condition, or technology annotations
+  are present;
+- whether multiple input files use compatible genes, metadata, and expression
+  representations after import.
+
+scAtlasPy stores imported expression data, cell and gene metadata, embeddings,
+and supported analysis results in a persistent `.sasql` Atlas database.
+
+```{important}
+Decide the target expression representation before import. If the source matrix
+does not match the requested `store_type`, scAtlasPy will convert it during
+import when it can identify the source scale.
 ```
 
-这段代码会在 `./data` 目录下创建：
+## Choose an Import Method
 
-```text
-pbmc_demo.sasql
-```
+Use the source object or file format to select an import path.
 
-| 位置 | 含义 | 建议 |
+| Your data | Recommended method |
+|---|---|
+| One `.h5ad` file | `atlas.load_h5ad()` |
+| Several `.h5ad` files forming one Atlas | `atlas.load_h5ad(..., load_type="list_random")` |
+| An `AnnData` object already loaded in Python | `atlas.load_anndata()` |
+| A smaller file supported by `load_multi_format()` | `atlas.load_multi_format()` |
+| A format requiring reader-specific arguments | Read it with Scanpy, then use `atlas.load_anndata()` |
+
+For large `.h5ad` files, prefer `load_h5ad()` because it can import the
+expression matrix in blocks without requiring the complete dataset to remain in
+memory.
+
+## Choose the Expression Representation
+
+The `store_type` argument specifies the expression representation used during
+`.h5ad` import.
+
+| `store_type` | Target representation | Typical use |
 |---|---|---|
-| `"pbmc_demo"` | Atlas 数据库名称 | 使用项目、样本或批次名称 |
-| `"./data"` | 数据库保存目录 | 放在空间充足的磁盘 |
+| `"count"` | Count-scale expression values | Run normalization and `log1p` transformation with scAtlasPy |
+| `"log"` | Values already transformed with `log1p` | Continue an analysis that uses an existing log-transformed representation |
+
+During `.h5ad` import, scAtlasPy inspects the source matrix and converts it to
+the requested target representation when needed. For example, if the source
+matrix appears to contain count-scale values and `store_type="log"` is requested,
+scAtlasPy writes log-transformed values into the Atlas. Conversely, if the source
+matrix appears to contain log-transformed values and `store_type="count"` is
+requested, scAtlasPy applies the inverse transformation before writing the data.
 
 ```{note}
-建议一个分析项目对应一个新的 Atlas 数据库。不要把不相关的数据反复导入同一个 `.sasql` 文件。
+scAtlasPy uses the natural logarithm for these conversions: `log1p(x)` means
+`ln(1 + x)`, and the inverse conversion uses `expm1(x)`. If the source matrix is
+already on a log scale, the original logarithm base may be unknown. In that case,
+`expm1` produces count-scale values rather than the exact original count matrix.
+This does not affect downstream analysis in practice, because the difference is
+absorbed as a library-size normalization factor.
 ```
 
-### 2. 使用 `load_h5ad()` 导入数据
-
-`load_h5ad()` 是统一入口，通过 `load_type` 选择策略（默认 `"random"`）：
-
-| `load_type` | 含义 | 何时选用 |
-|---|---|---|
-| `"random"`（默认） | 随机窗口导入，打乱细胞顺序 | 单个 h5ad，希望随机化 |
-| `"order"` | 顺序导入，保留原始细胞顺序 | 需要保留行顺序、导入 obsm/varm |
-| `"list_random"` | 多文件全局随机混合导入 | 多个样本/批次合并 |
-
-#### 方式 A：随机窗口导入（默认）
+For a standard workflow containing:
 
 ```python
-atlas.load_h5ad("large.h5ad", store_type="count")
-# 等价于 load_type="random"，cells_per_block=500，blocks_per_pool=10
+sap.pp.normalize_total(atlas)
+sap.pp.log1p(atlas)
 ```
 
-#### 方式 B：顺序导入
+store count-scale values in the Atlas with:
 
 ```python
-atlas.load_h5ad("pbmc3k.h5ad", load_type="order", store_type="count")
+store_type="count"
 ```
 
-#### 方式 C：多个文件合并导入
+```{warning}
+Do not label normalized and log-transformed values as counts. Applying an
+inverse transformation to log-normalized data does not recover the original
+count matrix.
+
+If raw counts and processed values are both present in an `AnnData` object,
+confirm which matrix or layer should be imported before creating the Atlas.
+```
+
+## Create an Atlas
+
+Each import workflow writes to a `.sasql` database. Create an `Atlas` by
+providing the target database path:
 
 ```python
+from pathlib import Path
+
+import scatlaspy as sap
+
+atlas_path = Path("./data/my_atlas.sasql")
+
+atlas = sap.Atlas(
+    atlas_path,
+    db_memory_limit="8GB",
+)
+```
+
+If the path does not end with `.sasql`, scAtlasPy adds the suffix automatically.
+
+`db_memory_limit` controls the memory available to DuckDB queries and
+intermediate database operations. It is not a global limit on memory allocated
+by Python, NumPy, pandas, plotting libraries, or external machine-learning
+frameworks.
+
+```{note}
+Use a separate `.sasql` file for each analysis project or coherent dataset.
+Avoid importing unrelated datasets into the same Atlas.
+```
+
+## Import a Single h5ad File
+
+Use `load_h5ad()` when the source data are stored in one `.h5ad` file.
+
+### Preserve the Source Cell Order
+
+Use `load_type="order"` when you want cells to be imported in their original
+order:
+
+```python
+atlas = sap.Atlas(
+    "./data/pbmc_ordered.sasql",
+    db_memory_limit="8GB",
+)
+
 atlas.load_h5ad(
-    ["sample1.h5ad", "sample2.h5ad", "sample3.h5ad"],
+    "./data/pbmc3k.h5ad",
+    load_type="order",
+    store_type="count",
+)
+```
+
+This is the most straightforward option when comparing the imported Atlas with
+the source `AnnData` object or when the original cell order is meaningful to
+your workflow.
+
+### Import in Randomized Blocks
+
+Use `load_type="random"` when a single `.h5ad` file should be imported in
+randomized blocks:
+
+```python
+atlas = sap.Atlas(
+    "./data/large_dataset.sasql",
+    db_memory_limit="8GB",
+)
+
+atlas.load_h5ad(
+    "./data/large_dataset.h5ad",
+    load_type="random",
+    store_type="count",
+    cells_per_block=2000,
+)
+```
+
+`cells_per_block` controls the number of cells processed in each block. Larger
+blocks may reduce import overhead but require more working memory.
+
+When `cells_per_block` is not specified, scAtlasPy selects a block size using
+the source data and Atlas configuration.
+
+```{note}
+The expression values and cell metadata remain associated during randomized
+import. Randomization changes the import order, not the correspondence between
+the matrix and `obs`.
+```
+
+Use randomized import when later sequential reads should not reproduce the
+original ordering of the source file. Use ordered import when preserving source
+order is more useful for inspection or comparison.
+
+## Import Multiple h5ad Files
+
+Use `load_type="list_random"` to combine several `.h5ad` files into one Atlas:
+
+```python
+atlas = sap.Atlas(
+    "./data/multi_sample_atlas.sasql",
+    db_memory_limit="8GB",
+)
+
+atlas.load_h5ad(
+    [
+        "./data/sample_1.h5ad",
+        "./data/sample_2.h5ad",
+        "./data/sample_3.h5ad",
+    ],
     load_type="list_random",
     store_type="count",
 )
 ```
 
-多文件导入时需要注意：
-- 每个 h5ad 文件应使用同一套基因。
-- 基因顺序最好已经一致；否则导入前需要先整理。
-- 样本、批次、实验条件等信息应保存在各自 h5ad 的 `obs` 中，方便导入后按列查询。
+Before importing multiple files, confirm that:
 
-### 3. 关键参数说明
+- all files use the same expression representation;
+- genes can be aligned consistently across files;
+- gene identifiers and gene order satisfy the requirements of
+  `load_h5ad()`;
+- cell identifiers are unique across files;
+- important source labels are already present in `obs`;
+- shared metadata columns use compatible meanings and data types.
 
-| 参数 | 默认值 | 含义 |
-|---|---|---|
-| `load_type` | `"random"` | 导入策略：`"random"` / `"order"` / `"list_random"` |
-| `store_type` | `"count"` | 目标表达尺度。`"count"` 存原始 counts，`"log"` 存 ln(1+x) 值。自动检测源数据并转换 |
-| `cells_per_block` | `500` | 每个连续读取 block 的细胞数。越大读速越快，内存越大 |
-| `blocks_per_pool` | `10` | 每次攒多少个 block 后写入。影响随机化程度和单次内存 |
-
-```{note}
-`store_type` 设为 `"log"` 时、以及后续 `sap.pp.log1p()` 预处理函数，默认使用自然对数（底数为 $e$，即 `ln(1 + x)`）。如果需要以其他数为底（例如 2 或 10），可在 `sap.pp.log1p()` 中传入 `base` 参数：`sap.pp.log1p(atlas, base=2)`。
-```
-
-```{note}
-`store_type` 表示你希望写入数据库的表达尺度。代码会抽样判断源 `X` 是 count 还是 log，并在写入前自动做 `log1p` 或 `expm1` 转换。
-```
-
-### 4. 导入后检查
-
-`load_h5ad()` 导入完成时会自动打印摘要信息，无需手动验证：
-
-```text
-✔ 全部数据成功导入 DuckDB（顺序导入，含 obsm / varm）
-  - cells: 3,000
-  - nnz:   2,500,000
-  - store_type: count
-```
-
-如果想确认数据库状态，可以随时调用 `describe()`：
+For example, add a sample label before import when each file represents a
+different sample:
 
 ```python
-print(atlas.describe())
+import scanpy as sc
+
+adata = sc.read_h5ad("./data/sample_1.h5ad")
+adata.obs["sample"] = "sample_1"
+adata.write_h5ad("./data/sample_1_annotated.h5ad")
 ```
 
-输出示例：
+Repeat this preparation for each input file, then import the annotated files
+together.
 
-```text
-file_name    : ./data/pbmc_demo.sasql
-tables      : 6
-table names : obs, var, X_HyS_indptr, X_HyS_data, obsm_X_pca, obsm_X_umap
-n_cells     : 3,000
-n_genes     : 32,738
+```{important}
+Do not rely on the file name as the only record of sample identity. Store
+sample, donor, batch, condition, technology, or other relevant labels in `obs`
+before combining files.
 ```
 
-导入后数据库包含这些表：
+If the input files contain different gene sets or incompatible metadata, align
+and validate them before import rather than assuming that they will be
+harmonized automatically.
 
-| 表名 | 说明 |
-|---|---|
-| `obs` | 细胞元数据，含 `atlas_cell_id`、`atlas_cell_name` |
-| `var` | 基因元数据，含 `atlas_gene_id`、`atlas_gene_name` |
-| `X_HyS_indptr` | CSR 行指针 |
-| `X_HyS_data` | 表达矩阵非零值（长表），字段含 `data` |
-| `obsm_{key}` | 细胞级降维结果 |
-| `varm_{key}` | 基因级降维结果 |
+## Import an Existing AnnData Object
 
-### 5. 清理重复基因名
+Use `load_anndata()` when the data are already available as an in-memory
+`AnnData` object.
+
+This is useful when:
+
+- the dataset is small enough to fit comfortably in memory;
+- custom preparation has already been performed with Scanpy or AnnData;
+- the input format requires a specialized reader;
+- metadata or feature identifiers must be modified before import.
+
+```python
+import scanpy as sc
+import scatlaspy as sap
+
+adata = sc.read_h5ad("./data/pbmc3k.h5ad")
+adata.obs["sample"] = "pbmc3k"
+
+atlas = sap.Atlas(
+    "./data/pbmc_from_anndata.sasql",
+    db_memory_limit="8GB",
+)
+
+atlas.load_anndata(adata)
+```
+
+`load_anndata()` writes the in-memory object's expression data, `obs`, `var`,
+and supported annotation matrices into the Atlas.
+
+Because the complete `AnnData` object is already materialized in memory, this
+path is generally not preferred for datasets that exceed available memory.
+
+## Import Other File Formats
+
+Use `load_multi_format()` for supported formats that can be read by the built-in
+Scanpy reader selection without additional format-specific arguments.
+
+```{note}
+`load_multi_format()` currently imports non-h5ad formats by reading them with
+Scanpy into an in-memory `AnnData` object and then writing that object into an
+Atlas database. For these additional formats, we plan to progressively add
+streaming, block-wise, randomized import paths to scAtlasPy.
+```
+
+The calling pattern is the same across file types: create an Atlas database, then
+pass the input file path to `load_multi_format()`.
+
+```python
+import scatlaspy as sap
+
+atlas = sap.Atlas(
+    "./data/from_loom.sasql",
+    db_memory_limit="8GB",
+)
+
+atlas.load_multi_format("./data/input.loom")
+```
+
+For other simple file-based formats, change only the input path and the target
+Atlas path:
+
+```python
+atlas = sap.Atlas(
+    "./data/from_csv.sasql",
+    db_memory_limit="8GB",
+)
+atlas.load_multi_format("./data/expression.csv")
+
+atlas = sap.Atlas(
+    "./data/from_text.sasql",
+    db_memory_limit="8GB",
+)
+atlas.load_multi_format("./data/expression.tsv")
+
+atlas = sap.Atlas(
+    "./data/from_10x_h5.sasql",
+    db_memory_limit="8GB",
+)
+atlas.load_multi_format("./data/filtered_feature_bc_matrix.h5")
+```
+
+Depending on the available Scanpy readers, this convenience path may be used for
+formats such as:
+
+- `.loom`;
+- delimited expression matrices such as `.csv`, `.txt`, or `.tsv`;
+- spreadsheet-based matrices such as `.xlsx`;
+- selected matrix or HDF5-based single-cell formats such as 10x `.h5`.
+
+```{important}
+A file extension alone may not fully describe the data layout. Formats such as
+Matrix Market or 10x data may consist of several files or require arguments
+that specify feature names, matrix orientation, or genome information.
+```
+
+When a format requires reader-specific options, load it with Scanpy and then use
+`load_anndata()`. In this case, `load_anndata()` is a fallback after custom
+reading, not the primary multi-format import interface.
+
+For example, import a 10x Matrix Market directory with:
+
+```python
+import scanpy as sc
+import scatlaspy as sap
+
+adata = sc.read_10x_mtx(
+    "./data/filtered_feature_bc_matrix",
+    var_names="gene_symbols",
+)
+
+adata.var_names_make_unique()
+
+atlas = sap.Atlas(
+    "./data/from_10x_mtx.sasql",
+    db_memory_limit="8GB",
+)
+
+atlas.load_anndata(adata)
+```
+
+This approach gives you control over the Scanpy reader arguments before the
+data are written into the Atlas.
+
+## Validate the Imported Atlas
+
+After completing any import workflow, inspect the Atlas before beginning
+quality control or preprocessing:
+
+```python
+atlas.describe()
+```
+
+Confirm that:
+
+- the number of cells matches the source data;
+- the number of genes matches the intended feature space;
+- expected `obs` columns are present;
+- expected `var` columns are present;
+- sample, donor, batch, condition, or technology labels were retained;
+- the imported expression representation matches the intended analysis.
+
+Normalize duplicated gene names early:
 
 ```python
 atlas.gene_names_duplicated()
 ```
 
-### 6. 其他数据格式
+This call keeps the first occurrence unchanged and adds suffixes to later
+duplicates in the Atlas `var` table. Gene names should be unique before
+workflows that select, plot, rank, or annotate genes by name.
 
-非 h5ad 格式（`.loom`、`.mtx`、`.csv`、`.xlsx` 等），使用 `load_multi_format()`：
+When importing multiple files, also confirm that the expected number of cells
+was imported from each source group. For example, query a sample label stored
+in `obs`:
 
 ```python
-atlas.load_multi_format("input.loom")
+atlas.query("""
+    SELECT sample, COUNT(*) AS n_cells
+    FROM obs
+    GROUP BY sample
+    ORDER BY sample
+""")
 ```
 
-该函数自动识别文件后缀，调用对应 Scanpy 读取函数，再写入 Atlas 数据库。适合可完整读入内存的小数据。
+## Close and Reopen the Atlas
 
-详见 {doc}`../../api/io` 中 `load_multi_format` 的文档。
-
-### 7. 完成后关闭连接
+Close the database connection when the current session is complete:
 
 ```python
 atlas.close()
 ```
 
-## 下一步
+The imported data remain stored in the `.sasql` file.
 
-导入完成后，继续阅读 {doc}`basic_exploration`，查看从质控、过滤、标准化到降维、聚类和注释的完整流程。
+Reconnect in a later Python session by constructing an `Atlas` with the same
+path:
 
-如果想重新连接已有数据库继续分析，参考 {doc}`../advanced/reconnect-database`。
+```python
+import scatlaspy as sap
+
+atlas = sap.Atlas(
+    "./data/my_atlas.sasql",
+    db_memory_limit="8GB",
+)
+```
+
+You do not need to import the source data again.
+
+## Next Steps
+
+After importing and validating the data:
+
+- continue with the complete basic analysis tutorial;
+- calculate quality-control metrics and filter cells and genes;
+- normalize the expression matrix and select highly variable genes;
+- build an analysis view for dimensionality reduction and clustering.
+
+See {doc}`basic_exploration` for a complete preprocessing, clustering, and
+annotation workflow after import.
+
+For detailed function arguments, consult the API reference for:
+
+- `Atlas.load_h5ad()`;
+- `Atlas.load_anndata()`;
+- `Atlas.load_multi_format()`.
