@@ -12,7 +12,7 @@ from tqdm.auto import tqdm as _tqdm
 _PROGRESS_ENABLED: bool | None = None
 
 
-def set_progress(enabled: bool | None = None) -> None:
+def set_progress(enabled: bool | None = True) -> None:
     """Set global progress-bar visibility.
 
     Parameters

@@ -172,7 +172,7 @@ def dotplot(
         genes: str | list[str],
         groupby: str = "kmeans",
         use_data: str = "data_log1p",
-        sample_n_per_group: int | None = 2000,
+        sample_cells_per_group: int | None = None,
         groups: list | None = None,
         where: str | None = None,
         order: list | None = None,
@@ -199,7 +199,7 @@ def dotplot(
     use_data
         读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
-    sample_n_per_group
+    sample_cells_per_group
         每个分组抽样用于绘图的细胞数量。
     groups
         需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
@@ -222,8 +222,7 @@ def dotplot(
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -371,7 +370,7 @@ def dotplot(
     # 每个 group 抽样细胞
     sampled_parts = []
     for g in group_labels:
-        if sample_n_per_group is None:
+        if sample_cells_per_group is None:
             q = f"""
                 SELECT
                     atlas_cell_id,
@@ -389,7 +388,7 @@ def dotplot(
                 WHERE {where_sql}
                   AND CAST({groupby} AS TEXT) = '{g}'
                 ORDER BY random()
-                LIMIT {int(sample_n_per_group)}
+                LIMIT {int(sample_cells_per_group)}
             """
         sampled_parts.append(conn.execute(q).fetchdf())
 
@@ -616,5 +615,3 @@ def dotplot(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
-
-    return stat_df

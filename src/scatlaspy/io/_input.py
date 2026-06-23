@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, Any, Literal
 if TYPE_CHECKING:   # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
     from ..data import Atlas
 
-StoreType = Literal["count", "log"]
+XScale = Literal["count", "log"]
 
 # 获取日志记录器
 logger = logging.getLogger("Atlas")
@@ -30,13 +30,13 @@ def load_h5ad(
     h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     *,
-    load_type: Literal["order", "random", "list_random"] = "random",
-    store_type: StoreType = "count",
+    load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
 ) -> Any:
     """将 h5ad 文件导入 Atlas 数据库。
 
     该函数读取一个或多个 ``.h5ad`` 文件，并把细胞信息、基因信息和表达矩阵写入 Atlas 的 DuckDB 数据库。它类似 Scanpy 的 ``sc.read_h5ad`` 加对象保存流程，但面向大规模数据采用分块写入。
+    表达矩阵默认统一保存为 count 尺度；如果输入 ``X`` 被检测为 log 尺度，会在写入前转回 count。
 
     Parameters
     ----------
@@ -45,9 +45,9 @@ def load_h5ad(
     atlas
         Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
     load_type
-        导入方式。``"order"`` 表示按原始顺序导入，``"random"`` 表示按随机/分块策略导入。
-    store_type
-        表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
+        导入方式，只支持 ``"order"`` 和 ``"random"``。
+        当 ``h5ad_path`` 是单个路径时，分别执行单文件顺序或随机导入；
+        当 ``h5ad_path`` 是列表时，分别执行多文件顺序或随机导入。
     cells_per_block
         写入稀疏表达矩阵时每个细胞块包含的细胞数。
 
@@ -63,14 +63,11 @@ def load_h5ad(
         atlas = sap.Atlas(r"F:\\data\\pbmc")
         atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
 
-    使用对象式 API 导入，并指定表达值类型::
-
-        atlas.load_h5ad(r"F:\\data\\pbmc_log.h5ad", store_type="log")
-
-    分块导入多个文件::
+    随机分块导入多个文件::
 
         atlas.load_h5ad(
             [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
+            load_type="random",
             cells_per_block=1000,
         )"""
 
@@ -82,18 +79,12 @@ def load_h5ad(
     valid_load_types = {
         "order",
         "random",
-        "list_random",
     }
 
     if load_type not in valid_load_types:
         raise ValueError(
             "load_type 只能是 "
             f"{sorted(valid_load_types)}，当前为: {load_type}"
-        )
-
-    if store_type not in {"count", "log"}:
-        raise ValueError(
-            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
         )
 
     if cells_per_block is not None and not isinstance(cells_per_block, int):
@@ -106,27 +97,27 @@ def load_h5ad(
 
 
     # =====================================================
-    # 2. list_random：多文件随机导入
+    # 2. 多文件导入：根据 load_type 自动选择顺序或随机逻辑
     # =====================================================
-    if load_type == "list_random":
+    if isinstance(h5ad_path, (list, tuple)):
+        if load_type == "order":
+            logger.info("[INFO] load_type = order，多文件顺序导入")
+            return _load_h5ad_list_order(
+                h5ad_paths=h5ad_path,
+                atlas=atlas,
+                cells_per_block=cells_per_block,
+            )
 
-        logger.info("[INFO] load_type = list_random")
-
+        logger.info("[INFO] load_type = random，多文件随机导入")
         return _load_h5ad_list_random(
             h5ad_paths=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            store_type=store_type,
         )
 
     # =====================================================
-    # 3. 其他模式必须是单个 h5ad 路径
+    # 3. 单文件导入：先轻量读取 n_cells，再进入对应逻辑
     # =====================================================
-    if isinstance(h5ad_path, (list, tuple)):
-        raise ValueError(
-            f"load_type='{load_type}' 只支持单个 h5ad_path；"
-            "如果要导入多个 h5ad，请使用 load_type='list_random'"
-        )
 
     if not isinstance(h5ad_path, (str, PathLike)):
         raise TypeError(
@@ -135,17 +126,10 @@ def load_h5ad(
 
     h5ad_path = os.fspath(h5ad_path)
 
-    # ===== unified parameter normalization =====
-    if load_type != "list_random":
-
-        # 轻量读取 n_cells
-        if isinstance(h5ad_path, (str, PathLike)):
-            adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-            n_cells = adata_backed.n_obs
-        else:
-            raise ValueError("list_random 请走专用逻辑")
-
-        cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
+    # 轻量读取 n_cells，用于统一 cells_per_block 默认值
+    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+    n_cells = adata_backed.n_obs
+    cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
 
     # =====================================================
     # 4. order：顺序导入
@@ -158,7 +142,6 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            store_type=store_type,
         )
 
     # =====================================================
@@ -172,7 +155,6 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
-            store_type=store_type,
         )
 
     logger.info(f"load_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
@@ -183,8 +165,10 @@ def load_h5ad(
 def _load_h5ad_list_random(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
-    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int | None = None,
+    *,
+    shuffle_blocks: bool = True,
+    shuffle_cells: bool = True,
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
@@ -193,6 +177,7 @@ def _load_h5ad_list_random(
 
     每次读取 ``blocks_per_pool`` 个 block 后，会合并为 cell pool，对 pool 内细胞整体随机一次，然后写入
     ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data``。
+    表达矩阵会统一以 count 尺度写入。
 
     该策略适合多个文件大小不一致的场景，既避免 round-robin 后期只剩大文件，也减少 h5ad cell-level 随机 IO。
 
@@ -207,9 +192,10 @@ def _load_h5ad_list_random(
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    store_type
-        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
+    shuffle_blocks
+        是否打乱全局 block 顺序。多文件随机导入开启，多文件顺序导入关闭。
+    shuffle_cells
+        是否打乱每个 cell pool 内部的细胞顺序。多文件随机导入开启，多文件顺序导入关闭。
 
     Returns
     -------
@@ -254,12 +240,6 @@ def _load_h5ad_list_random(
     commit_every = 5  # 每多少次 pool flush 提交一次
     gc_every = 5    # 每多少次 pool flush 做一次 gc
 
-    # 检查目标存储类型
-    if store_type not in {"count", "log"}:
-        raise ValueError(
-            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
-        )
-
     file_num = len(h5ad_paths)
 
     rng = np.random.default_rng()
@@ -277,7 +257,7 @@ def _load_h5ad_list_random(
     var_written = False
 
     logger.info(f"[INFO] 文件数量: {file_num:,}")
-    logger.info(f"[INFO] store_type: {store_type}")
+    logger.info("[INFO] 表达矩阵统一写入为 count")
 
     file_states = []
 
@@ -303,18 +283,18 @@ def _load_h5ad_list_random(
                 adata_backed,
                 sample_n=5000,
             )
-            source_store_type = x_info["store_type"]
+            source_x_scale = x_info["x_scale"]
             max_estimated_bytes_per_cell = max(
                 max_estimated_bytes_per_cell,
                 float(x_info["estimated_bytes_per_cell"]),
             )
 
-            logger.info(f"[INFO] 当前文件 X 判断为: {source_store_type}")
+            logger.info(f"[INFO] 当前文件 X 判断为: {source_x_scale}")
 
-            if source_store_type == store_type:
-                logger.info("[INFO] 当前文件 X 不需要转换，直接写入。")
+            if source_x_scale == "count":
+                logger.info("[INFO] 当前文件 X 已是 count，直接写入。")
             else:
-                logger.info(f"[INFO] 当前文件 X 将在读取 block 后转换: {source_store_type} -> {store_type}")
+                logger.info("[INFO] 当前文件 X 将在读取 block 后转换为 count")
 
             # ---------------- 检查 gene 数量和顺序 ----------------
             cur_var_names = adata_backed.var.index.astype(str).to_numpy()
@@ -338,7 +318,7 @@ def _load_h5ad_list_random(
             # ---------------- 每个文件内部按 cells_per_block 切 block ----------------
             block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
 
-            # 把所有文件的 block 放进 all_block_refs，最后统一全局 shuffle。
+            # 把所有文件的 block 放进 all_block_refs；随机模式会在后面统一全局 shuffle。
             for block_start in block_starts:
                 block_start = int(block_start)
                 block_end = min(block_start + cells_per_block, n_cells)
@@ -358,11 +338,11 @@ def _load_h5ad_list_random(
                     "adata_backed": adata_backed,
                     "n_cells": n_cells,
                     "n_genes": n_genes,
-                    "source_store_type": source_store_type,
+                    "source_x_scale": source_x_scale,
                 }
             )
 
-        # 全局 block 索引池统一随机打乱
+        # 全局 block 索引池：随机模式打乱；顺序模式保留文件列表和文件内部顺序。
         total_blocks = len(all_block_refs)
 
         if total_blocks == 0:
@@ -374,7 +354,8 @@ def _load_h5ad_list_random(
             estimated_bytes_per_cell=max_estimated_bytes_per_cell,
         )
 
-        rng.shuffle(all_block_refs)
+        if shuffle_blocks:
+            rng.shuffle(all_block_refs)
 
         # 动态建表：只用第一个文件建表
         first_backed = file_states[0]["adata_backed"]
@@ -383,7 +364,7 @@ def _load_h5ad_list_random(
         _create_var_table_from_adata(conn, first_backed[:1])
         _create_hys_tables(conn)
 
-        # 多个 block 读到的 batch 合并后，整体随机，然后写入数据库
+        # 多个 block 读到的 batch 合并后写入数据库；随机模式会先整体打乱 cell 顺序。
         def _flush_cell_pool(cell_pool: list[AnnData], flush_i: int):
 
             """执行 ``_flush_cell_pool`` 的核心功能。
@@ -459,8 +440,8 @@ def _load_h5ad_list_random(
             )
 
 
-            # 2. cell_pool 内部整体随机
-            if pool_adata.n_obs > 1:
+            # 2. cell_pool 内部整体随机；顺序模式关闭该步骤以保留原始细胞顺序
+            if shuffle_cells and pool_adata.n_obs > 1:
                 pool_perm = rng.permutation(pool_adata.n_obs)
                 pool_adata = pool_adata[pool_perm].copy()
 
@@ -514,7 +495,7 @@ def _load_h5ad_list_random(
 
             return total_pool_cells, total_pool_nnz
 
-        # 主循环：全局 block list 随机后，每次读取 blocks_per_pool 个 block
+        # 主循环：每次读取 blocks_per_pool 个 block；随机模式下 block list 已被打乱
         processed_blocks = 0
         flush_counter = 0
 
@@ -528,7 +509,7 @@ def _load_h5ad_list_random(
 
             while block_cursor < total_blocks:
 
-                # 每次从全局随机 block list 中取 blocks_per_pool 个 block
+                # 每次从全局 block list 中取 blocks_per_pool 个 block
                 block_group = all_block_refs[block_cursor:block_cursor + blocks_per_pool]
                 block_cursor += len(block_group)
 
@@ -550,11 +531,10 @@ def _load_h5ad_list_random(
 
                     t_read = time.time() - t_read0
 
-                    # 根据该文件的 source_store_type 转换当前 block
-                    adata = _convert_x_store_type_inplace(
+                    # 导入时统一将表达矩阵转换为 count 后写入
+                    adata = _convert_x_to_count_inplace(
                         adata,
-                        source_store_type=state["source_store_type"],
-                        target_store_type=store_type,
+                        source_x_scale=state["source_x_scale"],
                     )
 
                     cell_pool.append(adata)
@@ -569,7 +549,7 @@ def _load_h5ad_list_random(
                         else:
                             block_nnz = np.count_nonzero(adata.X)
 
-                # 这一组 block 读完后，整体 shuffle + 写入
+                # 这一组 block 读完后，按当前模式写入
                 if len(cell_pool) > 0:
 
                     flush_counter += 1
@@ -665,11 +645,31 @@ def _load_h5ad_list_random(
             pass
 
 
-''' 方法2 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
+''' 方法2 ： 顺序读取 , 多个大文件, 只支持 h5ad格式 '''
+def _load_h5ad_list_order(
+    h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
+    atlas: Atlas,
+    cells_per_block: int | None = None,
+):
+    """按文件列表顺序导入多个 h5ad 文件到 Atlas 数据库。
+
+    该函数复用多文件导入主体，但关闭全局 block 打乱和 cell pool 内部打乱，
+    因此写入顺序与 ``h5ad_paths`` 的顺序以及每个文件内部的细胞顺序一致。
+    表达矩阵会统一以 count 尺度写入。
+    """
+    return _load_h5ad_list_random(
+        h5ad_paths=h5ad_paths,
+        atlas=atlas,
+        cells_per_block=cells_per_block,
+        shuffle_blocks=False,
+        shuffle_cells=False,
+    )
+
+
+''' 方法3 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
-    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int | None = None,
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
@@ -678,6 +678,7 @@ def _load_h5ad_random(
     window。
 
     每个 window 内的细胞会整体随机打乱，再批量写入 Atlas 数据库，从而在控制内存占用的同时获得随机导入顺序。
+    表达矩阵会统一以 count 尺度写入。
 
     由于细胞顺序被重排，函数默认不导入 ``obsm``；``varm`` 与基因对齐，可以正常导入。
 
@@ -692,9 +693,6 @@ def _load_h5ad_random(
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
-
-    store_type
-        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
 
     Notes
     -----
@@ -732,19 +730,13 @@ def _load_h5ad_random(
     adata_backed = sc.read_h5ad(h5ad_path, backed="r")
     n_cells = adata_backed.n_obs
 
-    # 检查目标存储类型
-    if store_type not in {"count", "log"}:
-        raise ValueError(
-            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
-        )
-
     # 预读取 sample_n 个细胞，同时判断 X scale 和估算导入内存
     x_info = _inspect_x_from_backed(
         adata_backed,
         sample_n=5000,
     )
 
-    source_store_type = x_info["store_type"]
+    source_x_scale = x_info["x_scale"]
 
     estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
         memory_limit=_get_atlas_memory_limit(atlas),
@@ -752,13 +744,13 @@ def _load_h5ad_random(
         estimated_bytes_per_cell=x_info["estimated_bytes_per_cell"],
     )
 
-    logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
-    logger.info(f"[INFO] 目标存储类型 store_type = {store_type}")
+    logger.info(f"[INFO] 文件中 X 判断为: {source_x_scale}")
+    logger.info("[INFO] 表达矩阵统一写入为 count")
 
-    if source_store_type == store_type:
-        logger.info("[INFO] X 数据不需要转换，直接写入。")
+    if source_x_scale == "count":
+        logger.info("[INFO] X 数据已是 count，直接写入。")
     else:
-        logger.info(f"[INFO] X 数据将在写入前转换: {source_store_type} -> {store_type}")
+        logger.info("[INFO] X 数据将在写入前转换为 count")
 
     # 5 个 block 合并后再统一随机
     block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
@@ -770,7 +762,6 @@ def _load_h5ad_random(
     _create_hys_tables(conn)
 
     logger.info(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    logger.info(f"[INFO] store_type = {store_type}")
 
     # 窗口缓存: 每次攒够 blocks_per_pool 个 batch 再统一随机写入
     window_adatas = []
@@ -833,8 +824,7 @@ def _load_h5ad_random(
                     global_indptr_offset=global_indptr_offset,
                     global_data_id=global_data_id,
                     var_written=var_written,
-                    source_store_type=source_store_type,
-                    target_store_type=store_type,
+                    source_x_scale=source_x_scale,
                 )
 
                 t_write = time.time() - t1
@@ -885,8 +875,7 @@ def _load_h5ad_random(
                 global_indptr_offset=global_indptr_offset,
                 global_data_id=global_data_id,
                 var_written=var_written,
-                source_store_type=source_store_type,
-                target_store_type=store_type,
+                source_x_scale=source_x_scale,
             )
 
             t_write = time.time() - t1
@@ -956,17 +945,17 @@ def _load_h5ad_random(
     t_end = time.time()
 
 
-''' 方法3 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
+''' 方法4 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
-    store_type: StoreType = "count",  # 目标存储类型，"count" 或 "log"
     cells_per_block: int | None = None,
 ):
 
     """按原始细胞顺序导入单个 h5ad 文件。
 
     该函数以 backed 模式顺序读取 h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
+    表达矩阵会统一以 count 尺度写入。
 
     与随机导入不同，它不会打乱细胞顺序，因此可以安全导入 ``obsm`` 和 ``varm``，适合需要保留原始 AnnData 行顺序的场景。
 
@@ -982,9 +971,6 @@ def _load_h5ad_order(
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
-    store_type
-        目标表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
-
     Notes
     -----
     导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
@@ -997,12 +983,6 @@ def _load_h5ad_order(
     """
     commit_every = 5
     gc_every = 5
-
-    # 检查目标存储类型
-    if store_type not in {"count", "log"}:
-        raise ValueError(
-            f"store_type 只能是 'count' 或 'log'，当前为: {store_type}"
-        )
 
     conn = atlas.connect("r+")
     atlas.connection = conn
@@ -1026,7 +1006,7 @@ def _load_h5ad_order(
         sample_n=5000,
     )
 
-    source_store_type = x_info["store_type"]
+    source_x_scale = x_info["x_scale"]
 
     estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
         memory_limit=_get_atlas_memory_limit(atlas),
@@ -1037,20 +1017,19 @@ def _load_h5ad_order(
     # order 模式下，window_cells 就是 mega-batch 大小
     mega_batch_size = estimated_window_cells
 
-    logger.info(f"[INFO] 文件中 X 判断为: {source_store_type}")
-    logger.info(f"[INFO] 目标存储类型 store_type = {store_type}")
+    logger.info(f"[INFO] 文件中 X 判断为: {source_x_scale}")
+    logger.info("[INFO] 表达矩阵统一写入为 count")
 
-    if source_store_type == store_type:
-        logger.info("[INFO] X 数据不需要转换，直接写入。")
+    if source_x_scale == "count":
+        logger.info("[INFO] X 数据已是 count，直接写入。")
     else:
-        logger.info(f"[INFO] X 数据将在 mega-batch 读入后转换: {source_store_type} -> {store_type}")
+        logger.info("[INFO] X 数据将在 mega-batch 读入后转换为 count")
 
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
     logger.info(f"[INFO] 数据集维度: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
-    logger.info(f"[INFO] store_type = {store_type}")
 
     mini_batch_counter = 0
 
@@ -1073,11 +1052,10 @@ def _load_h5ad_order(
 
             t_read = time.time() - t0
 
-            # mega-batch 读入后，统一转换 X 的存储尺度
-            mega = _convert_x_store_type_inplace(
+            # mega-batch 读入后，统一转换为 count
+            mega = _convert_x_to_count_inplace(
                 mega,
-                source_store_type=source_store_type,
-                target_store_type=store_type,
+                source_x_scale=source_x_scale,
             )
 
             # 统计当前 mega 的 nnz
@@ -1160,7 +1138,7 @@ def _load_h5ad_order(
         pass
 
 
-''' 方法4： 顺序读取，小文件读取，支持多种数据格式的导入 '''
+''' 方法5： 顺序读取，小文件读取，支持多种数据格式的导入 '''
 def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
 
     """根据文件格式导入数据到 Atlas。
@@ -1205,8 +1183,7 @@ def _write_shuffle_window_to_duckdb(
     global_indptr_offset: int,
     global_data_id: int,
     var_written: bool,
-    source_store_type: StoreType,
-    target_store_type: StoreType,
+    source_x_scale: XScale,
 ):
     """将计算结果写入数据库表。
 
@@ -1240,11 +1217,8 @@ def _write_shuffle_window_to_duckdb(
     var_written
         是否已经写入 ``var`` 表。
 
-    source_store_type
+    source_x_scale
         输入表达矩阵当前的尺度。
-
-    target_store_type
-        希望写入 Atlas 的表达矩阵尺度。
 
     Returns
     -------
@@ -1290,13 +1264,10 @@ def _write_shuffle_window_to_duckdb(
         _append_var(adata_window, conn)
         var_written = True
 
-    # 根据 store_type 转换 X 的存储尺度
-    # count -> log: np.log1p
-    # log   -> count: np.expm1
-    adata_window = _convert_x_store_type_inplace(
+    # 导入时统一将表达矩阵转换为 count 后写入
+    adata_window = _convert_x_to_count_inplace(
         adata_window,
-        source_store_type=source_store_type,
-        target_store_type=target_store_type,
+        source_x_scale=source_x_scale,
     )
 
     # 5. 写入 X_HyS_data / X_HyS_indptr
@@ -1541,7 +1512,7 @@ def _inspect_x_from_backed(
     info
         一个字典，包含以下字段：
 
-        - ``store_type``：判断得到的 X 尺度，通常为 ``"count"`` 或 ``"log"``；
+        - ``x_scale``：判断得到的 X 尺度，通常为 ``"count"`` 或 ``"log"``；
         - ``sample_cells``：实际抽样的细胞数量；
         - ``nonzero_n``：sample 中非零表达值数量；
         - ``max``：sample 中非零表达值最大值；
@@ -1555,7 +1526,7 @@ def _inspect_x_from_backed(
     -----
     稀疏矩阵的内存估算按 Atlas 写入结构来估计：
 
-    - ``data`` 按 ``float32`` 估算；
+    - CSR 非零值数组 ``X.data`` 按 ``float32`` 估算；
     - ``indices`` 按 ``uint16`` 估算，对应 ``atlas_gene_id`` / ``USMALLINT``；
     - ``indptr`` 按 ``int64`` 估算。
 
@@ -1612,9 +1583,9 @@ def _inspect_x_from_backed(
     # count 数据中通常会出现较大的整数计数；
     # log 数据通常绝大多数非零值都不会太大。
     if vmax > 50 or q95 > 10:
-        store_type: StoreType = "count"
+        x_scale: XScale = "count"
     else:
-        store_type: StoreType = "log"
+        x_scale: XScale = "log"
 
     # 估算单个 cell 的基础 X 内存。
     x_bytes_per_cell = float(x_bytes / n)
@@ -1628,7 +1599,7 @@ def _inspect_x_from_backed(
     logger.info(f"  - max          = {vmax:.4f}")
     logger.info(f"  - q95          = {q95:.4f}")
     logger.info(f"  - frac <= 10   = {frac_le_10:.4f}")
-    logger.info(f"  - store_type   = {store_type}")
+    logger.info(f"  - x_scale      = {x_scale}")
     logger.info(f"  - x_bytes_per_cell = {x_bytes_per_cell:.2f}")
     logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
 
@@ -1636,7 +1607,7 @@ def _inspect_x_from_backed(
     gc.collect()
 
     return {
-        "store_type": store_type,
+        "x_scale": x_scale,
         "sample_cells": n,
         "nonzero_n": int(values.size),
         "max": vmax,
@@ -1738,7 +1709,7 @@ def _estimate_window_cells_and_blocks_per_pool(
     在不同导入模式中的含义：
 
     - ``random`` 模式：表示一个 shuffle window 中包含多少个 block；
-    - ``list_random`` 模式：表示一次从全局 block pool 中读取多少个 block；
+    - 多文件 ``random`` / ``order`` 模式：表示一次从全局 block pool 中读取多少个 block；
     - ``order`` 模式：``window_cells`` 直接作为 ``mega_batch_size`` 使用。
     """
 
@@ -1790,10 +1761,10 @@ def _estimate_window_cells_and_blocks_per_pool(
     return window_cells, blocks_per_pool
 
 
-def _detect_x_store_type_from_backed(
+def _detect_x_scale_from_backed(
     adata_backed: AnnData,
     sample_n: int = 5000,
-) -> StoreType:
+) -> XScale:
     """检测输入表达矩阵的存储尺度。
 
     该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
@@ -1813,7 +1784,7 @@ def _detect_x_store_type_from_backed(
 
     Returns
     -------
-    store_type
+    x_scale
         检测得到的表达矩阵尺度，通常为 ``"count"`` 或 ``"log"``。
 
     Notes
@@ -1826,7 +1797,7 @@ def _detect_x_store_type_from_backed(
         sample_n=sample_n,
     )
 
-    return x_info["store_type"]
+    return x_info["x_scale"]
 
 
 def _normalize_cells_per_block(cells_per_block, n_cells):
@@ -1839,13 +1810,12 @@ def _normalize_cells_per_block(cells_per_block, n_cells):
     logger.info(f"cells_per_block = {cells_per_block}")
     return cells_per_block
 
-# 根据 source_store_type 和 target_store_type 原地转换 adata.X。 log转换的 底数为 e
-def _convert_x_store_type_inplace(
+# 根据输入 X 尺度原地转换 adata.X；导入时统一写入 count，log 转换底数为 e
+def _convert_x_to_count_inplace(
     adata: AnnData,
-    source_store_type: StoreType,
-    target_store_type: StoreType,
+    source_x_scale: XScale,
 ):
-    """转换表达矩阵的存储尺度。
+    """将表达矩阵转换为 count 尺度。
 
     该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
 
@@ -1859,11 +1829,8 @@ def _convert_x_store_type_inplace(
     adata
         AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
 
-    source_store_type
+    source_x_scale
         输入表达矩阵当前的尺度。
-
-    target_store_type
-        希望写入 Atlas 的表达矩阵尺度。
 
     Returns
     -------
@@ -1875,7 +1842,7 @@ def _convert_x_store_type_inplace(
     这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
     """
 
-    if source_store_type == target_store_type:
+    if source_x_scale == "count":
         return adata
 
     X = adata.X
@@ -1887,21 +1854,12 @@ def _convert_x_store_type_inplace(
 
         X.data = X.data.astype(np.float32, copy=False)
 
-        if source_store_type == "count" and target_store_type == "log":
-            # count -> log
-            np.log1p(X.data, out=X.data)
-
-        elif source_store_type == "log" and target_store_type == "count":
-            # log -> count
+        if source_x_scale == "log":
             np.expm1(X.data, out=X.data)
-
-            # 避免极小数值误差导致负数
             X.data[X.data < 0] = 0
 
         else:
-            raise ValueError(
-                f"不支持的转换: {source_store_type} -> {target_store_type}"
-            )
+            raise ValueError(f"不支持的 X 尺度: {source_x_scale}")
 
         adata.X = X
         return adata
@@ -1909,17 +1867,12 @@ def _convert_x_store_type_inplace(
     # 2. dense matrix：直接对整个矩阵转换
     X = np.asarray(X, dtype=np.float32)
 
-    if source_store_type == "count" and target_store_type == "log":
-        np.log1p(X, out=X)
-
-    elif source_store_type == "log" and target_store_type == "count":
+    if source_x_scale == "log":
         np.expm1(X, out=X)
         np.maximum(X, 0, out=X)
 
     else:
-        raise ValueError(
-            f"不支持的转换: {source_store_type} -> {target_store_type}"
-        )
+        raise ValueError(f"不支持的 X 尺度: {source_x_scale}")
 
     adata.X = X
     return adata
@@ -2166,7 +2119,7 @@ def _create_hys_tables(conn: DuckDBPyConnection):
             id BIGINT,                --   int64
             atlas_cell_id  INTEGER,   --   int32
             atlas_gene_id  USMALLINT,  --  无符号 int16 0 ~ 65535 之间
-            data REAL                  --  float 32 单精度浮点数（4字节）
+            data_count REAL            --  原始 count，float 32 单精度浮点数（4字节）
         )
         """
     )
@@ -2356,7 +2309,7 @@ def _append_x_hys(
 
     indptr = X.indptr.astype(np.int64, copy=False)
     indices = X.indices.astype(np.uint16, copy=False)
-    data = X.data.astype(np.float32, copy=False)
+    data_count = X.data.astype(np.float32, copy=False)
 
     # ================= indptr =================
     row_nnz = np.diff(indptr)
@@ -2394,8 +2347,8 @@ def _append_x_hys(
 
     global_indptr_id += len(adj_indptr)
 
-    # ================= data =================
-    nnz = len(data)
+    # ================= data_count =================
+    nnz = len(data_count)
 
     if nnz > 0:
 
@@ -2425,8 +2378,8 @@ def _append_x_hys(
                 indices,
                 type=pa.uint16(),
             ),
-            "data": pa.array(
-                data,
+            "data_count": pa.array(
+                data_count,
                 type=pa.float32(),
             ),
         })
@@ -2437,13 +2390,13 @@ def _append_x_hys(
                 id,
                 atlas_cell_id,
                 atlas_gene_id,
-                data
+                data_count
             )
             SELECT
                 id,
                 atlas_cell_id,
                 atlas_gene_id,
-                data
+                data_count
             FROM _data_arrow
         """)
         conn.unregister("_data_arrow")
@@ -2658,7 +2611,7 @@ def _read_smart(file_path: PathLike[str] | str):
         return sc.read(file_path)
 
 
-''' 方法5： 顺序读取，anndata数据导入 '''
+''' 方法6： 顺序读取，anndata数据导入 '''
 def load_anndata(adata:AnnData, atlas:Atlas):
 
     """将 AnnData 对象写入 Atlas 数据库。
@@ -2994,7 +2947,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
             id BIGINT,
             atlas_cell_id INTEGER,
             atlas_gene_id USMALLINT,  --  无符号 int16 0 ~ 65535 之间
-            data REAL                 --  float 32 单精度浮点数（4字节）
+            data_count REAL           --  原始 count，float 32 单精度浮点数（4字节）
         )
         """
     )
@@ -3020,7 +2973,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
             else:
                 csr = sparse.csr_matrix(X_chunk)
 
-            data = csr.data
+            data_count = csr.data
             indices = csr.indices.astype(np.uint16)
             indptr = csr.indptr.astype(np.int64)
 
@@ -3036,9 +2989,9 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
             global_indptr_offset = adj_indptr[-1]
 
-            # ================= data 表 =================
-            if len(data) > 0:
-                nnz = len(data)
+            # ================= data_count 表达值 =================
+            if len(data_count) > 0:
+                nnz = len(data_count)
                 data_ids = np.arange(
                     global_data_counter,
                     global_data_counter + nnz,
@@ -3056,7 +3009,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
                     "id": data_ids,
                     "atlas_cell_id": cell_index,
                     "atlas_gene_id": indices,
-                    "data": data
+                    "data_count": data_count
                 })
 
                 conn.execute("INSERT INTO X_HyS_data SELECT * FROM data_df")
@@ -3065,7 +3018,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
             # === 清理 ===
             del X_chunk, csr, indptr_df
-            if len(data) > 0:
+            if len(data_count) > 0:
                 del data_df
             gc.collect()
 
@@ -3084,7 +3037,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
 
 ''' 基因名清洗 ：先导入，再清洗，var表 '''
-def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+def rename_duplicated_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
     """检查 Atlas 数据库中的基因名是否重复。
 
     该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名。重复基因名可能影响按名称绘图、差异基因展示和 AnnData 导出。
@@ -3105,11 +3058,11 @@ def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name
     --------
     检查默认基因名称列::
 
-        atlas.gene_names_duplicated()
+        atlas.rename_duplicated_genes()
 
     检查自定义列，并在发现重复后定位重复名称::
 
-        if atlas.gene_names_duplicated(gene_name_column="gene_symbol"):
+        if atlas.rename_duplicated_genes(gene_name_column="gene_symbol"):
             atlas.query(
                 "SELECT gene_symbol, COUNT(*) FROM var "
                 "GROUP BY gene_symbol HAVING COUNT(*) > 1"
@@ -3184,7 +3137,7 @@ def gene_names_duplicated(atlas: Atlas, gene_name_column: str = "atlas_gene_name
         atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
         logger.info("var表已更新")
 
-    logger.info("gene_names_duplicated Done")
+    logger.info("rename_duplicated_genes Done")
     return True
 
 # 示例

@@ -31,8 +31,7 @@ def kmeans_cluster_size(
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------

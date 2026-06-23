@@ -38,14 +38,23 @@ class ShuffleBuffer:
     在内部测试中缓存并抽样 dense minibatch::
 
         buffer = ShuffleBuffer(gene_num=2000, batch_size=128, buffer_batch_num=2)
-        buffer.add_batch(np.zeros((128, 2000), dtype=np.float32))
-        buffer.add_batch(np.ones((128, 2000), dtype=np.float32))
-        X_batch = buffer.sample_batch()
+        buffer.add_batch(
+            np.zeros((128, 2000), dtype=np.float32),
+            np.arange(128, dtype=np.int64),
+        )
+        buffer.add_batch(
+            np.ones((128, 2000), dtype=np.float32),
+            np.arange(128, 256, dtype=np.int64),
+        )
+        X_batch, filter_cell_ids = buffer.sample_batch()
 
     处理最后不足一个完整 buffer 的剩余数据::
 
         buffer = ShuffleBuffer(gene_num=100, batch_size=32, buffer_batch_num=4)
-        buffer.add_batch(np.zeros((20, 100), dtype=np.float32))
+        buffer.add_batch(
+            np.zeros((20, 100), dtype=np.float32),
+            np.arange(20, dtype=np.int64),
+        )
         remaining_batches = buffer.flush_remaining()"""
 
     def __init__(self, gene_num: int, batch_size: int, buffer_batch_num: int):
@@ -80,8 +89,11 @@ class ShuffleBuffer:
         # buffer 最大 cell 数
         self.buffer_cells = buffer_batch_num * batch_size
 
-        # 实际 buffer
+        # 实际 buffer：表达矩阵
         self.X = np.zeros((self.buffer_cells, gene_num), dtype=np.float32)
+
+        # 同步保存每一行对应的 filter_cell_id，保证 shuffle 后还能写回原细胞
+        self.filter_cell_ids = np.empty(self.buffer_cells, dtype=np.int64)
 
         # 写入指针
         self.write_ptr = 0
@@ -94,7 +106,11 @@ class ShuffleBuffer:
 
 
     # 写入一个 batch 到 缓冲区
-    def add_batch(self, X_batch: np.ndarray):
+    def add_batch(
+            self,
+            X_batch: np.ndarray,
+            filter_cell_ids: np.ndarray,
+    ):
         """向 shuffle buffer 写入一个 dense minibatch。
 
         该方法把当前 dense 表达矩阵追加到缓冲区。当缓冲区累计达到
@@ -106,6 +122,9 @@ class ShuffleBuffer:
         X_batch
             当前 dense minibatch。行表示细胞，列表示基因；列数需要与初始化时的
             ``gene_num`` 一致，行数通常为 ``batch_size``，最后一个 batch 可以更小。
+        filter_cell_ids
+            当前 ``X_batch`` 每一行对应的 ``filter_cell_id``，长度必须等于
+            ``X_batch.shape[0]``。
 
         Returns
         -------
@@ -117,14 +136,23 @@ class ShuffleBuffer:
         写入两个 batch 并触发 shuffle::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
-            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
-            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
-            X_batch = buffer.sample_batch()
+            buffer.add_batch(
+                np.random.rand(16, 50).astype(np.float32),
+                np.arange(16, dtype=np.int64),
+            )
+            buffer.add_batch(
+                np.random.rand(16, 50).astype(np.float32),
+                np.arange(16, 32, dtype=np.int64),
+            )
+            X_batch, filter_cell_ids = buffer.sample_batch()
 
         在缓冲区尚未填满时，``sample_batch`` 会返回 ``None``::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
-            buffer.add_batch(np.random.rand(16, 50).astype(np.float32))
+            buffer.add_batch(
+                np.random.rand(16, 50).astype(np.float32),
+                np.arange(16, dtype=np.int64),
+            )
             assert buffer.sample_batch() is None"""
 
         # 如果 buffer 已经满并进入输出阶段，不再写入
@@ -133,19 +161,26 @@ class ShuffleBuffer:
 
         n = X_batch.shape[0]
 
+        if len(filter_cell_ids) != n:
+            raise RuntimeError(
+                "ShuffleBuffer.add_batch: filter_cell_ids 长度必须等于 X_batch 行数。"
+            )
+
         # 安全保护（防止越界）
         if self.write_ptr + n > self.buffer_cells:
             raise RuntimeError("ShuffleBuffer overflow")
 
-        # 写入 buffer
+        # 写入 buffer，X 和 filter_cell_ids 必须保持同一行对应关系
         self.X[self.write_ptr:self.write_ptr + n] = X_batch
+        self.filter_cell_ids[self.write_ptr:self.write_ptr + n] = filter_cell_ids
         self.write_ptr += n
 
         # 如果 buffer 已满
         if self.write_ptr == self.buffer_cells:
-            # 随机打乱
+            # 随机打乱：X 和 filter_cell_ids 使用同一个 perm
             perm = np.random.permutation(self.buffer_cells)
             self.X[:] = self.X[perm]
+            self.filter_cell_ids[:] = self.filter_cell_ids[perm]
 
             # 进入输出阶段
             self.output_batch_id = 0
@@ -181,7 +216,8 @@ class ShuffleBuffer:
         start = self.output_batch_id * self.batch_size
         end = start + self.batch_size
 
-        batch = self.X[start:end]
+        X_batch = self.X[start:end]
+        filter_cell_ids = self.filter_cell_ids[start:end]
 
         self.output_batch_id += 1
 
@@ -192,7 +228,7 @@ class ShuffleBuffer:
             self.output_batch_id = 0
             self.shuffled = False
 
-        return batch
+        return X_batch, filter_cell_ids
 
 
     # 输出未凑满 buffer 的剩余 batch， 防止数据集 batch 数 < buffer_batch_num 时，一个 batch 都不输出
@@ -208,7 +244,7 @@ class ShuffleBuffer:
         数据库表中，便于后续步骤复用。
 
         Returns
--------
+        -------
         result
             函数返回结果。具体类型取决于参数设置和内部执行路径。
 
@@ -223,16 +259,20 @@ class ShuffleBuffer:
 
         n_cells = self.write_ptr
 
-        # 只打乱已经写入的 cell
+        # 只打乱已经写入的 cell；X 和 filter_cell_ids 使用同一个 perm
         perm = np.random.permutation(n_cells)
         X_remain = self.X[:n_cells][perm]
+        filter_cell_ids_remain = self.filter_cell_ids[:n_cells][perm]
 
         batches = []
 
         start = 0
         while start < n_cells:
             end = min(start + self.batch_size, n_cells)
-            batches.append(X_remain[start:end].copy())
+            batches.append((
+                X_remain[start:end].copy(),
+                filter_cell_ids_remain[start:end].copy(),
+            ))
             start = end
 
         # reset
@@ -267,6 +307,8 @@ class MultiThreadedMinibatchFetcher:
         ``multi-pass`` 模式下 shuffle buffer 缓存的 batch 数量。
     max_batches
         最多输出的 minibatch 数量；为 ``None`` 时不限制。
+    return_cell_ids
+        是否在输出中携带每行对应的 ``filter_cell_id``。默认关闭以兼容旧版矩阵输出。
 
     Notes
     -----
@@ -290,7 +332,8 @@ class MultiThreadedMinibatchFetcher:
             pass_mode="single-pass",
             max_batches=10,
         )
-        for X_batch in fetcher.run():
+        for batch in fetcher.run():
+            X_batch = batch["X"] if isinstance(batch, dict) else batch
             print(X_batch.shape)"""
 
     def __init__(self, file_path: PathLike[str] | str,
@@ -299,6 +342,7 @@ class MultiThreadedMinibatchFetcher:
                  pass_mode: str="multi-pass",
                  buffer_batch_num: int=5,
                  max_batches: int | None=None,  # 最多输出多少个 batch
+                 return_cell_ids: bool=False,
                  ):
 
         """初始化对象。
@@ -329,6 +373,10 @@ class MultiThreadedMinibatchFetcher:
         max_batches
             最多输出的 minibatch 数量；为 ``None`` 时不限制。
 
+        return_cell_ids
+            是否在输出 batch 时同时返回 ``filter_cell_ids``。默认 ``False``，保持旧版只返回矩阵的行为；
+            为 ``True`` 时返回 ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``。
+
         Notes
         -----
         这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
@@ -345,6 +393,7 @@ class MultiThreadedMinibatchFetcher:
 
         # 本轮输出多少个 batch
         self.max_batches = max_batches
+        self.return_cell_ids = return_cell_ids
         self.stop_event = threading.Event()  # 提前停止信号
 
         self.out_queue = queue.Queue(maxsize=20)  # 输出队列
@@ -485,11 +534,10 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _prepare_indptr(self):
-        """执行 ``_prepare_indptr`` 的核心功能。
+        """准备按 ``filter_cell_id`` 顺序读取的 indptr 数据。
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
-
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        返回的 record batch 第 0 列为 ``filter_cell_id``，第 1 列为累积 ``indptr``。
+        consumer 会同时使用二者，保证 ``X_batch[i, :]`` 能对应到 ``filter_cell_ids[i]``。
 
         它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
 
@@ -510,9 +558,11 @@ class MultiThreadedMinibatchFetcher:
 
         fetch_record_indptr = conn.execute(
             """
-            SELECT indptr
+            SELECT
+                filter_cell_id,
+                indptr
             FROM X_HyS_indptr_filtered
-            -- ORDER BY filter_cell_id  -- 新增
+            ORDER BY filter_cell_id
             """
 
         ).fetch_record_batch(rows_per_batch=self.batch_size)
@@ -799,10 +849,16 @@ class MultiThreadedMinibatchFetcher:
                 self.read_ptr = (self.read_ptr + need) % self.pool_size
                 self.used_size -= need
 
-                # 构建 indptr
-                indptr_now = np.array(self.indptr_queue.get().column(0), dtype=np.int64)
-                last_val = indptr_now[-1]
-                indptr_now = np.concatenate(([0], indptr_now - global_indptr_offset))
+                # 构建当前 batch 的 filter_cell_ids 和 indptr
+                indptr_rb = self.indptr_queue.get()
+
+                # 当前 X 每一行对应的 filter_cell_id
+                filter_cell_ids = np.array(indptr_rb.column(0), dtype=np.int64)
+
+                # 原始累积 indptr 在第 1 列
+                indptr_raw = np.array(indptr_rb.column(1), dtype=np.int64)
+                last_val = indptr_raw[-1]
+                indptr_now = np.concatenate(([0], indptr_raw - global_indptr_offset))
                 global_indptr_offset = last_val
 
                 # 检查 indptr 行数是否等于当前 batch cell 数
@@ -810,6 +866,14 @@ class MultiThreadedMinibatchFetcher:
                     raise RuntimeError(
                         f"[Consumer] indptr 长度不匹配: "
                         f"len(indptr_now)={len(indptr_now)}, "
+                        f"current_batch_cells={current_batch_cells}, "
+                        f"batch_idx={self.batch_idx}"
+                    )
+
+                if len(filter_cell_ids) != current_batch_cells:
+                    raise RuntimeError(
+                        f"[Consumer] filter_cell_ids 长度不匹配: "
+                        f"len(filter_cell_ids)={len(filter_cell_ids)}, "
                         f"current_batch_cells={current_batch_cells}, "
                         f"batch_idx={self.batch_idx}"
                     )
@@ -822,7 +886,10 @@ class MultiThreadedMinibatchFetcher:
                     X.indices = cols.copy()
                     X.indptr = indptr_now
 
-                    self._put_output(X)
+                    self._put_output(
+                        X,
+                        filter_cell_ids.copy(),
+                    )
 
                 if self.X_type == "dense":
                     # 输出类型2 ：dense 格式
@@ -849,6 +916,7 @@ class MultiThreadedMinibatchFetcher:
                     if self.pass_mode == "single-pass":  # 单次遍历
                         self._put_output(
                             X_dense.copy(),
+                            filter_cell_ids.copy(),
                         )
 
                     if self.pass_mode == "multi-pass":  # 多次遍历 （加入缓存区，保证多次的随机性）
@@ -856,18 +924,24 @@ class MultiThreadedMinibatchFetcher:
                         # multi-pass 下，先统计 prepared_batches
                         # 这个 batch 已经进入 ShuffleBuffer，
                         # 即使暂时没输出，后面 flush_remaining 也会输出。
-                        shuffle_buffer.add_batch(X_dense)  # 写入 输出缓存区 shuffle buffer
+                        shuffle_buffer.add_batch(
+                            X_dense,
+                            filter_cell_ids,
+                        )  # 写入输出缓存区 shuffle buffer
                         prepared_batches += 1
 
                         # 一旦 ShuffleBuffer 满了，立刻把当前 shuffle 后的 buffer 全部吐出去。
                         while True:
-                            X_dense_random = shuffle_buffer.sample_batch()  # 从 输出缓存区 随机采样 batch ， 保证多次遍历的随机性
+                            batch_random = shuffle_buffer.sample_batch()  # 从输出缓存区随机采样 batch，保证多次遍历随机性
 
-                            if X_dense_random is None:
+                            if batch_random is None:
                                 break
+
+                            X_dense_random, filter_cell_ids_random = batch_random
 
                             ok = self._put_output(
                                 X_dense_random.copy(),  # 你每轮都会复用同一块 buffer， 不 copy 会被覆盖
+                                filter_cell_ids_random.copy(),
                             )
 
                             if not ok or self._output_limit_reached():
@@ -884,7 +958,7 @@ class MultiThreadedMinibatchFetcher:
 
             remain_batches = shuffle_buffer.flush_remaining()
 
-            for X_remain in remain_batches:
+            for X_remain, filter_cell_ids_remain in remain_batches:
 
                 # 防止尾部输出超过 max_batches
                 if self._output_limit_reached():
@@ -893,6 +967,7 @@ class MultiThreadedMinibatchFetcher:
 
                 self._put_output(
                     X_remain.copy(),
+                    filter_cell_ids_remain.copy(),
                 )
 
         logger.info(
@@ -916,7 +991,9 @@ class MultiThreadedMinibatchFetcher:
         Yields
         -------
         batch
-            逐批生成的数据。具体类型取决于函数参数，例如 CSR 矩阵、dense 矩阵、DataFrame 或绘图数据。
+            当 ``return_cell_ids=False`` 时，逐批生成 CSR 或 dense 矩阵；
+            当 ``return_cell_ids=True`` 时，逐批生成
+            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``。
 
         Examples
         --------
@@ -1013,7 +1090,11 @@ class MultiThreadedMinibatchFetcher:
 
 
     # 辅助函数 3：统一输出 batch
-    def _put_output(self, X_batch: np.ndarray):
+    def _put_output(
+            self,
+            X_batch,
+            filter_cell_ids: np.ndarray,
+    ):
 
         """执行 ``_put_output`` 的核心功能。
 
@@ -1028,6 +1109,9 @@ class MultiThreadedMinibatchFetcher:
         X_batch
             当前 batch 的表达矩阵或 embedding 矩阵。
 
+        filter_cell_ids
+            当前 batch 中每一行对应的 ``filter_cell_id``。
+
         Returns
         -------
         result
@@ -1041,7 +1125,22 @@ class MultiThreadedMinibatchFetcher:
             self.stop_event.set()
             return False
 
-        self.out_queue.put(X_batch)
+        if len(filter_cell_ids) != X_batch.shape[0]:
+            raise RuntimeError(
+                f"filter_cell_ids 长度必须等于 X_batch 行数: "
+                f"len(filter_cell_ids)={len(filter_cell_ids)}, "
+                f"X_batch.shape[0]={X_batch.shape[0]}"
+            )
+
+        if self.return_cell_ids:
+            batch = {
+                "X": X_batch,
+                "filter_cell_ids": np.asarray(filter_cell_ids, dtype=np.int64),
+            }
+        else:
+            batch = X_batch
+
+        self.out_queue.put(batch)
         self.total_batches += 1
 
         # 当前速度 + 平均速度

@@ -19,7 +19,6 @@ def rank_genes_groups(
         figsize: tuple | None = None,
         save_path: PathLike[str] | str | None = None,
         show: bool = True,
-        return_fig: bool = False,
 ):
     """绘制每个分组的 top marker gene 排名图。
 
@@ -47,13 +46,10 @@ def rank_genes_groups(
         图片保存路径。为 ``None`` 时只显示或返回图对象。
     show
         是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
-    return_fig
-        是否返回 Matplotlib Figure 对象。
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -114,7 +110,7 @@ def rank_genes_groups(
     # group 统一转字符串，避免 int / str 混乱
     df["group"] = df["group"].astype(str)
 
-    # ✅ 修改：group 排序函数，能转成数字的按数字排，不能转数字的按字符串排
+    # group 排序函数，能转成数字的按数字排，不能转数字的按字符串排
     def _group_sort_key(x: Any):
         """生成分组或标签的自然排序键。
 
@@ -130,7 +126,7 @@ def rank_genes_groups(
             需要排序、格式化或转换的单个输入值。
 
         Returns
--------
+        -------
         sort_key
             可用于自然排序的键。
 
@@ -266,9 +262,6 @@ def rank_genes_groups(
     else:
         plt.close(fig)
 
-    if return_fig:
-        return fig
-
     return None
 
 
@@ -289,7 +282,6 @@ def rank_genes_groups_volcano(
         xlim_abs: float | None = None,
         save_path: PathLike[str] | str | None = None,
         show: bool = True,
-        return_fig: bool = False,
         label_fontsize: int = 7,
         label_offset_step: int = 12,
 ):
@@ -327,8 +319,6 @@ def rank_genes_groups_volcano(
         图片保存路径。为 ``None`` 时只显示或返回图对象。
     show
         是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
-    return_fig
-        是否返回 Matplotlib Figure 对象。
     label_fontsize
         参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
     label_offset_step
@@ -336,8 +326,7 @@ def rank_genes_groups_volcano(
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -416,7 +405,6 @@ def rank_genes_groups_volcano(
     else:
         df["neg_log10_padj_plot"] = df["neg_log10_padj"]
 
-    # ✅ 修改：y 轴自适应，不要无脑拉到 y_cap
     y_max_real = float(np.nanmax(df["neg_log10_padj_plot"]))
 
     if y_cap is not None:
@@ -462,7 +450,6 @@ def rank_genes_groups_volcano(
     ax.axhline(-np.log10(float(pval_cutoff)), color="#555555", linestyle="--", linewidth=1.0)
 
     # 7. 标注 top genes
-    # ✅ 修改：左右两侧分别选择 top genes，避免全部堆在同一侧
     n_up = max(1, int(top_n) // 2)
     n_down = max(1, int(top_n) - n_up)
 
@@ -486,7 +473,6 @@ def rank_genes_groups_volcano(
             .head(int(top_n))
         )
 
-    # ✅ 修改：不用箭头拉到图外，直接在点附近轻微错开
     for j, (_, row) in enumerate(top.iterrows()):
 
         x0 = float(row[lfc_key])
@@ -570,9 +556,6 @@ def rank_genes_groups_volcano(
     else:
         plt.close(fig)
 
-    if return_fig:
-        return fig
-
     return None
 
 
@@ -587,7 +570,7 @@ def rank_genes_groups_violin(
         genes: list[str] | None = None,
         n_genes: int = 8,
         use_expr_field: str = "data_log1p",
-        sample_n_per_group: int = 2000,
+        sample_cells_per_group: int = 2000,
         save_path: PathLike[str] | str | None = None
 ):
 
@@ -613,15 +596,14 @@ def rank_genes_groups_violin(
         每个分组保留或展示的基因数量。为 ``None`` 时保留全部可用基因。
     use_expr_field
         参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
-    sample_n_per_group
+    sample_cells_per_group
         每个分组抽样用于绘图的细胞数量。
     save_path
         图片保存路径。为 ``None`` 时只显示或返回图对象。
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -751,7 +733,7 @@ def rank_genes_groups_violin(
                 FROM obs
                 WHERE CAST({groupby} AS TEXT) = CAST({group_sql} AS TEXT)
                 ORDER BY random()
-                LIMIT {sample_n_per_group}
+                LIMIT {sample_cells_per_group}
             """).fetchdf()
 
             rest_cells_df = conn.execute(f"""
@@ -760,7 +742,7 @@ def rank_genes_groups_violin(
                 WHERE {groupby} IS NOT NULL
                   AND CAST({groupby} AS TEXT) != CAST({group_sql} AS TEXT)
                 ORDER BY random()
-                LIMIT {sample_n_per_group}
+                LIMIT {sample_cells_per_group}
             """).fetchdf()
 
             ref_label = "rest"
@@ -774,7 +756,7 @@ def rank_genes_groups_violin(
                 FROM obs
                 WHERE CAST({groupby} AS TEXT) = CAST({group_sql} AS TEXT)
                 ORDER BY random()
-                LIMIT {sample_n_per_group}
+                LIMIT {sample_cells_per_group}
             """).fetchdf()
 
             rest_cells_df = conn.execute(f"""
@@ -782,7 +764,7 @@ def rank_genes_groups_violin(
                 FROM obs
                 WHERE CAST({groupby} AS TEXT) = CAST({ref_sql} AS TEXT)
                 ORDER BY random()
-                LIMIT {sample_n_per_group}
+                LIMIT {sample_cells_per_group}
             """).fetchdf()
 
             ref_label = reference_in_result
@@ -795,7 +777,7 @@ def rank_genes_groups_violin(
             FROM obs
             WHERE CAST({groupby} AS TEXT) = CAST({group_sql} AS TEXT)
             ORDER BY random()
-            LIMIT {sample_n_per_group}
+            LIMIT {sample_cells_per_group}
         """).fetchdf()
 
         rest_cells_df = conn.execute(f"""
@@ -803,7 +785,7 @@ def rank_genes_groups_violin(
             FROM obs
             WHERE CAST({groupby} AS TEXT) = CAST({ref_sql} AS TEXT)
             ORDER BY random()
-            LIMIT {sample_n_per_group}
+            LIMIT {sample_cells_per_group}
         """).fetchdf()
 
         ref_label = str(reference)

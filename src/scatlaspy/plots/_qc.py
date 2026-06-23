@@ -101,7 +101,7 @@ def highest_expr_genes(
 
     if "cell_total_counts" in obs_cols:
         conn.execute("""
-            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW，避免复制 1e8 cells
+            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS 
             SELECT
                 atlas_cell_id,
                 cell_total_counts AS total_counts
@@ -110,7 +110,7 @@ def highest_expr_genes(
         """)
     elif "total_counts" in obs_cols:
         conn.execute("""
-            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW，避免复制 1e8 cells
+            CREATE OR REPLACE TEMP VIEW _cell_total_counts AS
             SELECT
                 atlas_cell_id,
                 total_counts AS total_counts
@@ -123,22 +123,22 @@ def highest_expr_genes(
             CREATE OR REPLACE TEMP TABLE _cell_total_counts AS
             SELECT
                 atlas_cell_id,
-                SUM(data) AS total_counts
+                SUM(data_count) AS total_counts
             FROM X_HyS_data
             GROUP BY atlas_cell_id
         """)
 
     # 选 top genes
     if use_all_cells:
-        if sample_cells is not None:  # ✅ 新增：use_all_cells=True 时也允许基于抽样细胞构造 dense grid
+        if sample_cells is not None:
             conn.execute("""
-                CREATE OR REPLACE TEMP VIEW _all_cells AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW
+                CREATE OR REPLACE TEMP VIEW _all_cells AS
                 SELECT atlas_cell_id
                 FROM _sample_cells
             """)
         else:
             conn.execute("""
-                CREATE OR REPLACE TEMP VIEW _all_cells AS  -- ✅ 修改：TEMP TABLE 改成 TEMP VIEW
+                CREATE OR REPLACE TEMP VIEW _all_cells AS
                 SELECT atlas_cell_id
                 FROM obs
             """)
@@ -149,11 +149,11 @@ def highest_expr_genes(
                 SELECT
                     x.atlas_cell_id,
                     x.atlas_gene_id,
-                    x.data * 100.0 / t.total_counts AS pct
+                    x.data_count * 100.0 / t.total_counts AS pct
                 FROM X_HyS_data x
                 JOIN _cell_total_counts t
                     ON x.atlas_cell_id = t.atlas_cell_id
-                JOIN _all_cells c                       -- ✅ 新增：如果 sample_cells 不为空，则只统计抽样细胞
+                JOIN _all_cells c                      
                     ON x.atlas_cell_id = c.atlas_cell_id
                 WHERE t.total_counts > 0
             ),
@@ -194,7 +194,7 @@ def highest_expr_genes(
             SELECT
                 x.atlas_gene_id,
                 v.atlas_gene_name,
-                AVG(x.data * 100.0 / t.total_counts) AS mean_pct
+                AVG(x.data_count * 100.0 / t.total_counts) AS mean_pct
             FROM X_HyS_data x
             JOIN _cell_total_counts t
                 ON x.atlas_cell_id = t.atlas_cell_id
@@ -207,7 +207,7 @@ def highest_expr_genes(
         """)
 
     # SQL 直接计算标准 boxplot 统计量
-    qfunc = "approx_quantile" if approx_quantile else "quantile_cont"  # ✅ 新增：use_all_cells=True/False 都统一支持近似分位数
+    qfunc = "approx_quantile" if approx_quantile else "quantile_cont"
 
     # use_all_cells=False 时，boxplot 统计可基于抽样细胞，避免 1e8 cells 下扫描/聚合过重
     sample_join_sql = ""
@@ -218,10 +218,10 @@ def highest_expr_genes(
         """
 
     if use_all_cells:
-        stats_df = conn.execute(f"""  -- ✅ 修改：改成 f-string，支持 qfunc
+        stats_df = conn.execute(f"""  
             WITH all_cells AS (
                 SELECT atlas_cell_id
-                FROM _all_cells              -- ✅ 修改：从 _all_cells 读取；如果 sample_cells 不为空则自动使用抽样细胞
+                FROM _all_cells 
             ),
             cell_gene_grid AS (
                 SELECT
@@ -236,13 +236,13 @@ def highest_expr_genes(
                 SELECT
                     x.atlas_cell_id,
                     x.atlas_gene_id,
-                    x.data * 100.0 / t.total_counts AS pct
+                    x.data_count * 100.0 / t.total_counts AS pct
                 FROM X_HyS_data x
                 JOIN _cell_total_counts t
                     ON x.atlas_cell_id = t.atlas_cell_id
                 JOIN _top_expr_genes g
                     ON x.atlas_gene_id = g.atlas_gene_id
-                JOIN all_cells c              -- ✅ 新增：限制到 _all_cells，支持 sample_cells
+                JOIN all_cells c           
                     ON x.atlas_cell_id = c.atlas_cell_id
                 WHERE t.total_counts > 0
             ),
@@ -306,9 +306,9 @@ def highest_expr_genes(
                         g.atlas_gene_name,
                         MAX(g.mean_pct) AS mean_pct,
                         COUNT(*) AS n,
-                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.25) AS q1,
-                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.50) AS median,
-                        {qfunc}(CAST(x.data * 100.0 / t.total_counts AS DOUBLE), 0.75) AS q3
+                        {qfunc}(CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE), 0.25) AS q1,
+                        {qfunc}(CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE), 0.50) AS median,
+                        {qfunc}(CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE), 0.75) AS q3
                     FROM X_HyS_data x
                     {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 boxplot
                     JOIN _top_expr_genes g
@@ -322,14 +322,14 @@ def highest_expr_genes(
                     SELECT
                         q.atlas_gene_name,
                         MIN(CASE
-                                WHEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                WHEN CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE)
                                      >= (q.q1 - 1.5 * (q.q3 - q.q1))
-                                THEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                THEN CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE)
                             END) AS whisker_low,
                         MAX(CASE
-                                WHEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                WHEN CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE)
                                      <= (q.q3 + 1.5 * (q.q3 - q.q1))
-                                THEN CAST(x.data * 100.0 / t.total_counts AS DOUBLE)
+                                THEN CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE)
                             END) AS whisker_high
                     FROM X_HyS_data x
                     {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 whisker
@@ -380,7 +380,7 @@ def highest_expr_genes(
                     SELECT
                         x.atlas_cell_id,
                         x.atlas_gene_id,
-                        x.data * 100.0 / t.total_counts AS pct
+                        x.data_count * 100.0 / t.total_counts AS pct
                     FROM X_HyS_data x
                     JOIN _cell_total_counts t
                         ON x.atlas_cell_id = t.atlas_cell_id
@@ -430,7 +430,7 @@ def highest_expr_genes(
                 WITH top_gene_values AS (
                     SELECT
                         g.atlas_gene_name,
-                        x.data * 100.0 / t.total_counts AS pct
+                        x.data_count * 100.0 / t.total_counts AS pct
                     FROM X_HyS_data x
                     {sample_join_sql}                 -- 如果 sample_cells 不为空，则只提取抽样细胞离群点
                     JOIN _cell_total_counts t

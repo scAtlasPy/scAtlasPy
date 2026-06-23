@@ -278,7 +278,7 @@ def _highly_variable_genes_plot_seurat(
             对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
 
         Returns
--------
+        -------
         quoted_name
             加双引号后的 SQL 标识符。
 
@@ -519,8 +519,7 @@ def highly_variable_genes(
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------

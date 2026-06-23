@@ -10,7 +10,7 @@ from anndata import AnnData
 from ._minibatch import MultiThreadedMinibatchFetcher
 from ._filter_index import FilterIndexBuilder
 from ..io import (
-    gene_names_duplicated as _io_gene_names_duplicated,
+    rename_duplicated_genes as _io_rename_duplicated_genes,
     get_anndata as _io_get_anndata,
     get_obs_df as _io_get_obs_df,
     load_anndata as _io_load_anndata,
@@ -18,7 +18,6 @@ from ..io import (
     load_multi_format as _io_load_multi_format,
     write_h5ad as _io_write_h5ad,
 )
-from ..io._input import StoreType
 
 # 配置日志
 logger = logging.getLogger("Atlas")
@@ -26,17 +25,23 @@ logger.addHandler(logging.NullHandler())
 
 
 def set_verbosity(
-        level: Literal["error", "warning", "info", "debug"] | None = None,
+        level: Literal["silence", "error", "warning", "info", "debug"] | None = "silence",
 ) -> None:
     """设置 scAtlasPy 的日志输出级别。
 
-    该函数调整包内使用的 ``Atlas`` logger，统一控制导入、预处理、工具函数和绘图流程中的日志详细程度。它不会主动修改第三方库的日志级别。
+    该函数调整包内使用的 ``Atlas`` logger，统一控制导入、预处理、
+    工具函数和绘图流程中的日志详细程度。它不会主动修改第三方库的日志级别。
 
     Parameters
     ----------
     level
-        日志级别字符串。可选值包括 ``"debug"``、``"info"``、``"warning"`` 和 ``"error"``。
-        传入 ``None`` 时关闭 ``Atlas`` logger，不输出 scAtlasPy 自身日志。
+        日志级别字符串。可选值包括 ``"silence"``、``"error"``、``"warning"``、
+        ``"info"`` 和 ``"debug"``。
+
+        默认值为 ``"silence"``，表示关闭 ``Atlas`` logger，不输出 scAtlasPy
+        自身日志。
+
+        传入 ``None`` 时也会关闭 ``Atlas`` logger，用于兼容旧版本写法。
 
     Returns
     -------
@@ -45,6 +50,14 @@ def set_verbosity(
 
     Examples
     --------
+    默认关闭 scAtlasPy 自身日志::
+
+        sap.set_verbosity()
+
+    显式关闭 scAtlasPy 自身日志::
+
+        sap.set_verbosity("silence")
+
     只显示警告和错误信息::
 
         sap.set_verbosity("warning")
@@ -52,16 +65,16 @@ def set_verbosity(
     调试导入或预处理流程::
 
         sap.set_verbosity("debug")
-        atlas = sap.Atlas(r"F:\\data\\pbmc")"""
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+    """
 
     atlas_logger = logging.getLogger("Atlas")
 
     if level is None:
-        atlas_logger.disabled = True
-        return
+        level = "silence"
 
-    atlas_logger.disabled = False
     level = str(level).lower()
+
     level_map = {
         "error": logging.ERROR,
         "warning": logging.WARNING,
@@ -69,9 +82,14 @@ def set_verbosity(
         "debug": logging.DEBUG,
     }
 
-    if level not in level_map:
-        raise ValueError("level 只支持: error, warning, info, debug, None")
+    if level == "silence":
+        atlas_logger.disabled = True
+        return
 
+    if level not in level_map:
+        raise ValueError("level 只支持: silence, error, warning, info, debug, None")
+
+    atlas_logger.disabled = False
     atlas_logger.setLevel(level_map[level])
 
     atlas_logger.handlers = [
@@ -124,7 +142,7 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            db_memory_limit: str | int | None = "32GB",
+            db_memory_limit: str | int | None = None,
     ):
         """初始化 Atlas 数据库对象。
 
@@ -142,8 +160,14 @@ class Atlas:
             DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如
             ``"4GB"``；也可以传入整数，整数会按 GB 解释，
             例如 ``4`` 等价于 ``"4GB"``。
+
+            默认值为 ``None``。当为 ``None`` 时，会自动获取当前系统物理内存总量，
+            并向下取整为整数 GB 后设置为 DuckDB 的内存上限。
+            这意味着内存管理由DuckDB自身的引擎负责，而非施加明确的限制。
+            例如当前系统内存约为 31.8GB 时，会自动设置为 ``"31GB"``。
+
             该参数只限制 DuckDB 查询和中间计算使用的内存，不限制
-            Python、NumPy 或 pandas 本身占用的内存。为 ``None`` 时不设置限制。
+            Python、NumPy 或 pandas 本身占用的内存。
 
         Returns
         -------
@@ -173,7 +197,7 @@ class Atlas:
         self.__file_path = self._resolve_file_path(file_name)
         self.__connection = None
         self.__mode: Literal["r+", "r"] = "r+"
-        self.__db_memory_limit = db_memory_limit
+        self.__db_memory_limit = self._resolve_db_memory_limit(db_memory_limit)
 
         logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
 
@@ -227,6 +251,84 @@ class Atlas:
             return os.path.abspath(file_name)
 
         return os.path.abspath(file_name + ".sasql")
+
+
+    @staticmethod
+    def _get_system_memory_gb_floor() -> int:
+        """获取当前系统物理内存总量，并向下取整为整数 GB。
+
+        该方法优先使用标准库实现，不额外依赖 psutil。
+        Windows 下使用 GlobalMemoryStatusEx；
+        Linux/macOS 下使用 os.sysconf。
+        """
+
+        total_bytes: int | None = None
+
+        # Windows
+        if os.name == "nt":
+            import ctypes
+
+            class MEMORYSTATUSEX(ctypes.Structure):
+                _fields_ = [
+                    ("dwLength", ctypes.c_ulong),
+                    ("dwMemoryLoad", ctypes.c_ulong),
+                    ("ullTotalPhys", ctypes.c_ulonglong),
+                    ("ullAvailPhys", ctypes.c_ulonglong),
+                    ("ullTotalPageFile", ctypes.c_ulonglong),
+                    ("ullAvailPageFile", ctypes.c_ulonglong),
+                    ("ullTotalVirtual", ctypes.c_ulonglong),
+                    ("ullAvailVirtual", ctypes.c_ulonglong),
+                    ("ullAvailExtendedVirtual", ctypes.c_ulonglong),
+                ]
+
+            memory_status = MEMORYSTATUSEX()
+            memory_status.dwLength = ctypes.sizeof(MEMORYSTATUSEX)
+
+            success = ctypes.windll.kernel32.GlobalMemoryStatusEx(
+                ctypes.byref(memory_status)
+            )
+
+            if not success:
+                raise RuntimeError("无法获取当前 Windows 系统物理内存大小")
+
+            total_bytes = int(memory_status.ullTotalPhys)
+
+        # Linux / macOS
+        else:
+            try:
+                page_size = os.sysconf("SC_PAGE_SIZE")
+                physical_pages = os.sysconf("SC_PHYS_PAGES")
+                total_bytes = int(page_size * physical_pages)
+            except Exception as e:
+                raise RuntimeError(
+                    "无法获取当前系统物理内存大小，请显式传入 db_memory_limit，例如 '32GB'"
+                ) from e
+
+        memory_gb = int(total_bytes // (1024 ** 3))
+
+        if memory_gb <= 0:
+            raise RuntimeError(
+                "获取到的系统物理内存小于 1GB，请显式传入 db_memory_limit"
+            )
+
+        return memory_gb
+
+
+    @staticmethod
+    def _resolve_db_memory_limit(
+            db_memory_limit: str | int | None,
+    ) -> str | int:
+        """解析 DuckDB 内存限制参数。
+
+        当 ``db_memory_limit`` 为 ``None`` 时，自动获取当前系统物理内存总量，
+        并向下取整为整数 GB，例如 31.8GB 会解析为 ``"31GB"``。
+        """
+
+        if db_memory_limit is None:
+            memory_gb = Atlas._get_system_memory_gb_floor()
+            return f"{memory_gb}GB"
+
+        return db_memory_limit
 
 
     @property
@@ -548,7 +650,6 @@ class Atlas:
 
         该方法只检查 ``atlas.file_path`` 指向的文件是否存在，不验证数据库内部表结构是否完整。
 
-        Returns
         -------
         bool
             如果 ``atlas.file_path`` 指向的数据库文件存在，则返回 ``True``；
@@ -633,164 +734,6 @@ class Atlas:
         return result
 
 
-    @staticmethod
-    def _quote_identifier(name: str) -> str:
-        """Return a safely quoted DuckDB identifier."""
-
-        return '"' + str(name).replace('"', '""') + '"'
-
-
-    def table_names(self) -> list[str]:
-        """Return the names of tables stored in the Atlas database.
-
-        This is a convenience wrapper around ``SHOW TABLES`` for tutorials,
-        notebooks, and interactive inspection.
-        """
-
-        if self.__connection is None:
-            self.connect("r+")
-
-        return [r[0] for r in self.connection.execute("SHOW TABLES").fetchall()]
-
-
-    def has_table(self, table_name: str) -> bool:
-        """Return whether a table exists in the Atlas database."""
-
-        return str(table_name) in set(self.table_names())
-
-
-    def table_info(self, table_name: str) -> pd.DataFrame:
-        """Return column metadata for an Atlas database table.
-
-        Parameters
-        ----------
-        table_name
-            Name of the table to inspect.
-
-        Returns
-        -------
-        pandas.DataFrame
-            DuckDB ``PRAGMA table_info`` output for the table.
-        """
-
-        if not self.has_table(table_name):
-            available = ", ".join(self.table_names()) or "None"
-            raise ValueError(
-                f"Table does not exist: {table_name}. "
-                f"Available tables: {available}"
-            )
-
-        table_sql = self._quote_identifier(table_name)
-        return self.connection.execute(f"PRAGMA table_info({table_sql})").df()
-
-
-    def has_column(self, table_name: str, column_name: str) -> bool:
-        """Return whether ``table_name`` contains ``column_name``."""
-
-        if not self.has_table(table_name):
-            return False
-
-        info = self.table_info(table_name)
-        return str(column_name) in set(info["name"].astype(str))
-
-
-    def read_index_info(self) -> pd.DataFrame:
-        """Return the persisted ``build_read_index`` configuration.
-
-        Returns an empty DataFrame with columns ``key`` and ``value`` when the
-        read index metadata table is not present.
-        """
-
-        columns = ["key", "value"]
-        if not self.has_table("atlas_read_index_meta"):
-            return pd.DataFrame(columns=columns)
-
-        return self.query("""
-            SELECT key, value
-            FROM atlas_read_index_meta
-            ORDER BY key
-        """)
-
-
-    def workflow_state(self) -> pd.DataFrame:
-        """Summarize common persisted workflow artifacts.
-
-        This method provides a compact checklist for reopening an existing Atlas:
-        it reports whether common tables or metadata columns produced by import,
-        preprocessing, dimensionality reduction, clustering, and annotation are
-        present. Presence is a useful resume hint, but it does not prove that a
-        result matches the current read index or the intended parameters.
-        """
-
-        rows = [
-            {
-                "artifact": "imported_data",
-                "present": self.has_table("obs") and self.has_table("var"),
-                "evidence": "obs and var tables",
-                "meaning": "Data have been imported.",
-            },
-            {
-                "artifact": "cell_filter",
-                "present": self.has_column("obs", "filter_cells"),
-                "evidence": "obs.filter_cells",
-                "meaning": "Cell filtering has been computed.",
-            },
-            {
-                "artifact": "gene_filter",
-                "present": self.has_column("var", "filter_genes"),
-                "evidence": "var.filter_genes",
-                "meaning": "Gene filtering has been computed.",
-            },
-            {
-                "artifact": "highly_variable_genes",
-                "present": self.has_column("var", "highly_variable_genes"),
-                "evidence": "var.highly_variable_genes",
-                "meaning": "HVG selection has been computed.",
-            },
-            {
-                "artifact": "read_index",
-                "present": self.has_table("atlas_read_index_meta"),
-                "evidence": "atlas_read_index_meta table",
-                "meaning": "A read index has been constructed.",
-            },
-            {
-                "artifact": "pca",
-                "present": self.has_table("obsm_X_pca") and self.has_table("varm_PCs"),
-                "evidence": "obsm_X_pca and varm_PCs tables",
-                "meaning": "PCA coordinates and loadings have been stored.",
-            },
-            {
-                "artifact": "kmeans",
-                "present": self.has_column("obs", "kmeans"),
-                "evidence": "obs.kmeans",
-                "meaning": "KMeans cluster labels have been stored.",
-            },
-            {
-                "artifact": "umap",
-                "present": self.has_table("obsm_X_umap"),
-                "evidence": "obsm_X_umap table",
-                "meaning": "UMAP coordinates have been stored.",
-            },
-            {
-                "artifact": "rank_genes_groups",
-                "present": self.has_table("rank_genes_groups"),
-                "evidence": "rank_genes_groups table",
-                "meaning": "Marker-gene ranking results have been stored.",
-            },
-            {
-                "artifact": "manual_annotation",
-                "present": (
-                    self.has_table("manual_cluster_annotation")
-                    or self.has_column("obs", "cell_type_manual")
-                ),
-                "evidence": "manual_cluster_annotation table or obs.cell_type_manual",
-                "meaning": "Manual annotation results have been stored.",
-            },
-        ]
-
-        return pd.DataFrame(rows)
-
-
     def describe(self) -> str:
         """汇总 Atlas 数据库中的表结构。
 
@@ -824,7 +767,7 @@ class Atlas:
 
         # 2. 查询所有表
         try:
-            tables = self.table_names()
+            tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
         except Exception:
             tables = []
 
@@ -883,32 +826,31 @@ class Atlas:
         return self.describe()
 
 
-    def head(self, table_name: str, n: int = 5) -> pd.DataFrame:
-        """Return the first rows of an Atlas database table.
+    def head(self, table_name: str, n: int = 5):
+        """打印数据库表的前几行。
 
-        This method queries the first ``n`` rows of a table and returns them as
-        a :class:`pandas.DataFrame`, which is convenient for interactive
-        notebooks and quick inspection.
+        该方法查询指定表的前 ``n`` 行，并在控制台打印表名、列名和数据内容，
+        适合快速检查导入结果或分析结果。
 
         Parameters
         ----------
         table_name
-            Name of the database table to inspect.
+            数据库表名。
         n
-            Number of rows to return.
+            打印的记录数量。
 
         Returns
         -------
-        pandas.DataFrame
-            The first ``n`` rows from ``table_name``.
+        None
+            该方法只打印结果，不返回 DataFrame。
 
         Examples
         --------
-        Inspect the first 5 rows of ``obs``::
+        查看 ``obs`` 前 5 行::
 
             atlas.head("obs")
 
-        Inspect the first 10 rows of marker-gene results::
+        查看差异基因结果前 10 行::
 
             atlas.head("rank_genes_groups", n=10)
         """
@@ -916,19 +858,51 @@ class Atlas:
         if self.__connection is None:
             self.connect("r+")
 
-        if not self.has_table(table_name):
-            tables = self.table_names()
+        conn = self.__connection
+
+        # 1. 检查表是否存在
+        tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
+
+        if table_name not in tables:
             raise ValueError(
-                f"Table does not exist: {table_name}. "
-                f"Available tables: {', '.join(tables) if len(tables) > 0 else 'None'}"
+                f"数据库中不存在表: {table_name}\n"
+                f"当前可用表: {', '.join(tables) if len(tables) > 0 else 'None'}"
             )
 
-        table_sql = self._quote_identifier(table_name)
-        return self.connection.execute(f"""
+        # 2. 安全引用表名
+        table_sql = '"' + table_name.replace('"', '""') + '"'
+
+        # 3. 获取字段名
+        columns = [
+            r[0]
+            for r in conn.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+            """, [table_name]).fetchall()
+        ]
+
+        # 4. 查询前 n 行
+        df = conn.execute(f"""
             SELECT *
             FROM {table_sql}
             LIMIT {int(n)}
         """).df()
+
+        # 5. 打印结果
+        print(f"table   : {table_name}")
+        print(f"columns : {', '.join(columns)}")
+        print(f"rows    : first {int(n)}")
+
+        with pd.option_context(
+                "display.max_columns", None,
+                "display.max_rows", int(n),
+                "display.width", 0,
+                "display.max_colwidth", None,
+        ):
+            print(df.to_string(index=True))
+
 
     def _save_read_index_meta(
             self,
@@ -943,6 +917,9 @@ class Atlas:
         该方法把本次 ``build_read_index`` 使用的细胞过滤条件、基因过滤条件、
         是否使用 HVG 以及表达值列名保存到 ``atlas_read_index_meta`` 表中，
         用于后续检查当前读取索引对应的数据范围和表达层。
+
+        如果 ``atlas_read_index_meta`` 表不存在，则自动创建该表；
+        如果该表已经存在，则不会重复创建，并打印提示信息。
 
         Parameters
         ----------
@@ -966,12 +943,23 @@ class Atlas:
 
         conn = self.__connection
 
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS atlas_read_index_meta (
-                key VARCHAR PRIMARY KEY,
-                value VARCHAR
-            )
-        """)
+        # 修改：先检查 atlas_read_index_meta 表是否已经存在
+        table_exists = conn.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = 'atlas_read_index_meta'
+        """).fetchone()[0]
+
+        # 修改：不存在才新建；存在则不重复建表，并打印提示
+        if table_exists == 0:
+            conn.execute("""
+                CREATE TABLE atlas_read_index_meta (
+                    key VARCHAR PRIMARY KEY,
+                    value VARCHAR
+                )
+            """)
+        else:
+            print("minibatch读取 表达矩阵所需的索引表 已经重新构建，依赖该表的PCA、K-means等操作，请重新运行！")
 
         rows = [
             ("cell_condition", str(cell_condition)),
@@ -991,8 +979,8 @@ class Atlas:
 
     def build_read_index(
             self,
-            cell_condition: str | None  = "filter_cells",
-            gene_condition: str | None = "filter_genes",
+            cell_condition: str  = "filter_cells",
+            gene_condition: str  = "filter_genes",
             use_hvg: bool = True,
             use_data: str = "data_log1p",
     ):
@@ -1013,7 +1001,7 @@ class Atlas:
             为 ``True`` 时，最终基因集合需要同时满足基因过滤条件和 HVG 条件。
         use_data
             从 ``X_HyS_data`` 表中读取的表达值列名。常用值包括
-            ``"data"``、``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
+            ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
 
         Returns
         -------
@@ -1086,110 +1074,249 @@ class Atlas:
             batch_size: int = 2048,
             max_batches: int | None = None,
             buffer_batch_num: int = 5,
+            get_obs_col: str | None = None,
     ):
         """以 dense 小批量读取表达矩阵。
 
-        该方法把数据库中的稀疏表达记录按批转换为 dense array，适合 IncrementalPCA、MiniBatchKMeans 等需要 dense 输入的算法。
+        该方法基于 ``atlas.build_read_index(...)`` 生成的过滤后读取索引，
+        从 ``X_HyS_data_filtered`` / ``X_HyS_indptr_filtered`` 中按批恢复表达矩阵，
+        并把稀疏表达记录转换为 ``float32`` dense array。它主要服务于
+        ``IncrementalPCA``、``MiniBatchKMeans``、流式训练和大数据分批推理等
+        需要 dense 输入的算法。
+
+        返回值是一个生成器，会逐批 ``yield`` minibatch，而不是一次性把全部数据读入内存。
+        默认情况下，每次只返回一个 ``X_batch`` 矩阵；当传入 ``get_obs_col`` 时，
+        会额外返回当前 batch 每一行对应的 ``filter_cell_ids``，并根据这些
+        ``filter_cell_ids`` 从 ``obs`` 表中取出指定列，例如 ``kmeans`` 标签。
+
+        ``filter_cell_ids`` 是 ``build_read_index`` 后生成的连续细胞编号，只包含当前
+        读取索引中保留的细胞。它用于保证 ``X_batch[i, :]`` 可以精确对应
+        ``obs.filter_cell_id == filter_cell_ids[i]`` 的那一行元数据。特别是在
+        ``multi-pass`` 模式中，batch 会经过 ``ShuffleBuffer`` 随机打乱；
+        因此标签必须跟随 ``X`` 一起 shuffle，不能在输出后再用 batch 序号临时推算。
 
         Parameters
         ----------
         pass_mode
-            小批量读取模式。用于控制迭代器如何遍历数据库中的表达矩阵。
-        batch_size
-            每个小批量包含的细胞数量。较大值通常更快，但会增加内存占用。
-        max_batches
-            最多读取的小批量数量。为 ``None`` 时遍历全部可用批次。
-        buffer_batch_num
-            预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
+            小批量读取模式。可选值为 ``"single-pass"`` 或 ``"multi-pass"``。
 
-        Returns
+            - ``"single-pass"``：按当前读取索引顺序遍历一次数据库，适合评估、
+              导出、预测或需要确定性顺序的流程。
+            - ``"multi-pass"``：每一轮重新创建读取器，并在 dense batch 层使用
+              ``ShuffleBuffer`` 做随机化输出，适合需要多轮随机小批量训练的算法。
+              该模式通常应配合 ``max_batches`` 使用，用于控制总训练批次数。
+        batch_size
+            每个 minibatch 包含的细胞数量。较大值通常可以减少 Python 层循环次数、
+            提高吞吐，但会增加单批 dense 矩阵的内存占用。输出矩阵形状通常为
+            ``(当前批细胞数, 过滤后基因数)``；最后一个 batch 的细胞数可能小于
+            ``batch_size``。
+        max_batches
+            最多读取或输出的 minibatch 数量。为 ``None`` 时：
+
+            - 在 ``single-pass`` 模式下遍历当前读取索引中的全部 batch；
+            - 在 ``multi-pass`` 模式下不主动限制轮数，通常建议显式传入该参数。
+        buffer_batch_num
+            ``multi-pass`` 模式下 ``ShuffleBuffer`` 缓存的 batch 数量。
+            实际 shuffle buffer 的细胞容量约为 ``batch_size * buffer_batch_num``。
+            值越大，随机化范围越大，但 dense 缓冲区占用的内存也越高。
+            在 ``single-pass`` 模式下该参数会传到底层读取器，但不会改变顺序输出语义。
+        get_obs_col
+            需要随 minibatch 一起返回的 ``obs`` 表字段名，例如 ``"kmeans"``。
+            默认为 ``None``，不查询 ``obs`` 表字段，且每次只 ``yield X_batch``。
+
+            当传入字段名时，例如 ``get_obs_col="kmeans"``，该方法会自动让底层
+            minibatch 读取器返回 ``filter_cell_ids``，再根据这些 ID 查询
+            ``obs.kmeans``，并返回字典：
+
+            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, "kmeans": values}``
+
+            其中 ``X_batch[i, :]``、``filter_cell_ids[i]`` 和 ``values[i]``
+            三者一一对应。该字段必须已经存在于 ``obs`` 表中；如果缺少
+            ``filter_cell_id``，需要先运行 ``atlas.build_read_index(...)``。
+
+        Yields
         -------
-        Any
-            函数返回底层实现产生的结果。
+        numpy.ndarray 或 dict
+            当 ``get_obs_col is None`` 时，每次生成一个 dense ``numpy.ndarray``：
+
+            ``X_batch``
+
+            当 ``get_obs_col`` 不为 ``None`` 时，每次生成一个字典：
+
+            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, get_obs_col: values}``
+
+            ``X_batch`` 为 ``float32`` dense 矩阵；``filter_cell_ids`` 为当前 batch
+            每行对应的过滤后细胞 ID；``values`` 为 ``obs`` 表中指定列的值。
 
         Examples
         --------
-        读取用于模型拟合的小批量::
+        顺序读取，用于模型拟合::
 
             for X_batch in atlas.get_minibatch_dense(batch_size=4096):
                 print(X_batch.shape)
                 break
 
-        限制只读取前 100 个批次做快速测试::
+        同时返回 ``obs.kmeans`` 标签::
 
-            batches = atlas.get_minibatch_dense(batch_size=2048, max_batches=100)"""
+            for batch in atlas.get_minibatch_dense(
+                batch_size=4096,
+                get_obs_col="kmeans",
+            ):
+                X_batch = batch["X"]
+                labels = batch["kmeans"]
+                filter_cell_ids = batch["filter_cell_ids"]
+                break
+
+        多轮随机 batch 训练，并限制总批次数::
+
+            for X_batch in atlas.get_minibatch_dense(
+                pass_mode="multi-pass",
+                batch_size=2048,
+                buffer_batch_num=5,
+                max_batches=100,
+            ):
+                model.partial_fit(X_batch)
+        """
 
         if pass_mode not in ("single-pass", "multi-pass"):
             raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
 
+        if get_obs_col is not None and not isinstance(get_obs_col, str):
+            raise TypeError("get_obs_col 必须是 str 或 None")
+
+        if get_obs_col is not None and get_obs_col == "":
+            raise ValueError("get_obs_col 不能为空字符串")
+
+        # 内部参数：get_obs_col 依赖 filter_cell_ids 做映射，因此传入 obs 字段时自动打开。
+        return_cell_ids = get_obs_col is not None
+
+        obs_conn = None
+        obs_col_sql = None
+
+
+        def _quote_identifier(name: str) -> str:
+            return '"' + name.replace('"', '""') + '"'
+
+
+        def _attach_obs_col(batch):
+
+            if get_obs_col is None:
+                return batch
+
+            filter_cell_ids = np.asarray(batch["filter_cell_ids"], dtype=np.int64)
+
+            ids_df = pd.DataFrame({
+                "row_order": np.arange(len(filter_cell_ids), dtype=np.int64),
+                "filter_cell_id": filter_cell_ids,
+            })
+
+            obs_conn.register("_minibatch_obs_ids", ids_df)
+            try:
+                obs_values = obs_conn.execute(f"""
+                    SELECT ids.row_order, obs.{obs_col_sql} AS obs_value
+                    FROM _minibatch_obs_ids AS ids
+                    LEFT JOIN obs
+                      ON obs.filter_cell_id = ids.filter_cell_id
+                    ORDER BY ids.row_order
+                """).fetchnumpy()["obs_value"]
+            finally:
+                obs_conn.unregister("_minibatch_obs_ids")
+
+            batch[get_obs_col] = obs_values
+            return batch
+
+
+        if get_obs_col is not None:
+            obs_conn = duckdb.connect(self.file_path)
+            obs_columns = obs_conn.execute("PRAGMA table_info('obs')").fetchdf()["name"].tolist()
+
+            if "filter_cell_id" not in obs_columns:
+                obs_conn.close()
+                raise ValueError("obs 表缺少 filter_cell_id 字段，请先运行 atlas.build_read_index(...)")
+
+            if get_obs_col not in obs_columns:
+                obs_conn.close()
+                raise ValueError(f"obs 表不存在字段: {get_obs_col}")
+
+            if get_obs_col in {"X", "filter_cell_ids"}:
+                obs_conn.close()
+                raise ValueError("get_obs_col 不能是 X 或 filter_cell_ids，避免覆盖 minibatch 保留字段")
+
+            obs_col_sql = _quote_identifier(get_obs_col)
 
         # 1. single-pass：只跑一遍
-        if pass_mode == "single-pass":
+        try:
+            if pass_mode == "single-pass":
 
-            fetcher = MultiThreadedMinibatchFetcher(
-                file_path=self.file_path,
-                batch_size=batch_size,
-                x_type="dense",
-                pass_mode="single-pass",
-                buffer_batch_num=buffer_batch_num,
-                max_batches=max_batches,
-            )
+                fetcher = MultiThreadedMinibatchFetcher(
+                    file_path=self.file_path,
+                    batch_size=batch_size,
+                    x_type="dense",
+                    pass_mode="single-pass",
+                    buffer_batch_num=buffer_batch_num,
+                    max_batches=max_batches,
+                    return_cell_ids=return_cell_ids,
+                )
 
-            for X_batch in fetcher.run():
+                for batch in fetcher.run():
 
-                yield X_batch
+                    yield _attach_obs_col(batch)
 
-            return
+                return
 
-        # 2. multi-pass：自动循环多遍
-        produced_batches = 0
-        pass_id = 0
+            # 2. multi-pass：自动循环多遍
+            produced_batches = 0
+            pass_id = 0
 
-        while True:
+            while True:
 
-            # 如果达到 max_batches，停止
-            if max_batches is not None and produced_batches >= max_batches:
-                logger.info(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
-                break
-
-            # 当前 pass 还需要输出多少 batch
-            if max_batches is None:
-                remain_batches = None
-            else:
-                remain_batches = max_batches - produced_batches
-
-            logger.info(
-                f"[get_minibatch_dense] multi-pass start pass={pass_id + 1}, "
-                f"produced={produced_batches}, "
-                f"remain={remain_batches}"
-            )
-
-            fetcher = MultiThreadedMinibatchFetcher(
-                file_path=self.file_path,
-                batch_size=batch_size,
-                x_type="dense",
-                pass_mode="multi-pass",
-                buffer_batch_num=buffer_batch_num,
-                max_batches=remain_batches,
-            )
-
-            pass_batches = 0
-
-            for X_batch in fetcher.run():
-                produced_batches += 1
-                pass_batches += 1
-
-                yield X_batch
-
+                # 如果达到 max_batches，停止
                 if max_batches is not None and produced_batches >= max_batches:
+                    logger.info(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
                     break
 
-            pass_id += 1
+                # 当前 pass 还需要输出多少 batch
+                if max_batches is None:
+                    remain_batches = None
+                else:
+                    remain_batches = max_batches - produced_batches
 
-            # 防止异常情况下空 pass 无限循环
-            if pass_batches == 0:
-                logger.debug("[get_minibatch_dense] pass produced 0 batch, stop")
-                break
+                logger.info(
+                    f"[get_minibatch_dense] multi-pass start pass={pass_id + 1}, "
+                    f"produced={produced_batches}, "
+                    f"remain={remain_batches}"
+                )
+
+                fetcher = MultiThreadedMinibatchFetcher(
+                    file_path=self.file_path,
+                    batch_size=batch_size,
+                    x_type="dense",
+                    pass_mode="multi-pass",
+                    buffer_batch_num=buffer_batch_num,
+                    max_batches=remain_batches,
+                    return_cell_ids=return_cell_ids,
+                )
+
+                pass_batches = 0
+
+                for batch in fetcher.run():
+                    produced_batches += 1
+                    pass_batches += 1
+
+                    yield _attach_obs_col(batch)
+
+                    if max_batches is not None and produced_batches >= max_batches:
+                        break
+
+                pass_id += 1
+
+                # 防止异常情况下空 pass 无限循环
+                if pass_batches == 0:
+                    logger.debug("[get_minibatch_dense] pass produced 0 batch, stop")
+                    break
+        finally:
+            if obs_conn is not None:
+                obs_conn.close()
 
 
     # =====================================================
@@ -1206,22 +1333,21 @@ class Atlas:
         self,
         h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
         *,
-        load_type: Literal["order", "random", "list_random"] = "random",
-        store_type: StoreType = "count",
+        load_type: Literal["order", "random"] = "random",
         cells_per_block: int | None = None,
     ) -> Any:
         """通过 Atlas 对象导入 h5ad 文件。
 
         这是底层 h5ad 导入函数的对象式入口，可以用 ``atlas.load_h5ad(...)`` 直接调用。
+        表达矩阵会统一保存为 count 尺度；如果输入 ``X`` 被检测为 log 尺度，会在写入前转回 count。
 
         Parameters
         ----------
         h5ad_path
             输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
         load_type
-            导入方式。``"order"`` 表示按原始顺序导入，``"random"`` 表示按随机/分块策略导入。
-        store_type
-            表达值写入类型。当前约定支持 ``"count"`` 和 ``"log"``。
+            导入方式，只支持 ``"order"`` 和 ``"random"``。
+            当 ``h5ad_path`` 是列表时，会自动进入对应的多文件顺序或随机导入逻辑。
         cells_per_block
             写入稀疏表达矩阵时每个细胞块包含的细胞数。
 
@@ -1237,17 +1363,16 @@ class Atlas:
             atlas = sap.Atlas(r"F:\\data\\pbmc")
             atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
 
-        导入多个 h5ad 文件::
+        随机导入多个 h5ad 文件::
 
             atlas.load_h5ad([
                 r"F:\\data\\batch1.h5ad",
                 r"F:\\data\\batch2.h5ad",
-            ])"""
+            ], load_type="random")"""
         return _io_load_h5ad(
             h5ad_path,
             self,
             load_type=load_type,
-            store_type=store_type,
             cells_per_block=cells_per_block,
         )
 
@@ -1303,7 +1428,7 @@ class Atlas:
         return _io_load_multi_format(file_path, self)
 
 
-    def gene_names_duplicated(
+    def rename_duplicated_genes(
         self,
         gene_name_column: str = "atlas_gene_name",
     ) -> bool | None:
@@ -1325,13 +1450,13 @@ class Atlas:
         --------
         检查默认基因名列::
 
-            atlas.gene_names_duplicated()
+            atlas.rename_duplicated_genes()
 
         检查自定义基因名列::
 
-            atlas.gene_names_duplicated(gene_name_column="gene_symbol")"""
+            atlas.rename_duplicated_genes(gene_name_column="gene_symbol")"""
 
-        return _io_gene_names_duplicated(self, gene_name_column=gene_name_column)
+        return _io_rename_duplicated_genes(self, gene_name_column=gene_name_column)
 
 
     def write_h5ad(
@@ -1339,6 +1464,7 @@ class Atlas:
         out_h5ad_path: PathLike[str] | str,
         *,
         batch_cells: int = 1_000_000,
+        use_data: str = "data_count",
     ) -> None:
         """通过 Atlas 对象导出 h5ad 文件。
 
@@ -1350,6 +1476,8 @@ class Atlas:
             输出 ``.h5ad`` 文件路径。
         batch_cells
             导出表达矩阵时每批处理的细胞数。
+        use_data
+            从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
 
         Returns
         -------
@@ -1364,12 +1492,17 @@ class Atlas:
 
         使用较小批次降低内存占用::
 
-            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)"""
+            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
+
+        导出 log1p 表达矩阵::
+
+            atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
 
         return _io_write_h5ad(
             self,
             out_h5ad_path,
             batch_cells=batch_cells,
+            use_data=use_data,
         )
 
 
@@ -1407,7 +1540,7 @@ class Atlas:
     def get_anndata(
         self,
         atlas_cell_ids: list[int] | np.ndarray | None,
-        use_data: str = "data",
+        use_data: str = "data_count",
         include_obsm: bool = True,
         include_varm: bool = True,
     ) -> AnnData:
@@ -1422,7 +1555,7 @@ class Atlas:
         atlas_cell_ids
             需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
         use_data
-            读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+            读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
             ``"data_scale"``。
         include_obsm
             是否把 ``obsm_*`` 结果表写入返回的 AnnData。
@@ -1452,3 +1585,4 @@ class Atlas:
             include_obsm=include_obsm,
             include_varm=include_varm,
         )
+

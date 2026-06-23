@@ -20,6 +20,7 @@ def write_h5ad(
     out_h5ad_path: PathLike[str] | str,
     *,
     batch_cells: int = 1_000_000,
+    use_data: str = "data_count",
 ):
     """将 Atlas 数据库导出为 h5ad 文件。
 
@@ -33,6 +34,8 @@ def write_h5ad(
         输出 ``.h5ad`` 文件路径。
     batch_cells
         导出表达矩阵时每批处理的细胞数。
+    use_data
+        从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
 
     Returns
     -------
@@ -47,13 +50,45 @@ def write_h5ad(
 
     使用对象式 API 并降低单批内存占用::
 
-        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)"""
+        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
+
+    导出 log1p 表达矩阵::
+
+        atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
 
     start_time = datetime.now()
 
     out_h5ad_path = fspath(out_h5ad_path)
 
     conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection 为空，请先连接数据库")
+
+    if not isinstance(use_data, str):
+        raise TypeError("use_data 必须是 str")
+
+    if use_data == "":
+        raise ValueError("use_data 不能为空字符串")
+
+    # 安全引用 SQL 标识符
+    def _q(name: str) -> str:
+        return '"' + str(name).replace('"', '""') + '"'
+
+    x_field_exists = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.columns
+        WHERE table_name = 'X_HyS_data'
+          AND column_name = ?
+        """,
+        [use_data],
+    ).fetchone()[0]
+
+    if x_field_exists == 0:
+        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+
+    use_data_sql = _q(use_data)
 
     # 读取 obs / var
 
@@ -119,8 +154,8 @@ def write_h5ad(
             end = min(start + batch_cells, nnz)
 
             rows = conn.execute(
-                """
-                SELECT atlas_gene_id, data
+                f"""
+                SELECT atlas_gene_id, {use_data_sql}
                 FROM X_HyS_data
                 WHERE id >= ? AND id < ?
                 ORDER BY id
@@ -144,10 +179,6 @@ def write_h5ad(
         _write_dataframe(f, "var", var)
 
         g_obsm = f.create_group("obsm")
-
-        # 安全引用 SQL 标识符
-        def _q(name: str) -> str:
-            return '"' + str(name).replace('"', '""') + '"'
 
         for (table_name,) in conn.execute("""
             SELECT table_name
@@ -429,7 +460,7 @@ def get_obs_df(
 def get_anndata(
     atlas: Atlas,
     atlas_cell_ids: list[int] | np.ndarray | None,
-    use_data: str = "data",
+    use_data: str = "data_count",
     include_obsm: bool = True,
     include_varm: bool = True,
 ):
@@ -444,7 +475,7 @@ def get_anndata(
     atlas_cell_ids
         需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
     include_obsm
         是否把 ``obsm_*`` 结果表写入返回的 AnnData。

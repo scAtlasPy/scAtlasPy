@@ -27,7 +27,7 @@ class FilterIndexBuilder:
     use_hvg
         是否在基因过滤条件之外继续限制为高变基因。
     use_data
-    从 ``X_HyS_data`` 表中读取的表达值列名，例如 ``"data"``、
+    从 ``X_HyS_data`` 表中读取的表达值列名，例如 ``"data_count"``、
     ``"data_normalize"``、``"data_log1p"`` 或 ``"data_scale"``。
 
     Notes
@@ -55,7 +55,7 @@ class FilterIndexBuilder:
             cell_condition="filter_cells",
             gene_condition="filter_genes",
             use_hvg=False,
-            use_data="data",
+            use_data="data_count",
         )
         builder.run()"""
     def __init__(
@@ -110,6 +110,37 @@ class FilterIndexBuilder:
         #  true  尽量保留 INSERT / COPY / SELECT 写入时的输入顺序
 
 
+    def _has_column(self, table_name: str, column_name: str) -> bool:
+
+        return self.conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_name = ?
+              AND column_name = ?
+            LIMIT 1
+            """,
+            [table_name, column_name],
+        ).fetchone() is not None
+
+
+    def _require_filter_column(
+        self,
+        *,
+        table_name: str,
+        column_name: str,
+        function_name: str,
+    ) -> None:
+
+        if self._has_column(table_name, column_name):
+            return
+
+        raise ValueError(
+            f"{table_name} 表中缺少过滤字段 {column_name}，"
+            f"请先运行 sap.pp.{function_name}(...) 生成该字段，"
+        )
+
+
     # 外部入口
     def run(self):
 
@@ -159,7 +190,20 @@ class FilterIndexBuilder:
         -------
         None
             结果直接写入 ``obs`` 表。
+
+        Raises
+        ------
+        ValueError
+            当 ``cell_condition`` 指向的过滤列不存在时，返回中文报错。
         """
+
+        # 如果使用过滤列，先确认 obs 中已经有对应字段，避免 DuckDB 返回不易理解的英文错误
+        if self.cell_condition is not None and self.cell_condition.isidentifier():
+            self._require_filter_column(
+                table_name="obs",
+                column_name=self.cell_condition,
+                function_name="filter_cells",
+            )
 
         # 删除旧列
         self.conn.execute(""" ALTER TABLE obs DROP COLUMN IF EXISTS filter_cell_id """)
@@ -167,7 +211,7 @@ class FilterIndexBuilder:
         # 新增列
         self.conn.execute(""" ALTER TABLE obs ADD COLUMN filter_cell_id INTEGER """)
 
-        # 如果 self.cell_condition is None，则不过滤 cell
+        # cell_condition=None 表示不过滤细胞；否则按指定布尔字段筛选细胞
         if self.cell_condition is None:
             where_sql = "TRUE"
             logger.info("  -> 不使用 cell 过滤，保留全部 cells")
@@ -210,14 +254,27 @@ class FilterIndexBuilder:
         -------
         None
             结果直接写入 ``var`` 表。
+
+        Raises
+        ------
+        ValueError
+            当 ``gene_condition`` 指向的过滤列不存在时，返回中文报错。
         """
+
+        # 如果使用过滤列，先确认 var 中已经有对应字段，避免 DuckDB 返回不易理解的英文错误
+        if self.gene_condition is not None and self.gene_condition.isidentifier():
+            self._require_filter_column(
+                table_name="var",
+                column_name=self.gene_condition,
+                function_name="filter_genes",
+            )
 
         # 删除旧列 + 新增列
         self.conn.execute(""" ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id """)
 
         self.conn.execute(""" ALTER TABLE var ADD COLUMN filter_gene_id USMALLINT """)
 
-        # 如果 self.gene_condition is None，则不过滤 gene
+        # gene_condition=None 表示不过滤基因；否则按指定布尔字段筛选基因
         conditions = []
 
         if self.gene_condition is not None:

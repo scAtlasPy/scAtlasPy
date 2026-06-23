@@ -181,7 +181,6 @@ def pca(
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
         legend_loc: str | None = None,  # str = "right_margin",
         frameon: bool = True,
-        return_df: bool = False,
 ):
 
     """绘制 PCA 细胞 embedding。
@@ -219,13 +218,10 @@ def pca(
         图例位置。
     frameon
         是否显示坐标轴边框。
-    return_df
-        是否返回结果 DataFrame。
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -672,8 +668,6 @@ def pca(
 
     plt.show()
 
-    if return_df:
-        return plot_df
 
 
 # 画 pca_variance_ratio
@@ -685,7 +679,6 @@ def pca_variance_ratio(
         show: bool | None = None,
         save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None = (7, 6),
-        return_fig: bool = False,
 ):
     """绘制 PCA 方差解释比例，Scanpy-like 风格。
 
@@ -712,9 +705,6 @@ def pca_variance_ratio(
 
     figsize
         图形大小。
-
-    return_fig
-        是否返回 ``fig, ax``。
     """
 
     conn = atlas.connection
@@ -840,8 +830,6 @@ def pca_variance_ratio(
     else:
         plt.close(fig)
 
-    if return_fig:
-        return fig, ax
 
 
 # 画累计解释方差
@@ -853,7 +841,6 @@ def pca_variance_ratio_cumsum(
         show: bool | None = None,
         save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None=(16, 8),
-        return_fig: bool = False,
 ):
     """绘制 PCA 累积方差解释比例。
 
@@ -873,13 +860,10 @@ def pca_variance_ratio_cumsum(
         图片保存路径。为 ``None`` 时不保存。
     figsize
         图形大小。为 ``None`` 时使用函数默认尺寸。
-    return_fig
-        是否返回 Matplotlib Figure 对象。
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -975,9 +959,8 @@ def pca_variance_ratio_cumsum(
     else:
         plt.close(fig)
 
-    # 7. 是否返回 fig, ax
-    if return_fig:
-        return fig, ax
+
+    return None
 
 
 # 画 PCA loadings
@@ -989,7 +972,6 @@ def pca_loadings(
         figsize: tuple[float, float] | None = (14, 8),
         show: bool | None = None,
         save: bool | PathLike[str] | str | None = None,
-        return_fig: bool = False,
 ):
     """绘制 PCA loadings 图，类似 scanpy.pl.pca_loadings。
 
@@ -1021,9 +1003,6 @@ def pca_loadings(
 
     save
         图片保存路径。
-
-    return_fig
-        是否返回 ``fig, axes``。
     """
 
     conn = atlas.connection
@@ -1318,6 +1297,3 @@ def pca_loadings(
         plt.show()
     else:
         plt.close(fig)
-
-    if return_fig:
-        return fig, axes

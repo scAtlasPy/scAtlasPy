@@ -44,7 +44,7 @@ class StreamingKMeans:
     直接使用底层类，适合调试聚类训练过程::
 
         model = StreamingKMeans(n_components=30, n_clusters=20, batch_size=4096)
-        model.run(atlas, use_obs_col="kmeans_20", write_to_obs=True)"""
+        model.run(atlas, add_obs_col="kmeans_20", write_to_obs=True)"""
     def __init__(
             self,
             n_components: int=50,
@@ -290,7 +290,7 @@ class StreamingKMeans:
             atlas: Atlas,
             use_cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
-            use_obs_col: str = "kmeans"
+            add_obs_col: str = "kmeans"
     ):
 
         """执行 ``predict_kmeans`` 的核心功能。
@@ -316,7 +316,7 @@ class StreamingKMeans:
         write_to_obs
             是否将结果同步写入 ``obs`` 表。
 
-        use_obs_col
+        add_obs_col
             ``obs`` 中用于写入或读取结果的列名。
 
         Returns
@@ -348,10 +348,10 @@ class StreamingKMeans:
         # obs 中增加 kmeans 列
         if write_to_obs:
             obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-            if use_obs_col not in obs_cols:
-                conn.execute(f"ALTER TABLE obs ADD COLUMN {use_obs_col} INTEGER")
+            if add_obs_col not in obs_cols:
+                conn.execute(f"ALTER TABLE obs ADD COLUMN {add_obs_col} INTEGER")
             # 先清空旧结果
-            conn.execute(f"UPDATE obs SET {use_obs_col} = NULL")
+            conn.execute(f"UPDATE obs SET {add_obs_col} = NULL")
 
         # 读取 PCA components
         if self.components_ is None:
@@ -393,7 +393,7 @@ class StreamingKMeans:
 
                 conn.execute(f"""
                     UPDATE obs
-                    SET {use_obs_col} = t.cluster_id
+                    SET {add_obs_col} = t.cluster_id
                     FROM _kmeans_batch_tmp t
                     WHERE obs.atlas_cell_id = t.atlas_cell_id
                 """)
@@ -476,7 +476,7 @@ class StreamingKMeans:
             atlas: Atlas,
             use_cluster_table: str="obs_cluster",
             write_to_obs: bool = True,
-            use_obs_col: str = "kmeans"
+            add_obs_col: str = "kmeans"
     ):
         """训练并写入流式 KMeans 聚类结果。
 
@@ -499,7 +499,7 @@ class StreamingKMeans:
         write_to_obs
             是否把聚类标签同步写入 ``obs`` 表。
 
-        use_obs_col
+        add_obs_col
             写入 ``obs`` 时使用的列名。
 
         Returns
@@ -511,7 +511,7 @@ class StreamingKMeans:
         --------
         运行完整 KMeans 流程：::
 
-            model.run(atlas, use_cluster_table="obs_cluster", use_obs_col="kmeans")
+            model.run(atlas, use_cluster_table="obs_cluster", add_obs_col="kmeans")
         """
 
         #  kmeans 训练
@@ -522,7 +522,7 @@ class StreamingKMeans:
             atlas,
             use_cluster_table=use_cluster_table,
             write_to_obs=write_to_obs,
-            use_obs_col=use_obs_col
+            add_obs_col=add_obs_col
         )
 
         return self
@@ -536,7 +536,7 @@ def kmeans(
         batch_size: int = 2048,
         fit_batches: int = 1000,        # 指定 KMeans 训练阶段使用多少个 minibatch
         buffer_batch_num: int = 5,      # multi-pass 时 ShuffleBuffer 的 batch 数
-        use_obs_col: str = "kmeans",
+        add_obs_col: str = "kmeans",
         use_cluster_table: str = "obs_cluster",
         write_to_obs: bool = True,
 ):
@@ -559,7 +559,7 @@ def kmeans(
         用于拟合模型的小批量数量。较大值通常更稳定，但计算时间更长。
     buffer_batch_num
         预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
-    use_obs_col
+    add_obs_col
         读取或写入 ``obs`` 的列名。
     use_cluster_table
         保存聚类统计结果的数据库表名。
@@ -583,7 +583,7 @@ def kmeans(
         sap.tl.kmeans(
             atlas,
             n_clusters=50,
-            use_obs_col="kmeans_50",
+            add_obs_col="kmeans_50",
             use_cluster_table="obs_cluster_kmeans_50",
         )"""
 
@@ -611,7 +611,7 @@ def kmeans(
         atlas,
         use_cluster_table=use_cluster_table,
         write_to_obs=write_to_obs,
-        use_obs_col=use_obs_col,
+        add_obs_col=add_obs_col,
     )
 
     t_end = time.time()

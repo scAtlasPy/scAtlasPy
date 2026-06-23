@@ -205,7 +205,7 @@ def filter_cells(
             FROM (
                 SELECT
                     atlas_cell_id,
-                    SUM(data) AS sum_expr,
+                    SUM(data_count) AS sum_expr,
                     COUNT(*) AS nonzero_genes
                 FROM X_HyS_data
                 WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
@@ -355,7 +355,7 @@ def filter_genes(
         CREATE TEMP TABLE gene_filter_stats_tmp AS
         SELECT
             atlas_gene_id,
-            SUM(data) AS sum_expr,
+            SUM(data_count) AS sum_expr,
             COUNT(*) AS nonzero_expr
         FROM X_HyS_data
         GROUP BY atlas_gene_id
@@ -507,7 +507,7 @@ def calculate_cell_total_counts(
             CREATE TEMP TABLE cell_total_counts_chunk AS
             SELECT
                 atlas_cell_id,
-                SUM(data) AS total_counts
+                SUM(data_count) AS total_counts
             FROM X_HyS_data
             WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
             GROUP BY atlas_cell_id
@@ -613,7 +613,7 @@ def calculate_gene_total_counts(
         CREATE TEMP TABLE gene_stats_tmp AS
         SELECT
             atlas_gene_id,
-            SUM(data) AS total_counts
+            SUM(data_count) AS total_counts
         FROM X_HyS_data
         GROUP BY atlas_gene_id
     """)
@@ -802,7 +802,7 @@ def calculate_qc_metrics(
         qc_sum_expr = []
         for qc_key in qc_vars.keys():
             qc_sum_expr.append(
-                f"SUM(CASE WHEN v.{qc_key} THEN x.data ELSE 0 END)"
+                f"SUM(CASE WHEN v.{qc_key} THEN x.data_count ELSE 0 END)"
                 f" AS total_counts_{qc_key}"
             )
         qc_sum_sql = ",\n".join(qc_sum_expr)
@@ -813,7 +813,7 @@ def calculate_qc_metrics(
             CREATE TEMP TABLE _cell_chunk AS
             SELECT
                 x.atlas_cell_id,
-                SUM(x.data) AS cell_total_counts,
+                SUM(x.data_count) AS cell_total_counts,
                 COUNT(*)    AS n_genes_by_counts,
                 {qc_sum_sql}
             FROM X_HyS_data x
@@ -867,7 +867,7 @@ def calculate_qc_metrics(
         CREATE TEMP TABLE _gene_qc AS
         SELECT
             atlas_gene_id,
-            SUM(data) AS gene_total_counts,
+            SUM(data_count) AS gene_total_counts,
             COUNT(*)  AS n_cells_by_counts
         FROM X_HyS_data
         GROUP BY atlas_gene_id

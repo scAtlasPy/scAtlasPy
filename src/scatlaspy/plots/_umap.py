@@ -270,7 +270,6 @@ def umap(
         # 大数据 / 输出参数
         plot_batch_size: int = 200000,
         save_path: PathLike[str] | str | None = None,
-        return_df: bool = False,
 ):
 
     """绘制 UMAP embedding。
@@ -315,8 +314,7 @@ def umap(
 
     Returns
     -------
-    matplotlib.figure.Figure 或 None
-        当 ``return_fig=True`` 或函数实现返回图对象时返回 Figure；否则通常直接显示图形。
+    None
 
     Examples
     --------
@@ -401,7 +399,7 @@ def umap(
 
     # 单个 obs 分类图
     if len(color_list) == 1 and len(obs_colors) == 1:
-        return _plot_umap_obs(
+        _plot_umap_obs(
             atlas=atlas,
             color=obs_colors[0],
             sample_n=sample_n,
@@ -415,12 +413,12 @@ def umap(
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
-            return_df=return_df,
         )
+        return None
 
     # 纯 gene feature 图
     if len(obs_colors) == 0 and len(gene_colors) > 0:
-        return _plot_umap_features(
+        _plot_umap_features(
             atlas=atlas,
             genes=gene_colors,
             sample_n=sample_n,
@@ -432,9 +430,10 @@ def umap(
             alpha=alpha,
             cmap=cmap,
         )
+        return None
 
     # 混合模式
-    return _plot_umap_mixed(
+    _plot_umap_mixed(
         atlas=atlas,
         obs_colors=obs_colors,
         gene_colors=gene_colors,
@@ -450,6 +449,7 @@ def umap(
         frameon=frameon,
         save_path=save_path,
     )
+    return None
 
 
 
@@ -1123,8 +1123,7 @@ def _plot_umap_features(
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    None
 
     Notes
     -----
@@ -1378,7 +1377,7 @@ def _plot_umap_features(
     plt.tight_layout(pad=1.0)
     plt.show()
 
-    return plot_data
+    return None
 
 
 # umap() ─ 混合模式：obs 分类变量 + gene feature 变量画在同一个 Figure
@@ -1469,9 +1468,7 @@ def _plot_umap_mixed(
 
     Returns
     -------
-    dict
-        返回包含绘图变量和基础 UMAP 数据的字典。通常包括
-        ``"obs"``、``"genes"`` 和 ``"data"`` 三部分。
+    None
 
     Notes
     -----
@@ -1847,8 +1844,4 @@ def _plot_umap_mixed(
 
     plt.show()
 
-    return {
-        "obs": obs_colors,
-        "genes": gene_colors,
-        "data": umap_df,
-    }
+    return None

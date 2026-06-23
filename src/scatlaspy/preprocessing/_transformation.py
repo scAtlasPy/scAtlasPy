@@ -93,7 +93,7 @@ def normalize_total(
         target_sum: float = 10000,
         chunk_cells: int = 500_000,
         add_data: str = "data_normalize",
-        use_data: str = "data"
+        use_data: str = "data_count"
 ) -> None:
 
     """按细胞总表达量进行归一化。
@@ -111,7 +111,7 @@ def normalize_total(
     add_data
         写入数据库的新表达矩阵表名或结果列名。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
 
     Returns
@@ -129,7 +129,7 @@ def normalize_total(
 
         sap.pp.normalize_total(
             atlas,
-            use_data="data",
+            use_data="data_count",
             add_data="data_cpm",
             target_sum=1000000,
         )"""
@@ -259,7 +259,7 @@ def normalize_total_scale_factor(
         atlas: Atlas,
         target_sum: float = 10000,
         add_obs_col: str = "scale_factor",
-        use_data: str = "data",
+        use_data: str = "data_count",
         chunk_cells: int = 500_000,
 ) -> None:
     """计算每个细胞的归一化 scale factor。
@@ -275,7 +275,7 @@ def normalize_total_scale_factor(
     add_obs_col
         写入 ``obs`` 的结果列名。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
     chunk_cells
         按细胞分块处理时每个 chunk 的细胞数量。
@@ -664,7 +664,7 @@ def normalize_and_log1p(
             target_sum: Optional[float] = 10000,
             use_obs_col: str = "scale_factor",
             add_data: str = "data_log1p",
-            use_data: str = "data",
+            use_data: str = "data_count",
             base: Optional[Number] = None,
             chunk_ids: int = 50_000_000 ) -> None:
     """在一次流程中完成总量归一化和 log1p 变换。
@@ -682,7 +682,7 @@ def normalize_and_log1p(
     add_data
         写入数据库的新表达矩阵表名或结果列名。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
     base
         对数变换的底数。为 ``None`` 时使用自然对数。
@@ -2005,7 +2005,7 @@ def scale(
 def sqrt(
     atlas: "Atlas",
     add_data: str = "data_sqrt",
-    use_data: str = "data",
+    use_data: str = "data_count",
     chunk_ids: int = 100_000_000) -> None:
     """对表达矩阵执行平方根变换。
 
@@ -2018,7 +2018,7 @@ def sqrt(
     add_data
         写入数据库的新表达矩阵表名或结果列名。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
+        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
         ``"data_scale"``。
     chunk_ids
         按表达记录 ID 分块处理时每个 chunk 的记录数量。
@@ -2032,7 +2032,7 @@ def sqrt(
     --------
     对原始 counts 执行平方根变换::
 
-        sap.pp.sqrt(atlas, use_data="data", add_data="data_sqrt")
+        sap.pp.sqrt(atlas, use_data="data_count", add_data="data_sqrt")
 
     调整分块大小以适配大数据::
 
