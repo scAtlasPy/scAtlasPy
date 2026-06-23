@@ -30,7 +30,7 @@ preprocessing, clustering, and visualization workflow:
 ```python
 import scatlaspy as sap
 
-atlas = sap.Atlas("pbmc.sasql", memory_limit=None)
+atlas = sap.Atlas("pbmc.sasql", db_memory_limit=None)
 atlas.load_h5ad("pbmc.h5ad", load_type="random")
 
 # Quality control and preprocessing
