@@ -11,101 +11,7 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import gc
-
-# 获取日志记录器
 logger = logging.getLogger('Atlas')
-
-def _cleanup_transform_after_step(
-        conn: DuckDBPyConnection,
-        temp_tables: list[str]=None,
-        unregister_tables: list[str]=None,
-        checkpoint: bool = False,
-        collect: bool = True,
-):
-    """清理当前步骤产生的临时资源。
-
-    该内部函数用于在表达矩阵转换步骤结束后统一释放临时资源。多个预处理
-    函数会在运行过程中创建 DuckDB 临时表、注册 pandas/Arrow 临时 relation，
-    或执行大表 ``UPDATE``、``DROP``、``RENAME``。该函数集中处理这些清理动作，
-    使每个转换步骤结束后数据库连接和 Python 进程的临时占用尽量回到稳定状态。
-
-    函数只负责清理资源，不修改 ``X_HyS_data``、``obs`` 或 ``var`` 中的正式
-    结果字段。通常由 ``normalize_total``、``log1p``、``scale``、``sqrt`` 和
-    高变基因计算等内部流程在收尾阶段调用。
-
-    Parameters
-    ----------
-    conn
-        DuckDB 数据库连接。要求连接仍然有效，并且能执行 ``DROP TABLE``、
-        ``CHECKPOINT`` 或 ``unregister`` 等清理操作。
-    temp_tables
-        需要删除的 DuckDB 临时表名称列表。默认值为 ``None``，会被视为
-        空列表。
-
-        函数会对列表中的每个名称执行 ``DROP TABLE IF EXISTS``。如果某个表
-        已经不存在，或删除失败，清理异常会被忽略。
-    unregister_tables
-        需要从 DuckDB 连接中取消注册的 pandas/Arrow relation 名称列表。
-        默认值为 ``None``，会被视为空列表。
-
-        该参数常用于清理通过 ``conn.register(...)`` 注册到 DuckDB 的临时
-        DataFrame。
-    checkpoint
-        清理后是否执行 DuckDB ``CHECKPOINT``。默认值为 ``False``。
-
-        对于涉及大表重建、删除列、重命名表或批量更新的步骤，设置为
-        ``True`` 可以尽早落盘并释放部分 DuckDB 内部空间。
-    collect
-        清理后是否触发 Python 垃圾回收 ``gc.collect()``。默认值为 ``True``。
-
-    Returns
-    -------
-    None
-        该函数只执行资源清理，不返回对象。
-
-    Notes
-    -----
-    清理阶段的异常会被捕获并忽略，目的是避免清理临时对象失败时覆盖前面
-    预处理步骤已经完成的主要结果。如果需要排查临时表或 DuckDB 连接状态，
-    可以在调用该函数前手动检查数据库中的临时对象。
-
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中
-    直接调用。
-    """
-
-    if temp_tables is None:
-        temp_tables = []
-
-    if unregister_tables is None:
-        unregister_tables = []
-
-    # 1. 取消注册 pandas / Arrow 临时对象
-    for t in unregister_tables:
-        try:
-            conn.unregister(t)
-        except Exception:
-            pass
-
-    # 2. 删除 DuckDB 临时表
-    for t in temp_tables:
-        try:
-            conn.execute(f"DROP TABLE IF EXISTS {t}")
-        except Exception:
-            pass
-
-    # 3. 大表 UPDATE / DROP / RENAME 后建议 checkpoint
-    if checkpoint:
-        try:
-            conn.execute("CHECKPOINT")
-        except Exception:
-            pass
-
-    # 4. Python 层垃圾回收
-    if collect:
-        try:
-            gc.collect()
-        except Exception:
-            pass
 
 
 def normalize_total(
@@ -116,70 +22,90 @@ def normalize_total(
         use_data: str = "data_count"
 ) -> None:
 
-    """按细胞总表达量进行归一化。
+    """Normalize by total expression per cell.
 
-    该函数用于在 Atlas 数据库中对表达矩阵进行按细胞总量归一化。
-    对每个细胞，函数先计算该细胞在 ``use_data`` 字段上的表达总和，
-    再把该细胞所有非零表达值缩放到 ``target_sum`` 对应的尺度，
-    并将结果写入 ``X_HyS_data`` 表中的 ``add_data`` 字段。
+    This function normalizes the expression matrix in the Atlas database by the
+    total expression of each cell. For each cell, it first computes the total
+    expression of that cell in the ``use_data`` field, then scales all explicitly
+    stored nonzero expression values in that cell to the scale defined by
+    ``target_sum``, and writes the result to the ``add_data`` field in the
+    ``X_HyS_data`` table.
 
-    该流程类似 Scanpy 的 ``sc.pp.normalize_total``，常用于把不同测序深度
-    的细胞调整到可比较的表达尺度。例如默认参数会把每个细胞的总表达量归一化到 10,000。
+    This workflow is similar to Scanpy's ``sc.pp.normalize_total`` and is
+    commonly used to adjust cells with different sequencing depths to a
+    comparable expression scale. For example, the default parameters normalize
+    the total expression of each cell to 10,000.
 
-    函数采用按 ``atlas_cell_id`` 范围分块的方式处理数据。每个 chunk 只计算
-    当前细胞范围内的 total counts，并将当前 chunk 的表达记录写入临时目标表。
-    全部 chunk 完成后，会用归一化后的表替换原 ``X_HyS_data`` 表，从而避免
-    对超大表达矩阵一次性聚合造成过高内存压力。
+    The function processes data in chunks over the ``atlas_cell_id`` range. Each
+    chunk only computes total counts within the current cell range and writes
+    the expression records from the current chunk to a temporary target table.
+    After all chunks are completed, the normalized table replaces the original
+    ``X_HyS_data`` table, which avoids excessive memory pressure caused by
+    aggregating an ultra-large expression matrix all at once.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs`` 表和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs`` table and the
+        ``X_HyS_data`` table.
 
-        ``X_HyS_data`` 表需要包含 ``atlas_cell_id``、``id`` 以及由 ``use_data``
-        指定的表达值字段。
+        The ``X_HyS_data`` table must contain ``atlas_cell_id``, ``id``, and the
+        expression value field specified by ``use_data``.
+
     target_sum
-        归一化后每个细胞的目标总表达量。默认值为 ``10000``。
+        Target total expression per cell after normalization. The default value
+        is ``10000``.
 
-        对每个细胞，输出值近似为：
+        For each cell, the output value is approximately:
 
         ``x_normalized = x / cell_total * target_sum``
 
-        其中 ``cell_total`` 是该细胞在 ``use_data`` 字段上的表达总和。
+        where ``cell_total`` is the sum of expression values in the ``use_data``
+        field for that cell.
+
     chunk_cells
-        按 ``atlas_cell_id`` 范围分块处理时每个 chunk 覆盖的细胞 ID 数量。
-        默认值为 ``500_000``。
+        Number of cell IDs covered by each chunk when processing by
+        ``atlas_cell_id`` range. The default value is ``500_000``.
 
-        较大的值通常可以减少 SQL 循环次数、提高运行速度，但会增加单个 chunk
-        聚合和写入时的内存占用；较小的值更稳，但运行时间可能更长。
+        A larger value usually reduces the number of SQL loop iterations and
+        improves runtime, but increases memory usage during aggregation and
+        writing for a single chunk. A smaller value is more stable, but may run
+        longer.
+
     add_data
-        写入 ``X_HyS_data`` 表的归一化结果字段名。默认值为
-        ``"data_normalize"``。
+        Name of the normalized result field to write to the ``X_HyS_data``
+        table. The default value is ``"data_normalize"``.
 
-        如果原表中已经存在同名字段，函数会先删除旧字段；随后通过临时表重建
-        ``X_HyS_data``，并把归一化结果写入该字段。
+        If a field with the same name already exists in the original table, the
+        function first drops the old field, then rebuilds ``X_HyS_data`` through
+        a temporary table and writes the normalized result to this field.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达值字段名。默认值为 ``"data_count"``。
-        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
-        和 ``"data_scale"``。
+        Name of the expression value field read from the ``X_HyS_data`` table.
+        The default value is ``"data_count"``. Common values include
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
+        ``"data_scale"``.
 
     Returns
     -------
     None
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段，不返回对象。
+        Results are written directly to the ``add_data`` field in the
+        ``X_HyS_data`` table. No object is returned.
 
     Notes
     -----
-    该函数只对 ``X_HyS_data`` 中显式存储的非零表达记录进行归一化写入。
-    对于总表达量为 0 的细胞，不会产生新的表达记录。
+    This function only writes normalized values for explicitly stored nonzero
+    expression records in ``X_HyS_data``. For cells whose total expression is 0,
+    no new expression records are generated.
 
-    运行完成后，函数会清理临时表并执行 checkpoint，以降低后续步骤读取到
-    中间状态或占用过多 DuckDB 临时空间的风险。
+    After completion, the function cleans temporary tables and executes a
+    checkpoint to reduce the risk that later steps read an intermediate state or
+    that too much DuckDB temporary space remains occupied.
 
     Examples
     --------
-    归一化原始 counts 到每细胞 1 万::
+    Normalize raw counts to 10,000 per cell::
 
         sap.pp.normalize_total(atlas, target_sum=10000)
 
@@ -189,13 +115,13 @@ def normalize_total(
 
     conn = atlas.connection
 
-    # 0. 设置线程
+    # 0. Set threads
     try:
         conn.execute(f"PRAGMA threads={os.cpu_count() or 1}")
     except Exception:
         pass
 
-    # 1. 字段检查
+    # 1. Field check
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -204,15 +130,15 @@ def normalize_total(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 2. 删除源表旧 normalize 字段
+    # 2. Drop the old normalize field from the source table
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
-    # 3. 创建目标表
+    # 3. Create the target table
     conn.execute("DROP TABLE IF EXISTS X_HyS_data_norm")
 
     conn.execute("""
@@ -225,19 +151,19 @@ def normalize_total(
         ADD COLUMN {add_data} REAL
     """)
 
-    # 4. 获取 cell_id 范围
+    # 4. Get the cell_id range
     min_cell, max_cell = conn.execute("""
         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
         FROM X_HyS_data
     """).fetchone()
 
     if min_cell is None:
-        logger.info("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data is empty; skipping")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    # 5. cell 分块：小 _cell_sum_chunk + 写入目标表
+    # 5. Cell chunking: small _cell_sum_chunk + write to target table
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -250,7 +176,7 @@ def normalize_total(
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
 
-        # 只计算当前 cell chunk 的 sum
+        # Only compute the sum for the current cell chunk
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
         conn.execute(f"""
@@ -264,7 +190,7 @@ def normalize_total(
             HAVING total > 0
         """)
 
-        # 只写入当前 cell chunk 的 X 数据
+        # Only write X data for the current cell chunk
         conn.execute(f"""
             INSERT INTO X_HyS_data_norm
             SELECT
@@ -277,14 +203,14 @@ def normalize_total(
             ORDER BY x.id
         """)
 
-        # 每个 chunk 后立即清理
+        # Clean up immediately after each chunk
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
-    # 6. 替换原表
+    # 6. Replace the original table
     conn.execute("DROP TABLE X_HyS_data")
     conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_cell_sum_chunk"],
@@ -292,7 +218,7 @@ def normalize_total(
         collect=True,
     )
 
-    logger.info(f"normalize_total Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_total Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def normalize_total_scale_factor(
@@ -302,63 +228,79 @@ def normalize_total_scale_factor(
         use_data: str = "data_count",
         chunk_cells: int = 500_000,
 ) -> None:
-    """计算每个细胞的归一化 scale factor。
+    """Compute the normalization scale factor for each cell.
 
-    该函数用于在 ``obs`` 表中预先计算每个细胞的归一化缩放因子。
-    对每个细胞，函数会统计该细胞在 ``X_HyS_data`` 表中 ``use_data`` 字段的
-    表达总和，然后计算：
+    This function precomputes the normalization scale factor for each cell in
+    the ``obs`` table. For each cell, it calculates the total expression of the
+    ``use_data`` field in the ``X_HyS_data`` table, then computes:
 
     ``scale_factor = target_sum / cell_total``
 
-    结果写入 ``obs`` 表中的 ``add_obs_col`` 字段。
+    The result is written to the ``add_obs_col`` field in the ``obs`` table.
 
-    该函数本身不会修改表达矩阵，也不会新增 ``X_HyS_data`` 中的表达字段。
-    它主要用于配合 ``normalize_and_log1p``，让后续步骤可以在一次分块
-    ``UPDATE`` 中完成归一化和 log1p，避免先写出一份完整的中间归一化矩阵。
+    This function itself does not modify the expression matrix and does not add
+    any expression field to ``X_HyS_data``. It is mainly used together with
+    ``normalize_and_log1p`` so that later steps can complete normalization and
+    log1p in a single chunked ``UPDATE``, avoiding the need to first write a
+    complete intermediate normalized matrix.
 
-    函数采用按 ``atlas_cell_id`` 范围分块的方式处理数据。每个 chunk 只计算
-    当前细胞范围内的表达总和，并将 scale factor 写回 ``obs`` 表，适合较大
-    数据集。
+    The function processes data in chunks over the ``atlas_cell_id`` range. Each
+    chunk only computes expression totals within the current cell range and
+    writes the scale factor back to the ``obs`` table, making it suitable for
+    larger datasets.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs`` 表和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs`` table and the
+        ``X_HyS_data`` table.
 
-        ``obs`` 表需要包含 ``atlas_cell_id`` 字段；``X_HyS_data`` 表需要包含
-        ``atlas_cell_id`` 和由 ``use_data`` 指定的表达字段。
+        The ``obs`` table must contain the ``atlas_cell_id`` field; the
+        ``X_HyS_data`` table must contain ``atlas_cell_id`` and the expression
+        field specified by ``use_data``.
+
     target_sum
-        归一化后每个细胞的目标总表达量。默认值为 ``10000``。
-        该值越大，后续归一化表达值的整体尺度越大。
-    add_obs_col
-        写入 ``obs`` 表的 scale factor 字段名。默认值为 ``"scale_factor"``。
+        Target total expression per cell after normalization. The default value
+        is ``10000``. A larger value makes the overall scale of later normalized
+        expression values larger.
 
-        如果该列不存在，函数会自动新增；如果已经存在，函数会先把该列全部
-        重置为 ``0``，再写入当前计算结果。
+    add_obs_col
+        Name of the scale factor field to write to the ``obs`` table. The
+        default value is ``"scale_factor"``.
+
+        If the column does not exist, the function adds it automatically. If it
+        already exists, the function first resets the entire column to ``0`` and
+        then writes the current calculation result.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达值字段名。默认值为 ``"data_count"``。
-        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
-        和 ``"data_scale"``。
+        Name of the expression value field read from the ``X_HyS_data`` table.
+        The default value is ``"data_count"``. Common values include
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
+        ``"data_scale"``.
+
     chunk_cells
-        按 ``atlas_cell_id`` 范围分块处理时每个 chunk 覆盖的细胞 ID 数量。
-        默认值为 ``500_000``。
+        Number of cell IDs covered by each chunk when processing by
+        ``atlas_cell_id`` range. The default value is ``500_000``.
 
     Returns
     -------
     None
-        结果直接写入 ``obs`` 表中的 ``add_obs_col`` 字段，不返回对象。
+        Results are written directly to the ``add_obs_col`` field in the
+        ``obs`` table. No object is returned.
 
     Notes
     -----
-    对于在当前 ``use_data`` 字段上总表达量为 0 的细胞，scale factor 会写为
-    ``0``，避免后续归一化时发生除零。
+    For cells whose total expression in the current ``use_data`` field is 0, the
+    scale factor is written as ``0`` to avoid division by zero in later
+    normalization.
 
-    该函数只写入细胞级元数据，不改变 ``X_HyS_data`` 中的表达值。
+    This function only writes cell-level metadata and does not change expression
+    values in ``X_HyS_data``.
 
     Examples
     --------
-    计算默认 scale factor::
+    Compute the default scale factor::
 
         sap.pp.normalize_total_scale_factor(atlas, target_sum=10000)
     """
@@ -372,7 +314,7 @@ def normalize_total_scale_factor(
     except Exception:
         pass
 
-    # 0. 基本安全检查
+    # 0. Basic safety check
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -381,33 +323,33 @@ def normalize_total_scale_factor(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 1. obs 添加 scale_factor 字段
+    # 1. Add the scale_factor field to obs
     conn.execute(f"""
         ALTER TABLE obs
         ADD COLUMN IF NOT EXISTS {add_obs_col} REAL
     """)
 
-    # 先初始化，避免空 cell 或未命中 cell 保留旧值
+    # Initialize first to avoid keeping old values for empty cells or unmatched cells
     conn.execute(f"""
         UPDATE obs
         SET {add_obs_col} = 0
     """)
 
-    # 2. 获取 cell_id 范围
+    # 2. Get the cell_id range
     min_cell, max_cell = conn.execute("""
         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
         FROM obs
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        logger.info("obs 为空，跳过")
+        logger.info("obs is empty; skipping")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
 
-    # 3. 分块计算 total + 写回 obs
+    # 3. Compute total in chunks + write back to obs
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -420,7 +362,7 @@ def normalize_total_scale_factor(
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
 
-        # 只计算当前 chunk 的 cell sum
+        # Only compute the cell sum for the current chunk
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
         conn.execute(f"""
@@ -433,7 +375,7 @@ def normalize_total_scale_factor(
             GROUP BY atlas_cell_id
         """)
 
-        # 只更新当前 chunk 对应 obs
+        # Only update obs records corresponding to the current chunk
         conn.execute(f"""
             UPDATE obs
             SET {add_obs_col} =
@@ -446,10 +388,10 @@ def normalize_total_scale_factor(
             WHERE obs.atlas_cell_id = s.atlas_cell_id
         """)
 
-        # 每个 chunk 后立即清理
+        # Clean up immediately after each chunk
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_cell_sum_chunk"],
@@ -457,7 +399,7 @@ def normalize_total_scale_factor(
         collect=True,
     )
 
-    logger.info(f"normalize_total_scale_factor Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_total_scale_factor Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def log1p(
@@ -466,63 +408,77 @@ def log1p(
                 add_data: str = "data_log1p",
                 use_data: str = "data_normalize",
                 chunk_ids: int = 100_000_000) -> None:
-    """对表达矩阵执行 log1p 变换。
+    """Apply a log1p transformation to the expression matrix.
 
-    该函数用于在 ``X_HyS_data`` 表中对指定表达字段执行 log1p 变换，并将
-    结果写入新的表达字段。默认情况下，函数读取 ``data_normalize`` 字段，
-    计算自然对数 ``ln(1 + x)``，并写入 ``data_log1p`` 字段。
+    This function applies a log1p transformation to a specified expression field
+    in the ``X_HyS_data`` table and writes the result to a new expression field.
+    By default, it reads the ``data_normalize`` field, computes the natural
+    logarithm ``ln(1 + x)``, and writes the result to the ``data_log1p`` field.
 
-    该流程类似 Scanpy 的 ``sc.pp.log1p``，通常在总量归一化之后使用，
-    用于压缩表达值动态范围、降低高表达基因对后续 PCA 或聚类的影响。
+    This workflow is similar to Scanpy's ``sc.pp.log1p`` and is usually used
+    after total-count normalization to compress the dynamic range of expression
+    values and reduce the influence of highly expressed genes on downstream PCA
+    or clustering.
 
-    函数按 ``X_HyS_data.id`` 范围分块执行 ``UPDATE``。每个 chunk 只更新
-    当前 ID 范围内且 ``use_data`` 不为 ``NULL`` 的表达记录，适合较大的
-    稀疏表达矩阵。
+    The function performs chunked ``UPDATE`` operations over the
+    ``X_HyS_data.id`` range. Each chunk only updates expression records within
+    the current ID range where ``use_data`` is not ``NULL``, making it suitable
+    for large sparse expression matrices.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中包含
-        ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain the ``X_HyS_data`` table.
+
     base
-        对数变换的底数。默认值为 ``None``，表示使用自然对数：
+        Base of the logarithm. The default value is ``None``, meaning that the
+        natural logarithm is used:
 
         ``ln(1 + x)``
 
-        如果传入数值，例如 ``base=2``，则计算：
+        If a numeric value is provided, for example ``base=2``, the function
+        computes:
 
         ``log_base(1 + x)``
-    add_data
-        写入 ``X_HyS_data`` 表的 log1p 结果字段名。默认值为
-        ``"data_log1p"``。
 
-        如果该字段已经存在，函数会先删除旧字段，再重新创建并写入。
+    add_data
+        Name of the log1p result field to write to the ``X_HyS_data`` table. The
+        default value is ``"data_log1p"``.
+
+        If the field already exists, the function first drops the old field,
+        then recreates and writes it.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达值字段名。默认值为
-        ``"data_normalize"``。常用值包括 ``"data_count"``、
-        ``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
+        Name of the expression value field read from the ``X_HyS_data`` table.
+        The default value is ``"data_normalize"``. Common values include
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
+        ``"data_scale"``.
+
     chunk_ids
-        按 ``X_HyS_data.id`` 范围分块处理时每个 chunk 覆盖的记录 ID 数量。
-        默认值为 ``100_000_000``。
+        Number of record IDs covered by each chunk when processing by
+        ``X_HyS_data.id`` range. The default value is ``100_000_000``.
 
     Returns
     -------
     None
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段，不返回对象。
+        Results are written directly to the ``add_data`` field in the
+        ``X_HyS_data`` table. No object is returned.
 
     Notes
     -----
-    该函数不会改变 ``use_data`` 原字段，只会新增或重建 ``add_data`` 字段。
-    对于 ``use_data`` 为 ``NULL`` 的记录，``add_data`` 保持为 ``NULL``。
+    This function does not change the original ``use_data`` field. It only adds
+    or rebuilds the ``add_data`` field. For records where ``use_data`` is
+    ``NULL``, ``add_data`` remains ``NULL``.
 
     Examples
     --------
-    对归一化矩阵进行自然对数变换::
+    Apply a natural logarithm transformation to the normalized matrix::
 
         sap.pp.normalize_total(atlas)
         sap.pp.log1p(atlas)
 
-    使用 2 为底的对数并写入自定义表::
+    Use base 2 and write to a custom field::
 
         sap.pp.log1p(
             atlas,
@@ -537,7 +493,7 @@ def log1p(
 
     conn.execute(f"PRAGMA threads = 10 ")
 
-    # 0. 字段存在性检查（重要）
+    # 0. Field existence check (important)
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -546,15 +502,15 @@ def log1p(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 1. 构造 log 表达式
+    # 1. Construct the log expression
     if base is None:
         log_expr = f"ln(1.0 + {use_data})"
     else:
         log_expr = f"log({float(base)}, 1.0 + {use_data})"
 
-    # 2. 确保输出字段存在
+    # 2. Ensure the output field exists
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
@@ -565,19 +521,19 @@ def log1p(
         ADD COLUMN  {add_data} REAL
     """)
 
-    # 3. 获取 id 范围
+    # 3. Get the id range
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
         FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        logger.info("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data is empty; skipping")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
-    # 4. 分块 UPDATE
+    # 4. Chunked UPDATE
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -596,7 +552,7 @@ def log1p(
               AND {use_data} IS NOT NULL
         """)
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=[],
@@ -604,7 +560,7 @@ def log1p(
         collect=True,
     )
 
-    logger.info(f"log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"log1p Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def expm1(
@@ -613,58 +569,71 @@ def expm1(
         add_data: str = "data_exp1",
         use_data: str = "data_log1p",
         chunk_ids: int = 50_000_000 ) -> None:
-    """对 log1p 表达矩阵执行反变换。
+    """Apply the inverse transformation to a log1p expression matrix.
 
-    该函数用于在 ``X_HyS_data`` 表中对 log1p 后的表达字段执行反变换，
-    并将结果写入新的表达字段。默认情况下，函数读取 ``data_log1p``，
-    计算自然指数反变换 ``exp(x) - 1``，并写入 ``data_exp1``。
+    This function applies the inverse transformation to a log1p-transformed
+    expression field in the ``X_HyS_data`` table and writes the result to a new
+    expression field. By default, it reads ``data_log1p``, computes the natural
+    exponential inverse transformation ``exp(x) - 1``, and writes the result to
+    ``data_exp1``.
 
-    当 ``log1p`` 使用了非自然对数底数时，可以通过 ``base`` 指定同一个底数，
-    使反变换与原始 log1p 变换匹配。
+    When ``log1p`` used a non-natural logarithm base, you can specify the same
+    base through ``base`` so that the inverse transformation matches the
+    original log1p transformation.
 
-    函数按 ``X_HyS_data.id`` 范围分块执行 ``UPDATE``，只处理 ``use_data``
-    不为 ``NULL`` 的表达记录。
+    The function performs chunked ``UPDATE`` operations over the
+    ``X_HyS_data.id`` range and only processes expression records where
+    ``use_data`` is not ``NULL``.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中包含
-        ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain the ``X_HyS_data`` table.
+
     base
-        原 log1p 变换使用的对数底数。默认值为 ``None``，表示使用自然指数：
+        Logarithm base used by the original log1p transformation. The default
+        value is ``None``, meaning that the natural exponential is used:
 
         ``exp(x) - 1``
 
-        如果传入数值，例如 ``base=2``，则计算：
+        If a numeric value is provided, for example ``base=2``, the function
+        computes:
 
         ``base ** x - 1``
+
     add_data
-        写入 ``X_HyS_data`` 表的反变换结果字段名。默认值为
-        ``"data_exp1"``。
+        Name of the inverse-transformation result field to write to the
+        ``X_HyS_data`` table. The default value is ``"data_exp1"``.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的 log1p 表达字段名。默认值为
-        ``"data_log1p"``。
+        Name of the log1p expression field read from the ``X_HyS_data`` table.
+        The default value is ``"data_log1p"``.
+
     chunk_ids
-        按 ``X_HyS_data.id`` 范围分块处理时每个 chunk 覆盖的记录 ID 数量。
-        默认值为 ``50_000_000``。
+        Number of record IDs covered by each chunk when processing by
+        ``X_HyS_data.id`` range. The default value is ``50_000_000``.
 
     Returns
     -------
     None
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段，不返回对象。
+        Results are written directly to the ``add_data`` field in the
+        ``X_HyS_data`` table. No object is returned.
 
     Notes
     -----
-    该函数通常用于调试、对照或需要把 log1p 表达值恢复到线性空间的场景。
-    如果输入字段并不是 log1p 尺度，反变换结果没有生物学含义。
+    This function is usually used for debugging, comparison, or situations that
+    require restoring log1p expression values to the linear space. If the input
+    field is not on the log1p scale, the inverse-transformation result has no
+    biological meaning.
 
     Examples
     --------
-    将默认 log1p 矩阵还原到线性空间::
+    Restore the default log1p matrix to the linear space::
 
         sap.pp.expm1(atlas, use_data="data_log1p", add_data="data_exp1")
 
-    还原以 2 为底的 log1p 矩阵::
+    Restore a log1p matrix that used base 2::
 
         sap.pp.expm1(
             atlas,
@@ -682,7 +651,7 @@ def expm1(
     except:
         pass
 
-    # 0. 字段存在性检查
+    # 0. Field existence check
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -691,15 +660,15 @@ def expm1(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 1. 构造 exp 表达式
+    # 1. Construct the exp expression
     if base is None:
         exp_expr = f"exp({use_data}) - 1.0"
     else:
         exp_expr = f"pow({float(base)}, {use_data}) - 1.0"
 
-    # 2. 确保输出字段存在
+    # 2. Ensure the output field exists
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
@@ -710,19 +679,19 @@ def expm1(
         ADD COLUMN {add_data} REAL
     """)
 
-    # 3. 获取 id 范围
+    # 3. Get the id range
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
         FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        logger.info("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data is empty; skipping")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
-    # 4. 分块 UPDATE
+    # 4. Chunked UPDATE
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -742,7 +711,7 @@ def expm1(
               AND {use_data} IS NOT NULL
         """)
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=[],
@@ -750,7 +719,7 @@ def expm1(
         collect=True,
     )
 
-    logger.info(f"expm1 Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"expm1 Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def normalize_and_log1p(
@@ -761,64 +730,80 @@ def normalize_and_log1p(
             use_data: str = "data_count",
             base: Optional[Number] = None,
             chunk_ids: int = 50_000_000 ) -> None:
-    """在一次流程中完成总量归一化和 log1p 变换。
+    """Complete total-count normalization and log1p transformation in one workflow.
 
-    该函数用于在 Atlas 数据库中把总量归一化和 log1p 变换合并为一个流程。
-    它会先调用 ``normalize_total_scale_factor``，在 ``obs`` 表中计算每个细胞的scale factor；
-    随后按 ``X_HyS_data.id`` 范围分块更新表达矩阵，直接计算：
+    This function combines total-count normalization and log1p transformation
+    into a single workflow in the Atlas database. It first calls
+    ``normalize_total_scale_factor`` to compute each cell's scale factor in the
+    ``obs`` table. It then updates the expression matrix in chunks over the
+    ``X_HyS_data.id`` range and directly computes:
 
     ``log(1 + x * scale_factor)``
 
-    并将结果写入 ``X_HyS_data`` 表中的 ``add_data`` 字段。
+    The result is written to the ``add_data`` field in the ``X_HyS_data`` table.
 
-    与先运行 ``normalize_total`` 再运行 ``log1p`` 相比，
-    该函数不需要先写出一份完整的中间归一化字段，因此更适合大规模数据。
-    它常用于从``data_count`` 直接生成 ``data_log1p``。
+    Compared with running ``normalize_total`` first and then running ``log1p``,
+    this function does not need to first write a complete intermediate
+    normalized field, so it is better suited for large-scale data. It is
+    commonly used to generate ``data_log1p`` directly from ``data_count``.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs`` 表和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs`` table and the
+        ``X_HyS_data`` table.
+
     target_sum
-        归一化后每个细胞的目标总表达量。默认值为 ``10000``。
+        Target total expression per cell after normalization. The default value
+        is ``10000``.
 
-        该值会传给 ``normalize_total_scale_factor``，用于计算每个细胞的
-        ``scale_factor``。
+        This value is passed to ``normalize_total_scale_factor`` to compute the
+        ``scale_factor`` for each cell.
+
     use_obs_col
-        ``obs`` 表中保存 scale factor 的字段名。默认值为 ``"scale_factor"``。
+        Name of the field in the ``obs`` table that stores the scale factor. The
+        default value is ``"scale_factor"``.
 
-        函数会先在该字段中写入每个细胞的 scale factor，然后在表达矩阵分块
-        更新时读取该字段。
+        The function first writes each cell's scale factor into this field, then
+        reads this field when updating the expression matrix in chunks.
+
     add_data
-        写入 ``X_HyS_data`` 表的归一化并 log1p 后的表达字段名。默认值为
-        ``"data_log1p"``。
+        Name of the normalized-and-log1p expression field to write to the
+        ``X_HyS_data`` table. The default value is ``"data_log1p"``.
 
-        如果该字段已经存在，函数会先删除旧字段，再重新创建。
+        If the field already exists, the function first drops the old field and
+        then recreates it.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的原始表达字段名。默认值为
-        ``"data_count"``。
+        Name of the raw expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_count"``.
+
     base
-        对数变换的底数。默认值为 ``None``，表示使用自然对数 e 。
-        如果传入数值，例如 ``base=2``，则计算对应底数的 log1p。
+        Base of the logarithm. The default value is ``None``, meaning that the
+        natural logarithm e is used. If a numeric value is provided, for example
+        ``base=2``, the corresponding-base log1p is computed.
+
     chunk_ids
-        按 ``X_HyS_data.id`` 范围分块处理时每个 chunk 覆盖的记录 ID 数量。
-        默认值为 ``50_000_000``。
+        Number of record IDs covered by each chunk when processing by
+        ``X_HyS_data.id`` range. The default value is ``50_000_000``.
 
     Returns
     -------
     None
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段，并在 ``obs`` 表
-        中写入 ``use_obs_col`` 对应的 scale factor，不返回对象。
+        Results are written directly to the ``add_data`` field in the
+        ``X_HyS_data`` table, and the corresponding scale factor is written to
+        the ``use_obs_col`` field in the ``obs`` table. No object is returned.
 
     Notes
     -----
-    该函数会覆盖 ``obs`` 表中 ``use_obs_col`` 的旧值，并重建
-    ``X_HyS_data`` 表中的 ``add_data`` 字段。
+    This function overwrites the old values in the ``use_obs_col`` field of the
+    ``obs`` table and rebuilds the ``add_data`` field in the ``X_HyS_data``
+    table.
 
     Examples
     --------
-    先计算 scale factor，再写入 log1p 矩阵::
+    Compute the scale factor first, then write the log1p matrix::
 
         sap.pp.normalize_total_scale_factor(atlas, target_sum=10000)
         sap.pp.normalize_and_log1p(atlas)
@@ -832,7 +817,7 @@ def normalize_and_log1p(
     except:
         pass
 
-    # 0. 字段存在性检查（防止 silent bug）
+    # 0. Field existence check (prevents silent bugs)
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -841,9 +826,9 @@ def normalize_and_log1p(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 1. 调用上面的函数 normalize_total → 计算 scale_factor
+    # 1. Call the function above: normalize_total -> compute scale_factor
     normalize_total_scale_factor(
         atlas=atlas,
         target_sum=target_sum,
@@ -851,13 +836,13 @@ def normalize_and_log1p(
         use_data=use_data,
     )
 
-    # 2. 构造 log 表达式
+    # 2. Construct the log expression
     if base is None:
         log_expr = f"ln(1.0 + x.{use_data} * o.{use_obs_col})"
     else:
         log_expr = f"log({float(base)}, 1.0 + x.{use_data} * o.{use_obs_col})"
 
-    # 3. 准备输出字段
+    # 3. Prepare the output field
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
@@ -868,20 +853,20 @@ def normalize_and_log1p(
         ADD COLUMN {add_data} REAL
     """)
 
-    # 4. 获取 X_HyS_data.id 范围
+    # 4. Get the X_HyS_data.id range
     min_id, max_id = conn.execute("""
         SELECT MIN(id), MAX(id)
         FROM X_HyS_data
     """).fetchone()
 
     if min_id is None:
-        logger.info("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data is empty; skipping")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
-    # 5. 分块 UPDATE
-    # cell-wise QC：分块处理
+    # 5. Chunked UPDATE
+    # cell-wise QC: chunked processing
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -902,7 +887,7 @@ def normalize_and_log1p(
               AND x.id BETWEEN {start_id} AND {end_id}
         """)
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_cell_sum_chunk"],
@@ -910,7 +895,7 @@ def normalize_and_log1p(
         collect=True,
     )
 
-    logger.info(f"normalize_and_log1p Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"normalize_and_log1p Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def highly_variable_genes(
@@ -929,84 +914,119 @@ def highly_variable_genes(
         var_filter_col: str = "filter_genes",
         inplace: bool = True,
 ) -> None:
-    """识别高变基因并写入 var 表。
+    """Identify highly variable genes and write them to the var table.
 
-    该函数用于在 Atlas 数据库中根据表达矩阵识别高变基因，并将结果写入``var`` 表。
-    高变基因通常用于后续 PCA、邻居图、聚类和 UMAP 等流程，
-    可以减少噪声基因和低信息量基因对降维结果的影响。
+    This function identifies highly variable genes from the expression matrix in
+    the Atlas database and writes the result to the ``var`` table. Highly
+    variable genes are usually used in downstream workflows such as PCA,
+    neighbor graph construction, clustering, and UMAP, and can reduce the impact
+    of noisy and low-information genes on dimensionality-reduction results.
 
-    函数支持三种计算风格：
+    The function supports three calculation flavors:
 
-    - ``"seurat"``：类似 Scanpy/Seurat 的分箱标准化离散度方法；
-    - ``"cv"``：按变异系数 ``std / mean`` 排序；
-    - ``"var"``：按方差排序。
+    - ``"seurat"``: a bin-normalized dispersion method similar to Scanpy/Seurat;
+    - ``"cv"``: ranks genes by the coefficient of variation ``std / mean``;
+    - ``"var"``: ranks genes by variance.
 
-    默认 ``flavor="seurat"``。计算完成后，函数会在 ``var`` 表中写入
-``add_var_col`` 指定的布尔列，标记被选中的高变基因。不同 flavor 还会
-    写入对应的统计字段，例如均值、方差、离散度、标准化离散度或排名。
+    The default is ``flavor="seurat"``. After calculation, the function writes a
+    boolean column specified by ``add_var_col`` to the ``var`` table to mark the
+    selected highly variable genes. Different flavors also write corresponding
+    statistical fields, such as mean, variance, dispersion, normalized
+    dispersion, or rank.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
+
     flavor
-        高变基因计算方法。可选值为 ``"seurat"``、``"cv"`` 和 ``"var"``。
+        Highly variable gene calculation method. Optional values are
+        ``"seurat"``, ``"cv"``, and ``"var"``.
 
-        ``"seurat"`` 会调用 Seurat 风格的均值分箱和标准化离散度流程；
-        ``"cv"`` 和 ``"var"`` 会调用基础统计流程。
+        ``"seurat"`` calls the Seurat-style mean-binning and normalized
+        dispersion workflow; ``"cv"`` and ``"var"`` call the basic statistics
+        workflow.
+
     n_top_genes
-        需要标记为高变基因的数量。默认值为 ``2000``。
+        Number of genes to mark as highly variable. The default value is
+        ``2000``.
 
-        当 ``flavor="seurat"`` 且 ``n_top_genes`` 不为 ``None`` 时，会优先选择
-        标准化离散度最高的前 ``n_top_genes`` 个基因。
+        When ``flavor="seurat"`` and ``n_top_genes`` is not ``None``, the first
+        ``n_top_genes`` genes with the highest normalized dispersion are
+        selected preferentially.
+
     add_var_col
-        写入 ``var`` 表的高变基因布尔标记列名。默认值为
-        ``"highly_variable_genes"``。
-    use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_log1p"``。
-        高变基因通常建议基于 log1p 后的表达值计算。
-    n_bins
-        ``flavor="seurat"`` 时按平均表达量分箱的数量。默认值为 ``20``。
-    min_mean
-        ``flavor="seurat"`` 且使用 cutoff 模式时的平均表达量下限。
-    max_mean
-        ``flavor="seurat"`` 且使用 cutoff 模式时的平均表达量上限。
-    min_disp
-        ``flavor="seurat"`` 且使用 cutoff 模式时的标准化离散度下限。
-    max_disp
-        ``flavor="seurat"`` 且使用 cutoff 模式时的标准化离散度上限。
-    use_filtered
-        是否只在过滤后的细胞和基因上计算。默认值为 ``True``。
+        Name of the highly variable gene boolean marker column written to the
+        ``var`` table. The default value is ``"highly_variable_genes"``.
 
-        当为 ``True`` 时，函数会优先使用 ``obs_filter_col`` 和 ``var_filter_col``
-        指定的布尔列；如果对应列不存在，会回退到全部细胞或全部基因。
+    use_data
+        Name of the expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_log1p"``. Highly variable genes are usually
+        recommended to be calculated from log1p-transformed expression values.
+
+    n_bins
+        Number of bins by mean expression when ``flavor="seurat"``. The default
+        value is ``20``.
+
+    min_mean
+        Lower mean-expression bound in cutoff mode when ``flavor="seurat"``.
+
+    max_mean
+        Upper mean-expression bound in cutoff mode when ``flavor="seurat"``.
+
+    min_disp
+        Lower normalized-dispersion bound in cutoff mode when
+        ``flavor="seurat"``.
+
+    max_disp
+        Upper normalized-dispersion bound in cutoff mode when
+        ``flavor="seurat"``.
+
+    use_filtered
+        Whether to calculate only on filtered cells and genes. The default value
+        is ``True``.
+
+        When ``True``, the function preferentially uses the boolean columns
+        specified by ``obs_filter_col`` and ``var_filter_col``. If the
+        corresponding columns do not exist, it falls back to all cells or all
+        genes.
+
     obs_filter_col
-        ``obs`` 表中用于筛选细胞的布尔列名。默认值为 ``"filter_cells"``。
+        Name of the boolean column in the ``obs`` table used to filter cells.
+        The default value is ``"filter_cells"``.
+
     var_filter_col
-        ``var`` 表中用于筛选基因的布尔列名。默认值为 ``"filter_genes"``。
+        Name of the boolean column in the ``var`` table used to filter genes.
+        The default value is ``"filter_genes"``.
+
     inplace
-        是否把结果写回 ``var`` 表。默认值为 ``True``。
+        Whether to write the result back to the ``var`` table. The default value
+        is ``True``.
 
     Returns
     -------
     None
-        结果直接写入 ``var`` 表中的高变基因标记列和相关统计列，不返回对象。
+        Results are written directly to the highly variable gene marker column
+        and related statistic columns in the ``var`` table. No object is
+        returned.
 
     Notes
     -----
-    该函数不会自动重建 minibatch 读取索引。如果后续希望 PCA 或 KMeans 只使用
-    新标记的高变基因，需要在运行后调用：
+    This function does not automatically rebuild the minibatch read index. If
+    later PCA or KMeans should use only the newly marked highly variable genes,
+    call the following after running this function:
 
     ``atlas.build_read_index(use_hvg=True, gene_condition=...)``
 
     Examples
     --------
-    使用默认 Seurat 风格选择 2000 个高变基因::
+    Select 2000 highly variable genes using the default Seurat flavor::
 
         sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
 
-    在过滤后的细胞和基因上选择 3000 个高变基因::
+    Select 3000 highly variable genes on filtered cells and genes::
 
         sap.pp.filter_cells(atlas, min_genes=200)
         sap.pp.filter_genes(atlas, min_cells=3)
@@ -1049,11 +1069,11 @@ def highly_variable_genes(
 
     else:
         raise ValueError(
-            f"不支持的 flavor: {flavor}. "
-            "可选值为: 'seurat', 'cv', 'var'"
+            f"Unsupported flavor: {flavor}. "
+            "Optional values are: 'seurat', 'cv', 'var'"
         )
 
-    logger.info(f"highly_variable_genes Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"highly_variable_genes Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
     return None
 
 
@@ -1064,71 +1084,87 @@ def _highly_variable_genes_basic(
                         add_var_col: str = "highly_variable_genes",
                         use_data: str = "data_log1p"
                     ) -> None:
-    """使用基础统计量识别高变基因。
+    """Identify highly variable genes using basic statistics.
 
-    该内部函数用于支撑 ``highly_variable_genes(flavor="cv")`` 和
-    ``highly_variable_genes(flavor="var")``。函数会在 Atlas 数据库中按基因
-    聚合 ``X_HyS_data`` 表里的表达值，计算每个基因在全体细胞上的均值、
-    方差、标准差、非零表达记录数量和排序得分，然后按 ``n_top_genes`` 选择
-    高变基因。
+    This internal function supports ``highly_variable_genes(flavor="cv")`` and
+    ``highly_variable_genes(flavor="var")``. It aggregates expression values in
+    the ``X_HyS_data`` table by gene in the Atlas database, computes each gene's
+    mean, variance, standard deviation, number of nonzero expression records,
+    and ranking score across all cells, and then selects highly variable genes
+    according to ``n_top_genes``.
 
-    与只统计非零表达值不同，该函数会把没有显式存储在稀疏表中的 0 值也纳入
-    全细胞统计。具体做法是用 ``obs`` 表中的细胞总数作为分母，并用
-    ``SUM(x)`` 和 ``SUM(x * x)`` 推导每个基因的全细胞均值和方差。这样得到的
-    统计量更接近完整 dense 表达矩阵上的结果。
+    Unlike methods that only count nonzero expression values, this function also
+    includes the 0 values not explicitly stored in the sparse table in the
+    all-cell statistics. Specifically, it uses the total number of cells in the
+    ``obs`` table as the denominator and derives the all-cell mean and variance
+    of each gene from ``SUM(x)`` and ``SUM(x * x)``. The resulting statistics are
+    closer to those computed on a complete dense expression matrix.
 
-    计算完成后，函数会把统计结果写回 ``var`` 表，供后续可视化、PCA、
-    ``scale`` 或 ``build_read_index`` 等步骤复用。
+    After calculation, the function writes the statistics back to the ``var``
+    table so that later visualization, PCA, ``scale``, or ``build_read_index``
+    steps can reuse them.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
 
-        ``obs`` 表用于统计细胞总数；
-        ``var`` 表需要包含 ``atlas_gene_id`` 字段；
-        ``X_HyS_data`` 表需要包含 ``atlas_gene_id`` 以及由 ``use_data`` 指定的
-        表达字段。
+        The ``obs`` table is used to count the total number of cells; the
+        ``var`` table must contain the ``atlas_gene_id`` field; the
+        ``X_HyS_data`` table must contain ``atlas_gene_id`` and the expression
+        field specified by ``use_data``.
+
     flavor
-        基础高变基因筛选方法。可选值为 ``"cv"`` 和 ``"var"``。
+        Basic highly variable gene selection method. Optional values are
+        ``"cv"`` and ``"var"``.
 
-        ``"cv"`` 使用变异系数 ``std / mean`` 作为排序得分；
-        ``"var"`` 使用方差作为排序得分。
+        ``"cv"`` uses the coefficient of variation ``std / mean`` as the
+        ranking score; ``"var"`` uses variance as the ranking score.
+
     n_top_genes
-        需要标记为高变基因的数量。默认值为 ``2000``。
+        Number of genes to mark as highly variable. The default value is
+        ``2000``.
 
-        当为 ``None`` 时，不再截取前 N 个基因，而是把参与计算的所有基因写入
-        临时高变基因集合。
+        When this is ``None``, the function does not truncate to the top N
+        genes, and instead writes all participating genes to the temporary
+        highly variable gene set.
+
     add_var_col
-        写入 ``var`` 表的高变基因布尔标记列名。默认值为
-        ``"highly_variable_genes"``。
+        Name of the highly variable gene boolean marker column written to the
+        ``var`` table. The default value is ``"highly_variable_genes"``.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_log1p"``。
+        Name of the expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_log1p"``.
 
     Returns
     -------
     None
-        结果直接写入 ``var`` 表，不返回对象。
+        Results are written directly to the ``var`` table. No object is
+        returned.
 
     Notes
     -----
-    该函数会在 ``var`` 表中新增或更新以下字段：
+    This function adds or updates the following fields in the ``var`` table:
 
-    - ``hvg_mean``：每个基因在全体细胞上的均值；
-    - ``hvg_var``：每个基因在全体细胞上的方差；
-    - ``hvg_std``：每个基因在全体细胞上的标准差；
-    - ``hvg_score``：按 ``flavor`` 计算得到的排序得分；
-    - ``hvg_nnz``：每个基因在 ``X_HyS_data`` 中显式存储的非零记录数量；
-    - ``add_var_col``：是否被选为高变基因的布尔标记。
+    - ``hvg_mean``: mean of each gene across all cells;
+    - ``hvg_var``: variance of each gene across all cells;
+    - ``hvg_std``: standard deviation of each gene across all cells;
+    - ``hvg_score``: ranking score calculated according to ``flavor``;
+    - ``hvg_nnz``: number of explicitly stored nonzero records for each gene in
+      ``X_HyS_data``;
+    - ``add_var_col``: boolean marker indicating whether the gene was selected
+      as highly variable.
 
-    该基础方法不读取 ``filter_cells`` 或 ``filter_genes``。如果需要只在过滤后
-    的细胞和基因上使用 Seurat 风格流程，可以通过
-    ``highly_variable_genes(flavor="seurat", use_filtered=True)`` 调用。
+    This basic method does not read ``filter_cells`` or ``filter_genes``. If you
+    need to use the Seurat-style workflow only on filtered cells and genes, call
+    ``highly_variable_genes(flavor="seurat", use_filtered=True)``.
 
     Examples
     --------
-    使用变异系数选择 2000 个高变基因::
+    Select 2000 highly variable genes using the coefficient of variation::
 
         _highly_variable_genes_basic(atlas, flavor="cv", n_top_genes=2000)
 
@@ -1140,7 +1176,7 @@ def _highly_variable_genes_basic(
     except:
         pass
 
-    # 检查字段存在
+    # Check whether the field exists
     col_exists = conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
@@ -1149,9 +1185,9 @@ def _highly_variable_genes_basic(
     """).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
-    # 确保 var 表有可复用统计列
+    # Ensure the var table has reusable statistic columns
     conn.execute("""
         ALTER TABLE var
         ADD COLUMN IF NOT EXISTS hvg_mean REAL
@@ -1173,15 +1209,15 @@ def _highly_variable_genes_basic(
         ADD COLUMN IF NOT EXISTS hvg_nnz BIGINT
     """)
 
-    # 取总细胞数 N（全细胞统计的关键）
+    # Get the total number of cells N (the key for all-cell statistics)
     n_cells = conn.execute("""
         SELECT COUNT(*) FROM obs
     """).fetchone()[0]
 
     if n_cells == 0:
-        raise ValueError("obs 为空，无法计算 highly_variable_genes")
+        raise ValueError("obs is empty; unable to calculate highly_variable_genes")
 
-    # 计算每个 gene 的全细胞 mean / var / std ; 不补 0，直接用 sum / sumsq / N_cells 推导
+    # Compute all-cell mean / var / std for each gene; do not explicitly fill 0s, derive directly from sum / sumsq / N_cells
 
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_stats AS
@@ -1216,14 +1252,14 @@ def _highly_variable_genes_basic(
           ON v.atlas_gene_id = g.atlas_gene_id
     """)
 
-    # 计算排序指标
+    # Compute the ranking metric
     if flavor == "var":
         score_expr = "var"
     elif flavor == "cv":
-        # CV = std / mean（避免除 0）
+        # CV = std / mean (avoid division by zero)
         score_expr = "CASE WHEN mean > 0 THEN std / mean ELSE 0 END"
     else:
-        raise ValueError(f"不支持的 flavor: {flavor}")
+        raise ValueError(f"Unsupported flavor: {flavor}")
 
     conn.execute(f"""
         CREATE OR REPLACE TEMP TABLE _gene_score AS
@@ -1233,7 +1269,7 @@ def _highly_variable_genes_basic(
         FROM _gene_stats
     """)
 
-    # 把统计量和 score 写回 var，后续画图直接复用
+    # Write statistics and score back to var for direct reuse in later plotting
 
     conn.execute("""
         UPDATE var
@@ -1264,7 +1300,7 @@ def _highly_variable_genes_basic(
         WHERE v.atlas_gene_id = gs.atlas_gene_id
     """)
 
-    # 选 top genes
+    # Select top genes
     if n_top_genes is not None:
 
         conn.execute(f"""
@@ -1282,7 +1318,7 @@ def _highly_variable_genes_basic(
             FROM _gene_score
         """)
 
-    # 在 var 表中写入布尔结果
+    # Write boolean results to the var table
 
     conn.execute(f"""
         ALTER TABLE var
@@ -1301,7 +1337,7 @@ def _highly_variable_genes_basic(
         WHERE var.atlas_gene_id = _hvg.atlas_gene_id
     """)
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_gene_stats", "_gene_score", "_hvg"],
@@ -1325,103 +1361,139 @@ def _highly_variable_genes_seurat(
         var_filter_col: str = "filter_genes",
         inplace: bool = True,
 ):
-    """使用 Seurat 风格方法识别高变基因。
+    """Identify highly variable genes using a Seurat-style method.
 
-    该内部函数用于支撑 ``highly_variable_genes(flavor="seurat")``。函数实现
-    类似 Scanpy/Seurat 的高变基因流程：先按基因计算均值和离散度，再按平均
-    表达量分箱，在每个 bin 内对离散度做标准化，最后根据标准化离散度选择
-    高变基因。
+    This internal function supports ``highly_variable_genes(flavor="seurat")``.
+    It implements a highly variable gene workflow similar to Scanpy/Seurat:
+    first compute the mean and dispersion for each gene, then bin genes by mean
+    expression, standardize dispersion within each bin, and finally select
+    highly variable genes based on normalized dispersion.
 
-    默认情况下，函数假设 ``use_data`` 是 log1p 后的表达字段。因此在计算
-    Seurat 风格的均值和离散度前，会先对显式表达值执行
-    ``EXP(use_data) - 1.0``，近似还原到原始表达尺度，再把稀疏矩阵中未显式
-    存储的 0 值纳入全细胞统计。
+    By default, the function assumes that ``use_data`` is a log1p-transformed
+    expression field. Therefore, before computing Seurat-style means and
+    dispersions, it applies ``EXP(use_data) - 1.0`` to explicitly stored
+    expression values to approximately restore the original expression scale,
+    and then includes the 0 values not explicitly stored in the sparse matrix in
+    the all-cell statistics.
 
-    函数支持只在过滤后的细胞和基因上计算。当 ``use_filtered=True`` 时，
-    会优先读取 ``obs_filter_col`` 和 ``var_filter_col`` 指定的布尔列；
-    如果某个过滤列不存在，则对应维度自动回退到使用全部细胞或全部基因。
+    The function supports calculation only on filtered cells and genes. When
+    ``use_filtered=True``, it preferentially reads the boolean columns specified
+    by ``obs_filter_col`` and ``var_filter_col``. If a filter column does not
+    exist, the corresponding dimension automatically falls back to using all
+    cells or all genes.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
 
-        ``obs`` 表需要包含 ``atlas_cell_id`` 字段；
-        ``var`` 表需要包含 ``atlas_gene_id`` 和 ``atlas_gene_name`` 字段；
-        ``X_HyS_data`` 表需要包含 ``atlas_cell_id``、``atlas_gene_id`` 以及
-        由 ``use_data`` 指定的表达字段。
+        The ``obs`` table must contain the ``atlas_cell_id`` field; the ``var``
+        table must contain ``atlas_gene_id`` and ``atlas_gene_name``; the
+        ``X_HyS_data`` table must contain ``atlas_cell_id``, ``atlas_gene_id``,
+        and the expression field specified by ``use_data``.
+
     n_top_genes
-        需要标记为高变基因的数量。默认值为 ``2000``。
+        Number of genes to mark as highly variable. The default value is
+        ``2000``.
 
-        当不为 ``None`` 时，函数会忽略 ``min_mean``、``max_mean``、
-        ``min_disp`` 和 ``max_disp``，直接选择标准化离散度最高的前
-        ``n_top_genes`` 个基因。
+        When this is not ``None``, the function ignores ``min_mean``,
+        ``max_mean``, ``min_disp``, and ``max_disp`` and directly selects the
+        first ``n_top_genes`` genes with the highest normalized dispersion.
 
-        当为 ``None`` 时，函数进入 cutoff 模式，根据均值和标准化离散度的
-        阈值范围选择高变基因。
+        When this is ``None``, the function enters cutoff mode and selects
+        highly variable genes according to threshold ranges for means and
+        normalized dispersions.
+
     add_var_col
-        写入 ``var`` 表的高变基因布尔标记列名。默认值为
-        ``"highly_variable_genes"``。
+        Name of the highly variable gene boolean marker column written to the
+        ``var`` table. The default value is ``"highly_variable_genes"``.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_log1p"``。
+        Name of the expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_log1p"``.
 
-        该 Seurat 风格实现通常应基于 log1p 后的数据运行，因为内部会用
-        ``EXP(use_data) - 1.0`` 还原到原始尺度。
+        This Seurat-style implementation should usually run on log1p-transformed
+        data, because internally it uses ``EXP(use_data) - 1.0`` to restore the
+        original scale.
+
     n_bins
-        按平均表达量分箱的数量。默认值为 ``20``。
+        Number of bins by mean expression. The default value is ``20``.
 
-        分箱用于在相似平均表达水平的基因之间比较离散度，降低平均表达量对
-        离散度排序的影响。
+        Binning is used to compare dispersion among genes with similar mean
+        expression levels, reducing the influence of mean expression on
+        dispersion ranking.
+
     min_mean
-        cutoff 模式下参与高变基因选择的平均表达量下限。
+        Lower mean-expression bound for highly variable gene selection in cutoff
+        mode.
+
     max_mean
-        cutoff 模式下参与高变基因选择的平均表达量上限。
+        Upper mean-expression bound for highly variable gene selection in cutoff
+        mode.
+
     min_disp
-        cutoff 模式下参与高变基因选择的标准化离散度下限。
+        Lower normalized-dispersion bound for highly variable gene selection in
+        cutoff mode.
+
     max_disp
-        cutoff 模式下参与高变基因选择的标准化离散度上限。
+        Upper normalized-dispersion bound for highly variable gene selection in
+        cutoff mode.
+
     use_filtered
-        是否只在过滤后的细胞和基因上计算。默认值为 ``True``。
+        Whether to calculate only on filtered cells and genes. The default value
+        is ``True``.
 
-        当过滤列存在时，只保留对应列为 ``TRUE`` 的细胞或基因；
-        当过滤列不存在时，会记录日志并使用该维度的全部对象。
+        When filter columns exist, only cells or genes with the corresponding
+        column set to ``TRUE`` are kept. When a filter column does not exist, a
+        log message is recorded and all objects in that dimension are used.
+
     obs_filter_col
-        ``obs`` 表中用于筛选细胞的布尔列名。默认值为 ``"filter_cells"``。
-    var_filter_col
-        ``var`` 表中用于筛选基因的布尔列名。默认值为 ``"filter_genes"``。
-    inplace
-        是否将结果写回 ``var`` 表。默认值为 ``True``。
+        Name of the boolean column in the ``obs`` table used to filter cells.
+        The default value is ``"filter_cells"``.
 
-        为 ``True`` 时，函数会更新数据库并返回 ``None``；
-        为 ``False`` 时，函数不会写回 ``var`` 表，而是返回包含统计结果的
-        ``pandas.DataFrame``。
+    var_filter_col
+        Name of the boolean column in the ``var`` table used to filter genes.
+        The default value is ``"filter_genes"``.
+
+    inplace
+        Whether to write the result back to the ``var`` table. The default value
+        is ``True``.
+
+        When ``True``, the function updates the database and returns ``None``.
+        When ``False``, the function does not write back to the ``var`` table
+        and instead returns a ``pandas.DataFrame`` containing the statistics.
 
     Returns
     -------
     None or pandas.DataFrame
-        当 ``inplace=True`` 时，结果直接写入 ``var`` 表，不返回对象。
+        When ``inplace=True``, results are written directly to the ``var`` table
+        and no object is returned.
 
-        当 ``inplace=False`` 时，返回一个以基因为行的 DataFrame，包含
-        ``atlas_gene_id``、``atlas_gene_name``、``means``、``dispersions``、
-        ``dispersions_norm``、``highly_variable_rank`` 和 ``add_var_col`` 等字段。
+        When ``inplace=False``, returns a gene-by-row DataFrame containing fields
+        such as ``atlas_gene_id``, ``atlas_gene_name``, ``means``,
+        ``dispersions``, ``dispersions_norm``, ``highly_variable_rank``, and
+        ``add_var_col``.
 
     Notes
     -----
-    ``inplace=True`` 时，函数会在 ``var`` 表中新增或更新以下字段：
+    When ``inplace=True``, the function adds or updates the following fields in
+    the ``var`` table:
 
-    - ``add_var_col``：是否被选为高变基因的布尔标记；
-    - ``highly_variable_rank``：按标准化离散度排序得到的排名；
-    - ``means``：Seurat 风格均值，基于 ``log1p(mean_raw)``；
-    - ``dispersions``：离散度，基于 ``log(variance / mean)``；
-    - ``dispersions_norm``：按均值分箱后标准化的离散度。
+    - ``add_var_col``: boolean marker indicating whether the gene was selected
+      as highly variable;
+    - ``highly_variable_rank``: rank obtained by sorting normalized dispersion;
+    - ``means``: Seurat-style mean based on ``log1p(mean_raw)``;
+    - ``dispersions``: dispersion based on ``log(variance / mean)``;
+    - ``dispersions_norm``: dispersion normalized after binning by mean.
 
-    写回前会先清空 ``var`` 表中的旧结果，避免在 ``use_filtered=True`` 时旧的
-    ``TRUE`` 标记残留。
+    Before writing back, old results in the ``var`` table are cleared first to
+    avoid stale ``TRUE`` markers remaining when ``use_filtered=True``.
 
     Examples
     --------
-    在过滤后的细胞和基因上选择 2000 个高变基因::
+    Select 2000 highly variable genes on filtered cells and genes::
 
         _highly_variable_genes_seurat(
             atlas,
@@ -1433,7 +1505,7 @@ def _highly_variable_genes_seurat(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is empty; please connect to the database first")
 
     try:
         conn.execute(f"PRAGMA threads={os.cpu_count()}")
@@ -1441,34 +1513,37 @@ def _highly_variable_genes_seurat(
         pass
 
     # -------------------------------------------------
-    # 0. DuckDB 字段安全引用
+    # 0. Safe quoting for DuckDB fields
     # -------------------------------------------------
     def _q(name: str) -> str:
-        """为 SQL 标识符添加安全引用。
+        """Add safe quoting to an SQL identifier.
 
-        该内部 helper 用于在拼接 DuckDB SQL 时引用动态列名或表名。函数会先
-        转义名称中已有的双引号，再在外层补上双引号，避免字段名中包含特殊
-        字符时造成 SQL 解析错误。
+        This internal helper is used to quote dynamic column names or table names
+        when constructing DuckDB SQL. It first escapes existing double quotes in
+        the name and then wraps the result in outer double quotes, preventing SQL
+        parsing errors when the field name contains special characters.
 
         Parameters
         ----------
         name
-            需要引用的列名、表名或其他 SQL 标识符。
+            Column name, table name, or another SQL identifier that needs to be
+            quoted.
 
         Returns
         -------
         quoted_name
-            加双引号后的 SQL 标识符。
+            SQL identifier wrapped in double quotes.
 
         Notes
         -----
-        该函数只负责 SQL 标识符引用，不负责检查字段是否存在，也不应当用于
-        引用 SQL 字符串字面量。
+        This function only handles SQL identifier quoting. It does not check
+        whether a field exists, and it should not be used to quote SQL string
+        literals.
         """
         return '"' + name.replace('"', '""') + '"'
 
     # -------------------------------------------------
-    # 1. 检查基础表
+    # 1. Check base tables
     # -------------------------------------------------
     for table_name in ["obs", "var", "X_HyS_data"]:
         exists = conn.execute("""
@@ -1478,10 +1553,10 @@ def _highly_variable_genes_seurat(
         """, [table_name]).fetchone()[0]
 
         if exists == 0:
-            raise ValueError(f"数据库中不存在表: {table_name}")
+            raise ValueError(f"Table does not exist in the database: {table_name}")
 
     # -------------------------------------------------
-    # 2. 检查 use_data 字段
+    # 2. Check the use_data field
     # -------------------------------------------------
     col_exists = conn.execute("""
         SELECT COUNT(*)
@@ -1491,10 +1566,10 @@ def _highly_variable_genes_seurat(
     """, [use_data]).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # -------------------------------------------------
-    # 3. 检查 filter 字段是否存在
+    # 3. Check whether filter fields exist
     # -------------------------------------------------
     obs_cols = [
         r[0]
@@ -1521,19 +1596,19 @@ def _highly_variable_genes_seurat(
         logger.info("[INFO] use_filtered=True")
 
         if has_obs_filter:
-            logger.info(f"[INFO] 使用 obs.{obs_filter_col}=TRUE 的 cells")
+            logger.info(f"[INFO] Using cells where obs.{obs_filter_col}=TRUE")
         else:
-            logger.info(f"[WARN] obs 中不存在 {obs_filter_col}，将使用全部 cells")
+            logger.info(f"[WARN] {obs_filter_col} does not exist in obs; all cells will be used")
 
         if has_var_filter:
-            logger.info(f"[INFO] 使用 var.{var_filter_col}=TRUE 的 genes")
+            logger.info(f"[INFO] Using genes where var.{var_filter_col}=TRUE")
         else:
-            logger.info(f"[WARN] var 中不存在 {var_filter_col}，将使用全部 genes")
+            logger.info(f"[WARN] {var_filter_col} does not exist in var; all genes will be used")
     else:
-        logger.info("[INFO] use_filtered=False，使用全部 cells / genes")
+        logger.info("[INFO] use_filtered=False; using all cells / genes")
 
     # -------------------------------------------------
-    # 4. 构建临时 keep 表
+    # 4. Build temporary keep tables
     # -------------------------------------------------
     conn.execute("DROP TABLE IF EXISTS _hvg_obs_keep")
     conn.execute("DROP TABLE IF EXISTS _hvg_var_keep")
@@ -1577,21 +1652,21 @@ def _highly_variable_genes_seurat(
     """).fetchone()[0]
 
     if n_cells == 0:
-        raise ValueError("用于 HVG 的 cell 数量为 0")
+        raise ValueError("Number of cells for HVG is 0")
 
     if n_genes == 0:
-        raise ValueError("用于 HVG 的 gene 数量为 0")
+        raise ValueError("Number of genes for HVG is 0")
 
     # -------------------------------------------------
-    # 5. SQL 聚合 gene-level sum / sumsq
+    # 5. SQL aggregation of gene-level sum / sumsq
     #
-    # Scanpy flavor='seurat' 输入是 log-normalized data，
-    # 内部先 expm1(x)。
+    # Scanpy flavor='seurat' input is log-normalized data,
+    # internally applying expm1(x) first.
     #
-    # 所以这里:
+    # Therefore here:
     #     x_raw = EXP(use_data) - 1
     #
-    # 然后全细胞含 0 统计：
+    # Then compute all-cell statistics including 0s:
     #     sum_x
     #     sum_x2
     # -------------------------------------------------
@@ -1631,16 +1706,16 @@ def _highly_variable_genes_seurat(
     """).fetchdf()
 
     # -------------------------------------------------
-    # 6. Python 小表计算 mean / variance / dispersion
+    # 6. Compute mean / variance / dispersion on a small Python table
     # -------------------------------------------------
 
     sum_x = gene_df["sum_x"].to_numpy(dtype=np.float64)
     sum_x2 = gene_df["sum_x2"].to_numpy(dtype=np.float64)
 
-    # mean：全细胞含 0
+    # mean: all cells including 0s
     mean_raw = sum_x / float(n_cells)
 
-    # variance：sample variance，尽量对齐 Scanpy correction=1
+    # variance: sample variance, aligned with Scanpy correction=1 as much as possible
     if n_cells > 1:
         var_raw = (sum_x2 - (sum_x ** 2) / float(n_cells)) / float(n_cells - 1)
     else:
@@ -1669,7 +1744,7 @@ def _highly_variable_genes_seurat(
     gene_df["dispersions"] = dispersions
 
     # -------------------------------------------------
-    # 7. mean 分箱：Scanpy seurat 使用 pd.cut(means, bins=n_bins)
+    # 7. Mean binning: Scanpy seurat uses pd.cut(means, bins=n_bins)
     # -------------------------------------------------
 
     work = gene_df[[
@@ -1679,29 +1754,29 @@ def _highly_variable_genes_seurat(
         "dispersions"
     ]].copy()
 
-    # 注意：
-    # pd.cut 和 Scanpy 一致，是等宽分箱；
-    # 不是 qcut。
+    # Note:
+    # pd.cut is consistent with Scanpy and uses equal-width bins;
+    # not qcut.
     try:
         work["mean_bin"] = pd.cut(
             work["means"],
             bins=n_bins
         )
     except ValueError:
-        # 极端情况下 means 全一样
+        # Extreme case where all means are identical
         work["mean_bin"] = pd.Series(["single_bin"] * len(work), index=work.index)
 
     # -------------------------------------------------
-    # 8. bin 内计算 avg/dev
+    # 8. Compute avg/dev within each bin
     #
     # Scanpy seurat:
     #     avg = mean(dispersions)
     #     dev = std(dispersions)
     #
-    # 单 gene bin：
+    # Single-gene bin:
     #     dev = avg
     #     avg = 0
-    # 这样 normalized dispersion = dispersion / dispersion = 1
+    # In this way, normalized dispersion = dispersion / dispersion = 1
     # -------------------------------------------------
 
     disp_stats = work.groupby("mean_bin", observed=True)["dispersions"].agg(
@@ -1710,17 +1785,17 @@ def _highly_variable_genes_seurat(
         count="count",
     )
 
-    # 单 gene bin：模拟 Scanpy _postprocess_dispersions_seurat
+    # Single-gene bin: simulate Scanpy _postprocess_dispersions_seurat
     one_gene_bins = disp_stats["dev"].isna()
 
     if one_gene_bins.any():
         disp_stats.loc[one_gene_bins, "dev"] = disp_stats.loc[one_gene_bins, "avg"]
         disp_stats.loc[one_gene_bins, "avg"] = 0.0
 
-    # 防止 dev 为 0
+    # Prevent dev from being 0
     disp_stats["dev"] = disp_stats["dev"].replace(0, np.nan)
 
-    # 映射回每个 gene
+    # Map back to each gene
     avg_map = disp_stats["avg"]
     dev_map = disp_stats["dev"]
 
@@ -1733,12 +1808,12 @@ def _highly_variable_genes_seurat(
     )
 
     # -------------------------------------------------
-    # 9. 选择 HVG
+    # 9. Select HVG
     #
-    # Scanpy 行为：
-    # - 如果 n_top_genes 不为 None，则 cutoffs 被忽略
-    # - 选 normalized dispersion 最高的 n_top_genes
-    # - ties 可能导致数量略多；这里为了工程可控，严格选 top N
+    # Scanpy behavior:
+    # - If n_top_genes is not None, cutoffs are ignored
+    # - Select n_top_genes with the highest normalized dispersion
+    # - Ties may cause the count to be slightly larger; here, for engineering controllability, top N is selected strictly
     # -------------------------------------------------
 
     work["highly_variable_rank"] = np.nan
@@ -1772,7 +1847,7 @@ def _highly_variable_genes_seurat(
         work[add_var_col] = work["atlas_gene_id"].isin(top_ids)
 
     else:
-        # Scanpy cutoff 模式：nan_to_num 后判断范围
+        # Scanpy cutoff mode: determine the range after nan_to_num
         score = work["dispersions_norm"].replace([np.inf, -np.inf], np.nan)
         score_for_cutoff = score.fillna(0.0)
 
@@ -1804,7 +1879,7 @@ def _highly_variable_genes_seurat(
         work["highly_variable_rank"] = work["atlas_gene_id"].map(rank_map)
 
     # -------------------------------------------------
-    # 10. 合并回 gene_df
+    # 10. Merge back to gene_df
     # -------------------------------------------------
     gene_df = gene_df.drop(
         columns=[
@@ -1838,7 +1913,7 @@ def _highly_variable_genes_seurat(
     hvg_count = int(gene_df[add_var_col].sum())
 
     # -------------------------------------------------
-    # 11. 写回 var
+    # 11. Write back to var
     # -------------------------------------------------
     if inplace:
 
@@ -1876,7 +1951,7 @@ def _highly_variable_genes_seurat(
             "dispersions_norm",
         ]].copy()
 
-        # 先清空全量 var 的旧结果，避免 use_filtered=True 时旧 TRUE 残留
+        # Clear old results in the full var table first to avoid stale TRUE values when use_filtered=True
         conn.execute(f"""
             UPDATE var
             SET
@@ -1903,7 +1978,7 @@ def _highly_variable_genes_seurat(
 
         conn.unregister("_hvg_seurat_py")
 
-    # 12. 统一清理 SQL 临时表 / pandas 注册表
+    # 12. Unified cleanup of SQL temporary tables / pandas registered tables
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_gene_sum", "_hvg_obs_keep", "_hvg_var_keep"],
@@ -1912,7 +1987,7 @@ def _highly_variable_genes_seurat(
         collect=False,
     )
 
-    # 如果 inplace=True，不需要返回 gene_df，就删除 Python 大对象
+    # If inplace=True, gene_df does not need to be returned, so delete large Python objects
     if inplace:
         try:
             del gene_df
@@ -1951,79 +2026,100 @@ def scale(
         hvg_key: str = "highly_variable_genes",
         chunk_ids: int = 20_000_000,
         ):
-    """对表达矩阵按基因中心化和标准化。
+    """Center and standardize the expression matrix by gene.
 
-    该函数用于在 Atlas 数据库中对表达矩阵按基因进行中心化和标准化，
-    并将 z-score 结果写入 ``X_HyS_data`` 表中的 ``add_data`` 字段。
-    它类似 Scanpy 的 ``sc.pp.scale``，常用于 PCA、KMeans 和其他需要
-    标准化输入的下游分析。
+    This function centers and standardizes the expression matrix by gene in the
+    Atlas database and writes the z-score result to the ``add_data`` field in
+    the ``X_HyS_data`` table. It is similar to Scanpy's ``sc.pp.scale`` and is
+    commonly used for downstream analyses that require standardized input, such
+    as PCA, KMeans, and other workflows.
 
-    对每个目标基因，函数先基于 ``use_data`` 计算全体细胞上的均值和标准差，
-    然后对显式存储的非零表达记录计算：
+    For each target gene, the function first computes the mean and standard
+    deviation across all cells based on ``use_data``, then computes the
+    following for explicitly stored nonzero expression records:
 
     ``z = (x - mean_gene) / std_gene``
 
-    如果 ``max_value`` 不为 ``None``，结果会被截断到
-    ``[-max_value, max_value]`` 范围内。
+    If ``max_value`` is not ``None``, the result is clipped to the range
+    ``[-max_value, max_value]``.
 
-    由于稀疏矩阵中未显式存储的 0 值在 scale 后通常不再等于 0，函数还会在
-    ``var`` 表中写入 ``add_var_col`` 字段，用于记录每个基因原始 0 值对应的
-    scale 后填充值，即 ``(0 - mean_gene) / std_gene``。minibatch dense 读取
-    ``data_scale`` 时会使用该字段填充稀疏 0 位点。
+    Because 0 values not explicitly stored in the sparse matrix usually no
+    longer equal 0 after scaling, the function also writes the ``add_var_col``
+    field to the ``var`` table. This field records the scaled fill value
+    corresponding to the original 0 value for each gene, namely
+    ``(0 - mean_gene) / std_gene``. When minibatch dense reading uses
+    ``data_scale``, this field is used to fill sparse zero positions.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_log1p"``。
+        Name of the expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_log1p"``.
+
     add_data
-        写入 ``X_HyS_data`` 表的 scale 结果字段名。默认值为 ``"data_scale"``。
+        Name of the scale result field written to the ``X_HyS_data`` table. The
+        default value is ``"data_scale"``.
+
     add_var_col
-        写入 ``var`` 表的零值 scale 填充值字段名。默认值为
-        ``"zero_scale_transform"``。
+        Name of the zero-value scaled fill-value field written to the ``var``
+        table. The default value is ``"zero_scale_transform"``.
+
     max_value
-        scale 后表达值的截断上限。默认值为 ``10.0``。
+        Upper clipping bound for scaled expression values. The default value is
+        ``10.0``.
 
-        当前实现会使用 ``[-max_value, max_value]`` 作为截断范围。
+        The current implementation uses ``[-max_value, max_value]`` as the
+        clipping range.
+
     use_hvg
-        是否只对高变基因集合计算并写入 scale 结果。默认值为 ``True``。
+        Whether to calculate and write scale results only for the highly
+        variable gene set. The default value is ``True``.
 
-        当为 ``True`` 时，函数只使用 ``var`` 表中 ``hvg_key=TRUE`` 的基因；
-        当为 ``False`` 时，使用全部基因。
+        When ``True``, the function only uses genes with ``hvg_key=TRUE`` in the
+        ``var`` table. When ``False``, all genes are used.
+
     hvg_key
-        ``var`` 表中标记高变基因的布尔列名。默认值为
-        ``"highly_variable_genes"``。
+        Name of the boolean column in the ``var`` table that marks highly
+        variable genes. The default value is ``"highly_variable_genes"``.
+
     chunk_ids
-        按 ``X_HyS_data.id`` 范围分块写回 scale 结果时每个 chunk 覆盖的记录
-        ID 数量。默认值为 ``20_000_000``。
+        Number of record IDs covered by each chunk when writing scale results
+        back by ``X_HyS_data.id`` range. The default value is ``20_000_000``.
 
     Returns
     -------
     None
-        不返回对象。
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段；
-        默认：data_scale，表示 对 data 进行 z-score 标准化， z = (x - mean_g) / std_g;
-        以及 ``var`` 表中的 ``add_var_col`` 字段。
-        默认：zero_scale_transform ，表示 将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用。
+        No object is returned.
+        Results are written directly to the ``add_data`` field in the ``X_HyS_data`` table;
+        by default, this is ``data_scale``, which means z-score standardization
+        is applied to data: ``z = (x - mean_g) / std_g``;
+        results are also written to the ``add_var_col`` field in the ``var`` table.
+        By default, ``zero_scale_transform`` means that each gene's
+        ``(0 - g.mean) / g.std`` is stored in this field of the ``var`` table for later use.
+
     Notes
     -----
-    如果 ``use_hvg=True``，只有高变基因会获得 ``data_scale`` 结果；非目标基因
-    不会参与后续基于 ``data_scale`` 的 HVG 读取索引。
+    If ``use_hvg=True``, only highly variable genes receive ``data_scale``
+    results. Non-target genes do not participate in later HVG read indexes based
+    on ``data_scale``.
 
-    运行完成后，如果下游 minibatch、PCA 或 KMeans 需要读取 scale 后数据，
-    应运行 ``atlas.build_read_index(use_hvg=True, use_data=add_data, ...)``。
+    After completion, if downstream minibatch, PCA, or KMeans needs to read the
+    scaled data, run
+    ``atlas.build_read_index(use_hvg=True, use_data=add_data, ...)``.
 
     Examples
     --------
-    对 log1p 矩阵进行标准化::
+    Standardize a log1p matrix::
 
         sap.pp.scale(atlas, use_data="data_log1p", add_data="data_scale")
 
-    只缩放高变基因，并截断极端值::
+    Scale only highly variable genes and clip extreme values::
 
-        sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
         sap.pp.scale(
             atlas,
             use_hvg=True,
@@ -2034,21 +2130,21 @@ def scale(
     start_time = datetime.now()
     conn = atlas.connection
 
-    # 0. 并行
+    # 0. Parallelism
     try:
         n_threads = 4
         conn.execute(f"PRAGMA threads={n_threads}")
     except Exception:
         pass
 
-    # 1. 输入字段检查
+    # 1. Input field checks
     if conn.execute(f"""
         SELECT COUNT(*)
         FROM information_schema.columns
         WHERE table_name = 'X_HyS_data'
           AND column_name = '{use_data}'
     """).fetchone()[0] == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     if conn.execute("""
         SELECT COUNT(*)
@@ -2056,7 +2152,7 @@ def scale(
         WHERE table_name = 'X_HyS_data'
           AND column_name = 'id'
     """).fetchone()[0] == 0:
-        raise ValueError("X_HyS_data 中不存在 id 字段，无法按 id 分块回写")
+        raise ValueError("The id field does not exist in X_HyS_data; unable to write back by id chunks")
 
     if conn.execute("""
         SELECT COUNT(*)
@@ -2064,16 +2160,16 @@ def scale(
         WHERE table_name = 'X_HyS_data'
           AND column_name = 'atlas_gene_id'
     """).fetchone()[0] == 0:
-        raise ValueError("X_HyS_data 中不存在 atlas_gene_id 字段")
+        raise ValueError("The atlas_gene_id field does not exist in X_HyS_data")
 
-    # 2. 输出字段准备
+    # 2. Prepare output fields
     conn.execute(f""" ALTER TABLE X_HyS_data DROP COLUMN IF EXISTS {add_data} """)
     conn.execute(f""" ALTER TABLE X_HyS_data ADD COLUMN IF NOT EXISTS {add_data} REAL """)
 
     conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_var_col} """)
     conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_var_col} REAL """)
 
-    # 3. 准备目标 gene 集合
+    # 3. Prepare the target gene set
     conn.execute("DROP TABLE IF EXISTS _target_genes")
 
     if use_hvg:
@@ -2098,16 +2194,16 @@ def scale(
         conn.execute("DROP TABLE IF EXISTS _target_genes")
         return
 
-    # 获取全细胞数量
+    # Get the total number of cells
     n_cells = conn.execute("""
         SELECT COUNT(*) FROM obs
     """).fetchone()[0]
 
     if n_cells == 0:
         conn.execute("DROP TABLE IF EXISTS _target_genes")
-        raise ValueError("obs 为空，无法计算 scale")
+        raise ValueError("obs is empty; unable to calculate scale")
 
-    # 4. 一次性计算所有目标 gene 的 mean/std
+    # 4. Compute mean/std for all target genes at once
     t0 = datetime.now()
 
     conn.execute("DROP TABLE IF EXISTS _gene_stat")
@@ -2134,7 +2230,7 @@ def scale(
         GROUP BY x.atlas_gene_id
     """)
 
-    # 5. 更新 var：记录 0 值 的缩放因子 -> z-score
+    # 5. Update var: record the scaling factor for 0 values -> z-score
     t0 = datetime.now()
 
     conn.execute("BEGIN")
@@ -2162,7 +2258,7 @@ def scale(
         conn.execute("ROLLBACK")
         raise
 
-    # 6. 获取 id 范围
+    # 6. Get the id range
     min_id, max_id, total_rows = conn.execute("""
         SELECT MIN(id), MAX(id), COUNT(*)
         FROM X_HyS_data
@@ -2170,7 +2266,7 @@ def scale(
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
-    # 7. 按 id 分块直接 UPDATE
+    # 7. Direct chunked UPDATE by id
     done_chunks = 0
     update_start_all = datetime.now()
 
@@ -2191,7 +2287,7 @@ def scale(
         conn.execute("BEGIN")
         try:
 
-            # 对显式存储的非零值写入 z-score
+            # Write z-score for explicitly stored nonzero values
             conn.execute(f"""
                 UPDATE X_HyS_data x
                 SET {add_data} =
@@ -2227,7 +2323,7 @@ def scale(
         remain_chunks = n_chunks - done_chunks
         eta_seconds = avg_chunk_seconds * remain_chunks
 
-    # 8. 清理内存
+    # 8. Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=["_target_genes", "_gene_stat"],
@@ -2235,7 +2331,7 @@ def scale(
         collect=True,
     )
 
-    logger.info(f"scale Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"scale Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
 def sqrt(
@@ -2243,52 +2339,61 @@ def sqrt(
     add_data: str = "data_sqrt",
     use_data: str = "data_count",
     chunk_ids: int = 100_000_000) -> None:
-    """对表达矩阵执行平方根变换。
+    """Apply a square-root transformation to the expression matrix.
 
-    该函数用于在 ``X_HyS_data`` 表中对指定表达字段执行平方根变换，并将
-    结果写入新的表达字段。默认情况下，函数读取 ``data_count``，计算
-    ``sqrt(x)``，并写入 ``data_sqrt``。
+    This function applies a square-root transformation to a specified expression
+    field in the ``X_HyS_data`` table and writes the result to a new expression
+    field. By default, it reads ``data_count``, computes ``sqrt(x)``, and writes
+    the result to ``data_sqrt``.
 
-    平方根变换可作为 count 数据的一种简单方差稳定或可视化前处理方式。
-    与 log1p 相比，sqrt 对低表达 count 的压缩更温和。
+    The square-root transformation can be used as a simple variance-stabilizing
+    or pre-visualization preprocessing method for count data. Compared with
+    log1p, sqrt compresses low-expression counts more gently.
 
-    函数按 ``X_HyS_data.id`` 范围分块执行 ``UPDATE``，只处理 ``use_data``
-    不为 ``NULL`` 的表达记录。
+    The function performs chunked ``UPDATE`` operations over the
+    ``X_HyS_data.id`` range and only processes expression records where
+    ``use_data`` is not ``NULL``.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中包含
-        ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain the ``X_HyS_data`` table.
+
     add_data
-        写入 ``X_HyS_data`` 表的平方根变换结果字段名。默认值为
-        ``"data_sqrt"``。
+        Name of the square-root transformation result field to write to the
+        ``X_HyS_data`` table. The default value is ``"data_sqrt"``.
+
     use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_count"``。
-        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
-        和 ``"data_scale"``。
+        Name of the expression field read from the ``X_HyS_data`` table. The
+        default value is ``"data_count"``. Common values include
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and``"data_scale"``.
+
     chunk_ids
-        按 ``X_HyS_data.id`` 范围分块处理时每个 chunk 覆盖的记录 ID 数量。
-        默认值为 ``100_000_000``。
+        Number of record IDs covered by each chunk when processing by
+        ``X_HyS_data.id`` range. The default value is ``100_000_000``.
 
     Returns
     -------
     None
-        结果直接写入 ``X_HyS_data`` 表中的 ``add_data`` 字段，不返回对象。
+        Results are written directly to the ``add_data`` field in the
+        ``X_HyS_data`` table. No object is returned.
 
     Notes
     -----
-    该函数不会修改 ``use_data`` 原字段，只会新增或重建 ``add_data`` 字段。
-    如果 ``use_data`` 中存在负值，DuckDB 的 ``sqrt`` 会产生无效结果或错误；
-    因此该函数通常应作用于 count 或非负归一化表达字段。
+    This function does not modify the original ``use_data`` field. It only adds
+    or rebuilds the ``add_data`` field. If ``use_data`` contains negative values,
+    DuckDB's ``sqrt`` may produce invalid results or errors; therefore, this
+    function should usually be applied to count fields or nonnegative normalized
+    expression fields.
 
     Examples
     --------
-    对原始 counts 执行平方根变换::
+    Apply a square-root transformation to raw counts::
 
-        sap.pp.sqrt(atlas, use_data="data_count", add_data="data_sqrt")
+        sap.pp.sqrt(atlas)
 
-    调整分块大小以适配大数据::
+    Adjust the chunk size for large data::
 
         sap.pp.sqrt(atlas, chunk_ids=50000000)"""
 
@@ -2301,7 +2406,7 @@ def sqrt(
     except Exception:
         pass
 
-    # 0. 字段存在性检查
+    # 0. Field existence check
     col_exists = conn.execute(
         f"""
         SELECT COUNT(*)
@@ -2312,28 +2417,28 @@ def sqrt(
     ).fetchone()[0]
 
     if col_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     if add_data is None:
-        raise ValueError("必须指定 add_data")
+        raise ValueError("add_data must be specified")
 
-    # 1. 构造 sqrt 表达式（不处理 0）
+    # 1. Construct the sqrt expression (0 is not specially handled)
     sqrt_expr = f"sqrt({use_data})"
 
-    # 2. 确保输出字段存在
-    # 先删旧列
+    # 2. Ensure the output field exists
+    # Drop the old column first
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
-    # 重新添加 REAL 字段
+    # Add the REAL field again
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         ADD COLUMN {add_data} REAL
     """)
 
-    # 3. 获取 id 范围
+    # 3. Get the id range
     min_id, max_id = conn.execute(
         """
         SELECT MIN(id), MAX(id)
@@ -2342,13 +2447,13 @@ def sqrt(
     ).fetchone()
 
     if min_id is None:
-        logger.info("X_HyS_data 为空，跳过")
+        logger.info("X_HyS_data is empty; skipping")
         return
 
     n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
 
-    # 4. 分块 UPDATE
-    # cell-wise QC：分块处理
+    # 4. Chunked UPDATE
+    # cell-wise QC: chunked processing
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -2370,7 +2475,7 @@ def sqrt(
             """
         )
 
-    # 内存清理
+    # Memory cleanup
     _cleanup_transform_after_step(
         conn,
         temp_tables=[],
@@ -2378,4 +2483,114 @@ def sqrt(
         collect=True,
     )
 
-    logger.info(f"sqrt Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f"sqrt Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+
+
+def _cleanup_transform_after_step(
+        conn: DuckDBPyConnection,
+        temp_tables: list[str]=None,
+        unregister_tables: list[str]=None,
+        checkpoint: bool = False,
+        collect: bool = True,
+):
+    """Clean up temporary resources generated by the current step.
+
+    This internal function is used to release temporary resources after an
+    expression-matrix transformation step. Multiple preprocessing functions may
+    create DuckDB temporary tables, register temporary pandas/Arrow relations,
+    or execute large-table ``UPDATE``, ``DROP``, or ``RENAME`` operations during
+    execution. This function centralizes those cleanup actions so that, after
+    each transformation step, temporary usage in both the database connection
+    and the Python process is restored to a stable state as much as possible.
+
+    The function only cleans resources. It does not modify official result
+    fields in ``X_HyS_data``, ``obs``, or ``var``. It is usually called during
+    finalization by internal workflows such as ``normalize_total``, ``log1p``,
+    ``scale``, ``sqrt``, and highly variable gene calculation.
+
+    Parameters
+    ----------
+    conn
+        DuckDB database connection. The connection must still be valid and able
+        to execute cleanup operations such as ``DROP TABLE``, ``CHECKPOINT``, or
+        ``unregister``.
+
+    temp_tables
+        List of DuckDB temporary table names to drop. The default value is
+        ``None``, which is treated as an empty list.
+
+        The function executes ``DROP TABLE IF EXISTS`` for each name in the
+        list. If a table no longer exists, or if dropping it fails, the cleanup
+        exception is ignored.
+
+    unregister_tables
+        List of pandas/Arrow relation names to unregister from the DuckDB
+        connection. The default value is ``None``, which is treated as an empty
+        list.
+
+        This parameter is commonly used to clean up temporary DataFrames
+        registered in DuckDB through ``conn.register(...)``.
+
+    checkpoint
+        Whether to execute DuckDB ``CHECKPOINT`` after cleanup. The default is
+        ``False``.
+
+        For steps involving large-table reconstruction, column deletion, table
+        renaming, or batch updates, setting this to ``True`` can flush data to
+        disk earlier and release part of DuckDB's internal space.
+
+    collect
+        Whether to trigger Python garbage collection via ``gc.collect()`` after
+        cleanup. The default is ``True``.
+
+    Returns
+    -------
+    None
+        This function only performs resource cleanup and returns no object.
+
+    Notes
+    -----
+    Exceptions during the cleanup phase are caught and ignored to avoid
+    overwriting the main results already produced by earlier preprocessing
+    steps when cleanup of temporary objects fails. If you need to inspect
+    temporary tables or the DuckDB connection state, manually check the
+    temporary objects in the database before calling this function.
+
+    This is an internal helper. Unless you need to extend the internal
+    scAtlasPy workflow, it is generally not recommended to call it directly in
+    user code.
+    """
+
+    if temp_tables is None:
+        temp_tables = []
+
+    if unregister_tables is None:
+        unregister_tables = []
+
+    # 1. Unregister temporary pandas / Arrow objects
+    for t in unregister_tables:
+        try:
+            conn.unregister(t)
+        except Exception:
+            pass
+
+    # 2. Drop DuckDB temporary tables
+    for t in temp_tables:
+        try:
+            conn.execute(f"DROP TABLE IF EXISTS {t}")
+        except Exception:
+            pass
+
+    # 3. Checkpoint is recommended after large-table UPDATE / DROP / RENAME operations
+    if checkpoint:
+        try:
+            conn.execute("CHECKPOINT")
+        except Exception:
+            pass
+
+    # 4. Python-level garbage collection
+    if collect:
+        try:
+            gc.collect()
+        except Exception:
+            pass

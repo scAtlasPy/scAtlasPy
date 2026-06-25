@@ -6,36 +6,38 @@ import time
 from os import PathLike, fspath
 import scipy.sparse as sp
 import logging
-
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
-''' 输出缓存区 ShuffleBuffer ，存入5个batch的cell数据，随机打乱，再输出； 保证多次遍历的随机性 '''
+
 class ShuffleBuffer:
 
-    """dense minibatch 随机缓冲区。
+    """Dense minibatch shuffle buffer.
 
-    该类在 ``multi-pass`` 小批量读取模式中缓存若干 dense minibatch，达到指定容量后
-    对细胞顺序进行随机打乱，再按 batch 输出。它用于减少多轮训练时的顺序偏差，
-    主要服务于 PCA、K-means 等流式模型。
+    This class caches multiple dense minibatches in ``multi-pass`` minibatch reading mode.
+    After reaching the specified capacity, it randomly shuffles the cell order and then
+    outputs data batch by batch. It is used to reduce ordering bias during multi-round
+    training and mainly serves streaming models such as PCA and K-means.
 
     Parameters
     ----------
     gene_num
-        dense minibatch 中的基因数量，也就是输出矩阵的列数。
+        Number of genes in the dense minibatch, that is, the number of columns in
+        the output matrix.
     batch_size
-        每个 minibatch 的细胞数量。
+        Number of cells in each minibatch.
     buffer_batch_num
-        缓冲区中最多缓存的 minibatch 数量；总容量为
-        ``batch_size * buffer_batch_num`` 个细胞。
+        Maximum number of minibatches cached in the buffer; the total capacity is
+        ``batch_size * buffer_batch_num`` cells.
 
     Notes
     -----
-    这是内部工具类。普通用户通常通过 ``atlas.get_minibatch_dense(...)`` 间接使用。
+    This is an internal utility class. Regular users usually use it indirectly through
+    ``atlas.get_minibatch_dense(...)``.
 
     Examples
     --------
-    在内部测试中缓存并抽样 dense minibatch::
+    Cache and sample dense minibatches in internal tests::
 
         buffer = ShuffleBuffer(gene_num=2000, batch_size=128, buffer_batch_num=2)
         buffer.add_batch(
@@ -48,7 +50,7 @@ class ShuffleBuffer:
         )
         X_batch, filter_cell_ids = buffer.sample_batch()
 
-    处理最后不足一个完整 buffer 的剩余数据::
+    Process remaining data that is smaller than a complete buffer::
 
         buffer = ShuffleBuffer(gene_num=100, batch_size=32, buffer_batch_num=4)
         buffer.add_batch(
@@ -59,81 +61,91 @@ class ShuffleBuffer:
 
     def __init__(self, gene_num: int, batch_size: int, buffer_batch_num: int):
 
-        """初始化对象。
+        """Initialize the object.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Parameters
         ----------
         gene_num
-            dense minibatch 中的基因数量。
+            Number of genes in the dense minibatch.
 
         batch_size
-            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+            Number of cells to read, write, or process in each batch; larger values
+            are usually faster but consume more memory.
 
         buffer_batch_num
-            shuffle buffer 中缓存的 minibatch 数量。
+            Number of minibatches cached in the shuffle buffer.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
+
         self.batch_size = batch_size
         self.gene_num = gene_num
         self.buffer_batch_num = buffer_batch_num
 
-        # buffer 最大 cell 数
+        # Maximum number of cells in the buffer
         self.buffer_cells = buffer_batch_num * batch_size
 
-        # 实际 buffer：表达矩阵
+        # Actual buffer: expression matrix
         self.X = np.zeros((self.buffer_cells, gene_num), dtype=np.float32)
 
-        # 同步保存每一行对应的 filter_cell_id，保证 shuffle 后还能写回原细胞
+        # Synchronously save the filter_cell_id corresponding to each row, ensuring that cells can still be written back after shuffling
         self.filter_cell_ids = np.empty(self.buffer_cells, dtype=np.int64)
 
-        # 写入指针
+        # Write pointer
         self.write_ptr = 0
 
-        # 当前输出 batch id
+        # Current output batch id
         self.output_batch_id = 0
 
-        # buffer 是否已经 shuffle
+        # Whether the buffer has already been shuffled
         self.shuffled = False
 
 
-    # 写入一个 batch 到 缓冲区
+    # Write one batch into the buffer
     def add_batch(
             self,
             X_batch: np.ndarray,
             filter_cell_ids: np.ndarray,
     ):
-        """向 shuffle buffer 写入一个 dense minibatch。
+        """Write a dense minibatch into the shuffle buffer.
 
-        该方法把当前 dense 表达矩阵追加到缓冲区。当缓冲区累计达到
-        ``batch_size * buffer_batch_num`` 个细胞后，会随机打乱缓冲区中的细胞顺序，
-        并切换到可通过 ``sample_batch`` 读取的输出状态。
+        This method appends the current dense expression matrix to the buffer. When the
+        buffer accumulates ``batch_size * buffer_batch_num`` cells, it randomly shuffles
+        the cell order in the buffer and switches to an output state that can be read
+        through ``sample_batch``.
 
         Parameters
         ----------
         X_batch
-            当前 dense minibatch。行表示细胞，列表示基因；列数需要与初始化时的
-            ``gene_num`` 一致，行数通常为 ``batch_size``，最后一个 batch 可以更小。
+            Current dense minibatch. Rows represent cells and columns represent genes;
+            the number of columns must match ``gene_num`` used during initialization.
+            The number of rows is usually ``batch_size``, and the last batch may be smaller.
         filter_cell_ids
-            当前 ``X_batch`` 每一行对应的 ``filter_cell_id``，长度必须等于
-            ``X_batch.shape[0]``。
+            The ``filter_cell_id`` corresponding to each row of the current ``X_batch``.
+            Its length must equal ``X_batch.shape[0]``.
 
         Returns
         -------
         None
-            该方法只更新缓冲区状态，不直接返回训练数据。
+            This method only updates the buffer state and does not directly return
+            training data.
 
         Examples
         --------
-        写入两个 batch 并触发 shuffle::
+        Write two batches and trigger shuffling::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
             buffer.add_batch(
@@ -146,7 +158,7 @@ class ShuffleBuffer:
             )
             X_batch, filter_cell_ids = buffer.sample_batch()
 
-        在缓冲区尚未填满时，``sample_batch`` 会返回 ``None``::
+        When the buffer is not yet full, ``sample_batch`` returns ``None``::
 
             buffer = ShuffleBuffer(gene_num=50, batch_size=16, buffer_batch_num=2)
             buffer.add_batch(
@@ -155,7 +167,7 @@ class ShuffleBuffer:
             )
             assert buffer.sample_batch() is None"""
 
-        # 如果 buffer 已经满并进入输出阶段，不再写入
+        # If the buffer is already full and has entered the output stage, do not write more data
         if self.shuffled:
             return
 
@@ -163,54 +175,64 @@ class ShuffleBuffer:
 
         if len(filter_cell_ids) != n:
             raise RuntimeError(
-                "ShuffleBuffer.add_batch: filter_cell_ids 长度必须等于 X_batch 行数。"
+                "ShuffleBuffer.add_batch: the length of filter_cell_ids must equal the number of rows in X_batch."
             )
 
-        # 安全保护（防止越界）
+        # Safety protection to prevent overflow
         if self.write_ptr + n > self.buffer_cells:
             raise RuntimeError("ShuffleBuffer overflow")
 
-        # 写入 buffer，X 和 filter_cell_ids 必须保持同一行对应关系
+        # Write into the buffer; X and filter_cell_ids must maintain the same row correspondence
         self.X[self.write_ptr:self.write_ptr + n] = X_batch
         self.filter_cell_ids[self.write_ptr:self.write_ptr + n] = filter_cell_ids
         self.write_ptr += n
 
-        # 如果 buffer 已满
+        # If the buffer is full
         if self.write_ptr == self.buffer_cells:
-            # 随机打乱：X 和 filter_cell_ids 使用同一个 perm
+            # Random shuffle: X and filter_cell_ids use the same permutation
             perm = np.random.permutation(self.buffer_cells)
             self.X[:] = self.X[perm]
             self.filter_cell_ids[:] = self.filter_cell_ids[perm]
 
-            # 进入输出阶段
+            # Enter the output stage
             self.output_batch_id = 0
             self.shuffled = True
 
 
-    # 输出一个 batch
+    # Output one batch
     def sample_batch(self):
 
-        """执行 ``sample_batch`` 的核心功能。
+        """Execute the core functionality of ``sample_batch``.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        Restore CSR or dense minibatches from filtered HyS sparse tables and serve PCA,
+        KMeans, and large-scale training.
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.sample_batch`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
+        The function directly reads from or writes to related tables in the Atlas
+        database and reduces memory usage as much as possible through SQL, chunked
+        reading, or streaming computation.
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        tuple[np.ndarray, np.ndarray] or None
+            Returns ``None`` if the shuffle buffer has not yet been filled and
+            shuffled.
+
+            If the buffer has already been shuffled, returns a tuple
+            ``(X_batch, filter_cell_ids)``.
+
+            ``X_batch`` is the current dense minibatch with shape
+            ``(batch_size, gene_num)``. ``filter_cell_ids`` contains the
+            corresponding ``filter_cell_id`` for each row in the batch, ensuring
+            that ``X_batch[i, :]`` matches ``filter_cell_ids[i]``.
 
         Examples
         --------
-        调用该函数：::
+        Call this function::
 
             sap.sample_batch(...)
         """
-        if not self.shuffled:  # 如果还没凑够 buffer
+
+        if not self.shuffled:  # If the buffer is not full yet
             return None
 
         start = self.output_batch_id * self.batch_size
@@ -221,9 +243,9 @@ class ShuffleBuffer:
 
         self.output_batch_id += 1
 
-        # 如果已经输出完所有 batch
+        # If all batches have already been output
         if self.output_batch_id == self.buffer_batch_num:
-            # reset buffer 状态
+            # Reset buffer state
             self.write_ptr = 0
             self.output_batch_id = 0
             self.shuffled = False
@@ -231,35 +253,41 @@ class ShuffleBuffer:
         return X_batch, filter_cell_ids
 
 
-    # 输出未凑满 buffer 的剩余 batch， 防止数据集 batch 数 < buffer_batch_num 时，一个 batch 都不输出
+    # Output remaining batches that did not fill the buffer,
+    # preventing zero output when the dataset has fewer batches than buffer_batch_num
     def flush_remaining(self):
 
-        """执行 ``flush_remaining`` 的核心功能。
+        """Execute the core functionality of ``flush_remaining``.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        Restore CSR or dense minibatches from filtered HyS sparse tables and serve PCA,
+        KMeans, and large-scale training.
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+        The function directly reads from or writes to related tables in the Atlas
+        database and reduces memory usage as much as possible through SQL, chunked
+        reading, or streaming computation.
 
-        整体用法和 Scanpy 中相近的 ``sap.flush_remaining`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
+        The overall usage is similar to Scanpy-style ``sap.flush_remaining`` APIs, but
+        the results are stored in Atlas database tables for reuse in subsequent steps.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Examples
         --------
-        调用该函数：::
+        Call this function::
 
             sap.flush_remaining(...)
         """
+
         if self.write_ptr == 0:
             return []
 
         n_cells = self.write_ptr
 
-        # 只打乱已经写入的 cell；X 和 filter_cell_ids 使用同一个 perm
+        # Shuffle only the cells that have already been written; X and filter_cell_ids use the same permutation
         perm = np.random.permutation(n_cells)
         X_remain = self.X[:n_cells][perm]
         filter_cell_ids_remain = self.filter_cell_ids[:n_cells][perm]
@@ -283,47 +311,57 @@ class ShuffleBuffer:
         return batches
 
 
-''' 多线程 输出minibatch：  Producer → Queue → Reorder → RingBuffer → Consumer（有序） '''
 class MultiThreadedMinibatchFetcher:
 
-    """多线程 minibatch 读取器。
+    """Multithreaded minibatch reader.
 
-    该类从 Atlas 过滤后的 HyS 表中按 batch 恢复 CSR 或 dense 表达矩阵，
-    使用 producer/queue 结构预取数据，并保证消费者按 batch 顺序获得结果。
-    它是 ``atlas.get_minibatch_csr`` 和 ``atlas.get_minibatch_dense`` 的底层实现。
+    This class restores CSR or dense expression matrices batch by batch from the
+    filtered HyS tables in Atlas, uses a producer/queue structure to prefetch data,
+    and ensures that the consumer receives results in batch order.
+    It is the underlying implementation of ``atlas.get_minibatch_csr`` and
+    ``atlas.get_minibatch_dense``.
 
     Parameters
     ----------
     file_path
-        Atlas ``.sasql`` 数据库文件路径。
+        Path to the Atlas ``.sasql`` database file.
+
     batch_size
-        每个 minibatch 的细胞数量。
+        Number of cells in each minibatch.
+
     x_type
-        输出矩阵类型。常用值为 ``"CSR"`` 或 ``"dense"``。
+        Output matrix type. Common values are ``"CSR"`` or ``"dense"``.
+
     pass_mode
-        遍历模式。``"single-pass"`` 顺序遍历一次，``"multi-pass"`` 可结合
-        ``ShuffleBuffer`` 做随机化多批训练。
+        Traversal mode. ``"single-pass"`` traverses once in order, while
+        ``"multi-pass"`` can be combined with ``ShuffleBuffer`` for randomized
+        multi-batch training.
+
     buffer_batch_num
-        ``multi-pass`` 模式下 shuffle buffer 缓存的 batch 数量。
+        Number of batches cached by the shuffle buffer in ``multi-pass`` mode.
+
     max_batches
-        最多输出的 minibatch 数量；为 ``None`` 时不限制。
+        Maximum number of minibatches to output; if ``None``, there is no limit.
+
     return_cell_ids
-        是否在输出中携带每行对应的 ``filter_cell_id``。默认关闭以兼容旧版矩阵输出。
+        Whether to carry the row-wise corresponding ``filter_cell_id`` in the output.
+        Disabled by default to maintain compatibility with the old matrix-only output.
 
     Notes
     -----
-    这是内部流式读取器。普通用户通常通过 Atlas 对象方法读取 minibatch。
+    This is an internal streaming reader. Regular users usually read minibatches through
+    Atlas object methods.
 
     Examples
     --------
-    通过 Atlas 对象按 dense batch 读取数据::
+    Read data as dense batches through an Atlas object::
 
         atlas.build_read_index(use_hvg=True)
         for X_batch in atlas.get_minibatch_dense(batch_size=2048):
             print(X_batch.shape)
             break
 
-    直接创建读取器进行底层调试::
+    Directly create a reader for low-level debugging::
 
         fetcher = MultiThreadedMinibatchFetcher(
             atlas.file_path,
@@ -341,108 +379,116 @@ class MultiThreadedMinibatchFetcher:
                  x_type: str= "CSR",
                  pass_mode: str="multi-pass",
                  buffer_batch_num: int=5,
-                 max_batches: int | None=None,  # 最多输出多少个 batch
+                 max_batches: int | None=None,  # Maximum number of batches to output
                  return_cell_ids: bool=False,
                  ):
 
-        """初始化对象。
+        """Initialize the object.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Parameters
         ----------
         file_path
-            输入文件路径或 Atlas ``.sasql`` 数据库文件路径。
+            Input file path or Atlas ``.sasql`` database file path.
 
         batch_size
-            每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+            Number of cells to read, write, or process in each batch; larger values
+            are usually faster but consume more memory.
 
         x_type
-            输出矩阵类型，通常为 ``"CSR"`` 或 ``"dense"``。
+            Output matrix type, usually ``"CSR"`` or ``"dense"``.
 
         pass_mode
-            minibatch 遍历模式，通常为 ``"single-pass"`` 或 ``"multi-pass"``。
+            Minibatch traversal mode, usually ``"single-pass"`` or ``"multi-pass"``.
 
         buffer_batch_num
-            shuffle buffer 中缓存的 minibatch 数量。
+            Number of minibatches cached in the shuffle buffer.
 
         max_batches
-            最多输出的 minibatch 数量；为 ``None`` 时不限制。
+            Maximum number of minibatches to output; if ``None``, there is no limit.
 
         return_cell_ids
-            是否在输出 batch 时同时返回 ``filter_cell_ids``。默认 ``False``，保持旧版只返回矩阵的行为；
-            为 ``True`` 时返回 ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``。
+            Whether to return ``filter_cell_ids`` together with the output batch.
+            Defaults to ``False``, preserving the old behavior of returning only the
+            matrix. If ``True``, returns
+            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
-        self.X_type = x_type  # 输出的X表格式 "CSR" "dense"(宽表)
-        self.file_path = fspath(file_path)  # sasql 文件的绝对路径
+        self.X_type = x_type  # Output X table format: "CSR" or "dense" (wide table)
+        self.file_path = fspath(file_path)  # Absolute path to the sasql file
         self.batch_size = batch_size
-        self.producer_num = 10  # 线程数量
-        self.gene_num = self._get_gene_num()  # 获取基因数量
-        self.index_data = self._get_index_data()  # 从数据库读取 build_read_index(use_data=...) 保存的信息 “data_log1p”或者“data_scale”等等
+        self.producer_num = 10  # Number of threads
+        self.gene_num = self._get_gene_num()  # Get the number of genes
+        self.index_data = self._get_index_data()  # Read the information saved by build_read_index(use_data=...) from the database, such as "data_log1p" or "data_scale"
         self.zero_scale_transform = self._get_zero_scale_transform()
-        # 获取 var 表的 zero_scale_transform ，就是每个基因的 ( 0 - g.mean) / g.std
+        # Get zero_scale_transform from the var table, that is, (0 - g.mean) / g.std for each gene
 
-        # 本轮输出多少个 batch
+        # Number of batches to output in this round
         self.max_batches = max_batches
         self.return_cell_ids = return_cell_ids
-        self.stop_event = threading.Event()  # 提前停止信号
+        self.stop_event = threading.Event()  # Early stop signal
 
-        self.out_queue = queue.Queue(maxsize=20)  # 输出队列
+        self.out_queue = queue.Queue(maxsize=20)  # Output queue
 
-        self.fetch_size = 500_0000  # fetch_record_batch 流式读取的size
-        self.pass_mode = pass_mode  # single-pass 单次遍历 ，multi-pass 多次遍历
-        self.buffer_batch_num = buffer_batch_num  # 多次遍历 ，缓冲区的容量，n: 表示batch_size * n
+        self.fetch_size = 500_0000  # Size for streaming reading with fetch_record_batch
+        self.pass_mode = pass_mode  # single-pass: single traversal; multi-pass: multiple traversals
+        self.buffer_batch_num = buffer_batch_num  # For multiple traversals, buffer capacity; n means batch_size * n
 
-        self.indptr_queue = self._prepare_indptr()  # 获取 indptr 的 rb 读取数据流
+        self.indptr_queue = self._prepare_indptr()  # Get the rb data stream for reading indptr
 
-        self.batch_cell_counts, self.batch_nnz = self._prepare_batch_info_sql()  # 获取batch_nnz (每批cell的非零值数量)
-        self.batch_idx = 0  # 批次的编号
-        self.batch_num = len(self.batch_nnz)  # 批次数量
+        self.batch_cell_counts, self.batch_nnz = self._prepare_batch_info_sql()  # Get batch_nnz, the number of nonzero values per cell batch
+        self.batch_idx = 0  # Batch index
+        self.batch_num = len(self.batch_nnz)  # Number of batches
 
-        self.queue = queue.Queue(maxsize=self.producer_num * 5)  # 数据缓存队列 ：Queue（核心）
+        self.queue = queue.Queue(maxsize=self.producer_num * 5)  # Data cache queue: Queue (core)
 
-        # Ring Buffer ：切分出batch的环形缓冲池
-        self.pool_size = self.fetch_size * 10  # 容量
+        # Ring Buffer: circular buffer pool used to split batches
+        self.pool_size = self.fetch_size * 10  # Capacity
         self.pool_gene_id = np.empty(self.pool_size, dtype=np.uint16)
         self.pool_data = np.empty(self.pool_size, dtype=np.float32)
 
-        self.read_ptr = 0  # 读指针
-        self.write_ptr = 0  # 写指针
-        self.used_size = 0  # 当前 Ring Buffer 里的 nnz 数据
-        self.total_batches = 0  # 计数器
+        self.read_ptr = 0  # Read pointer
+        self.write_ptr = 0  # Write pointer
+        self.used_size = 0  # Current nnz data in the Ring Buffer
+        self.total_batches = 0  # Counter
 
-        # 输出速度统计
+        # Output speed statistics
         self.output_start_time = None
         self.output_last_time = None
         self.output_cells = 0
-        self.speed_log_every = 5  # 每输出多少个 batch 打印一次速度；想每个batch都打印就改成1
+        self.speed_log_every = 5  # Print speed every N output batches; set to 1 if you want to print every batch
 
 
     def _get_zero_scale_transform(self):
-        """获取 dense 矩阵中稀疏 0 位点的填充值。
+        """Get the fill values for sparse zero positions in the dense matrix.
 
-        如果当前 build_read_index 使用的是 data_scale，
-        说明数据已经 scale，稀疏矩阵中原来的 0 值需要填成
-        var.zero_scale_transform。
+        If the current build_read_index uses data_scale, the data has been scaled,
+        and the original 0 values in the sparse matrix need to be filled with
+        var.zero_scale_transform.
 
-        如果当前使用的是 data、data_normalize、data_log1p 等未 scale 数据，
-        稀疏矩阵中原来的 0 位点应该填成 0.0。
+        If the current data is data, data_normalize, data_log1p, or other unscaled data,
+        the original 0 positions in the sparse matrix should be filled with 0.0.
         """
 
         logger.info(
             f"[Minibatch] index_data = {self.index_data!r}; "
         )
 
-        # 只有 data_scale 才需要读取 zero_scale_transform
+        # zero_scale_transform only needs to be read for data_scale
         if self.index_data != "data_scale":
             logger.info(
                 f"[Minibatch] read index use_data={self.index_data!r}; "
@@ -453,7 +499,7 @@ class MultiThreadedMinibatchFetcher:
         conn = duckdb.connect(self.file_path)
 
         try:
-            # 新增：即使是 data_scale，也先检查字段是否存在
+            # New: even for data_scale, first check whether the field exists
             var_columns = conn.execute("PRAGMA table_info('var')").fetchdf()["name"].tolist()
 
             if "zero_scale_transform" not in var_columns:
@@ -478,7 +524,7 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _get_index_data(self) -> str | None:
-        """从数据库读取当前 read index 使用的表达值字段。"""
+        """Read the expression value field used by the current read index from the database."""
 
         conn = duckdb.connect(self.file_path)
 
@@ -504,24 +550,30 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _get_gene_num(self):
-        """获取数据库或对象中的内部信息。
+        """Get internal information from the database or object.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
-        当前实现中会访问或生成的关键表包括：``var``。
+        Key tables accessed or generated by the current implementation include ``var``.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
         conn = duckdb.connect(self.file_path)
@@ -534,23 +586,30 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _prepare_indptr(self):
-        """准备按 ``filter_cell_id`` 顺序读取的 indptr 数据。
+        """Prepare indptr data read in ``filter_cell_id`` order.
 
-        返回的 record batch 第 0 列为 ``filter_cell_id``，第 1 列为累积 ``indptr``。
-        consumer 会同时使用二者，保证 ``X_batch[i, :]`` 能对应到 ``filter_cell_ids[i]``。
+        The returned record batch has ``filter_cell_id`` as column 0 and cumulative
+        ``indptr`` as column 1.
+        The consumer uses both to ensure that ``X_batch[i, :]`` corresponds to
+        ``filter_cell_ids[i]``.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
-        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
+        Key tables accessed or generated by the current implementation include
+        ``X_HyS_indptr_filtered``.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
         conn = duckdb.connect(self.file_path)
@@ -575,24 +634,31 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _prepare_batch_info_sql(self):
-        """执行 ``_prepare_batch_info_sql`` 的核心功能。
+        """Execute the core functionality of ``_prepare_batch_info_sql``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
-        当前实现中会访问或生成的关键表包括：``X_HyS_indptr_filtered``。
+        Key tables accessed or generated by the current implementation include
+        ``X_HyS_indptr_filtered``.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
         conn = duckdb.connect(self.file_path)
@@ -635,24 +701,30 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _producer(self, tid: int):
-        """执行 ``_producer`` 的核心功能。
+        """Execute the core functionality of ``_producer``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
-        当前实现中会访问或生成的关键表包括：``X_HyS_data_filtered``。
+        Key tables accessed or generated by the current implementation include
+        ``X_HyS_data_filtered``.
 
         Parameters
         ----------
         tid
-            producer 线程或数据分片编号。
+            Producer thread or data shard ID.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
         conn = duckdb.connect(self.file_path)
@@ -665,7 +737,7 @@ class MultiThreadedMinibatchFetcher:
                 data
             FROM X_HyS_data_filtered
             WHERE tid = {tid}
-            -- ORDER BY rowid  -- 新增
+            -- ORDER BY rowid
         """
 
         result = conn.execute(query).fetch_record_batch(
@@ -678,11 +750,11 @@ class MultiThreadedMinibatchFetcher:
         try:
             for rb in result:
 
-                # 新增：提前停止
+                # New: stop early
                 if self.stop_event.is_set():
                     break
 
-                # 读取 rowid / gene_id / data
+                # Read rowid / gene_id / data
                 rowids = rb.column(0).to_numpy().astype(np.int64)
                 gene_id = rb.column(1).to_numpy().astype(np.uint16)
                 data = rb.column(2).to_numpy().astype(np.float32)
@@ -690,15 +762,15 @@ class MultiThreadedMinibatchFetcher:
                 if len(rowids) == 0:
                     continue
 
-                # 用真实 rowid 计算 seq_id
-                seq_start = int(rowids[0] // self.fetch_size)  # 当前 rb 第一行 rowid 属于哪个 block
-                seq_end = int(rowids[-1] // self.fetch_size)  # 当前 rb 最后一行 rowid 属于哪个 block
+                # Calculate seq_id using the real rowid
+                seq_start = int(rowids[0] // self.fetch_size)  # Which block the first rowid of the current rb belongs to
+                seq_end = int(rowids[-1] // self.fetch_size)  # Which block the last rowid of the current rb belongs to
 
-                # 安全检查: 一个 rb 理论上只能属于同一个 seq block
-                # 如果跨 block，说明 rows_per_batch / tid 分片不匹配
+                # Safety check: in theory, one rb should belong to only one seq block
+                # If it crosses blocks, rows_per_batch / tid sharding does not match
                 if seq_start != seq_end:
                     raise RuntimeError(
-                        f"[Producer-{tid}] 一个 record batch 跨越多个 seq block: "
+                        f"[Producer-{tid}] one record batch spans multiple seq blocks: "
                         f"{seq_start} -> {seq_end}, "
                         f"rowid_start={rowids[0]}, rowid_end={rowids[-1]}, "
                         f"fetch_size={self.fetch_size}"
@@ -719,7 +791,7 @@ class MultiThreadedMinibatchFetcher:
         finally:
             conn.close()
 
-            # 通知 consumer：这个 producer 完成
+            # Notify the consumer that this producer has finished
             try:
                 self.queue.put(None, timeout=0.5)
             except queue.Full:
@@ -727,37 +799,42 @@ class MultiThreadedMinibatchFetcher:
 
 
     def _consumer(self):
-        """执行 ``_consumer`` 的核心功能。
+        """Execute the core functionality of ``_consumer``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
 
-        reorder_buffer = {}  # 乱序数据 缓存区 : reorder_buffer[seq_id] = (gene_id, data) ； 大小是动态的
+        reorder_buffer = {}  # Out-of-order data cache: reorder_buffer[seq_id] = (gene_id, data); its size is dynamic
 
-        expected_seq = 0  # 下一个想要的的 batch 序号
-        global_indptr_offset = 0  # 用于修正 indptr 的累积偏移量
+        expected_seq = 0  # The next desired batch sequence number
+        global_indptr_offset = 0  # Used to correct the cumulative offset of indptr
 
-        prepared_batches = 0  # 已经读出来、构建成 dense、并放进 ShuffleBuffer 的原始 batch 数。
+        prepared_batches = 0  # Number of original batches already read, constructed as dense, and placed into ShuffleBuffer
 
-        # 构建宽表的输出缓冲区
+        # Build the output buffer for the wide table
         shuffle_buffer = ShuffleBuffer(
             gene_num=self.gene_num,
             batch_size=self.batch_size,
             buffer_batch_num=self.buffer_batch_num
         )
 
-        # 当前批次号 < 批次数量
+        # Current batch index < number of batches
         while self.batch_idx < self.batch_num:
 
-            # 如果已经准备/输出够 max_batches，提前结束本轮
+            # If enough max_batches have already been prepared/output, end this round early
             if self._read_limit_reached(prepared_batches):
                 logger.debug(
                     f"[Consumer] read limit reached, "
@@ -768,46 +845,47 @@ class MultiThreadedMinibatchFetcher:
                 self.stop_event.set()
                 break
 
-            need = self.batch_nnz[self.batch_idx]  # 当前 batch 所需 nnz
+            need = self.batch_nnz[self.batch_idx]  # nnz required by the current batch
             current_batch_cells = self.batch_cell_counts[
-                self.batch_idx]  # 当前 batch 的真实 cell 数,最后一个 batch 可能小于 self.batch_size
+                self.batch_idx]  # Real number of cells in the current batch; the last batch may be smaller than self.batch_size
 
-            # RingBuffer 中的数据不够， 填充 RingBuffer，直到够一个 batch
+            # The data in RingBuffer is not enough; fill RingBuffer until it is enough for one batch
             while self.used_size < need:
 
-                # 如果已经不需要继续读，跳出，避免死等 queue
+                # If no more reading is needed, break to avoid waiting on the queue forever
                 if self._read_limit_reached(prepared_batches):
                     self.stop_event.set()
                     break
 
-                # 加 timeout，避免 producer 提前停止后 consumer 永久阻塞
+                # Add timeout to avoid the consumer being permanently blocked after producers stop early
                 try:
-                    item = self.queue.get(timeout=0.5)  # 从 Queue 获取下一条数据，阻塞等待，自带锁
+                    item = self.queue.get(timeout=0.5)  # Get the next item from Queue, blocking wait, with built-in lock
                 except queue.Empty:
                     if self.stop_event.is_set():
                         break
                     continue
 
-                if item is None:  # 某个 Producer 已完成任务 → 哨兵数据None，不存入 buffer
+                if item is None:  # A producer has completed its task -> sentinel None, not stored in buffer
                     continue
 
-                seq_id, gene_id, data = item  # 解析 queue 中的数据 item = (seq_id, gene_id, data)
-                reorder_buffer[seq_id] = (gene_id, data)  # 存入 乱序数据 缓存区
+                seq_id, gene_id, data = item  # Parse data from queue: item = (seq_id, gene_id, data)
+                reorder_buffer[seq_id] = (gene_id, data)  # Store into the out-of-order data cache
 
-                # 按序取数据，当前需要的批次编号 expected_seq， 数据在 乱序数据 缓存区 reorder_buffer 中
+                # Take data in order. The currently needed batch sequence number is expected_seq,
+                # and the data is in the out-of-order data cache reorder_buffer
                 while expected_seq in reorder_buffer:
 
-                    gene_id, data = reorder_buffer.pop(expected_seq)  # 取出需要的数据
+                    gene_id, data = reorder_buffer.pop(expected_seq)  # Take out the needed data
                     length = len(gene_id)
 
-                    # 写入 Ring Buffer ：切分出batch的环形缓冲池
+                    # Write into Ring Buffer: circular buffer pool used to split batches
                     end_space = self.pool_size - self.write_ptr
 
-                    if length <= end_space:  # 顺序写
+                    if length <= end_space:  # Sequential write
                         self.pool_gene_id[self.write_ptr:self.write_ptr + length] = gene_id
                         self.pool_data[self.write_ptr:self.write_ptr + length] = data
 
-                    else:  # 跨界写
+                    else:  # Cross-boundary write
                         self.pool_gene_id[self.write_ptr:] = gene_id[:end_space]
                         self.pool_gene_id[:length - end_space] = gene_id[end_space:]
 
@@ -818,53 +896,53 @@ class MultiThreadedMinibatchFetcher:
                     self.used_size += length
                     expected_seq += 1
 
-            # 如果因为 max_batches / stop_event 跳出，且 RingBuffer 还不够当前 batch，就结束主循环
+            # If the loop exits because of max_batches / stop_event and RingBuffer is still not enough for the current batch, end the main loop
             if self.used_size < need:
                 break
 
-            # RingBuffer 中的数据 够一个 batch
+            # The data in RingBuffer is enough for one batch
             if self.used_size >= need:
 
                 end_space = self.pool_size - self.read_ptr
 
-                if need <= end_space:  # 顺序读
+                if need <= end_space:  # Sequential read
                     vals = self.pool_data[self.read_ptr:self.read_ptr + need]
                     cols = self.pool_gene_id[self.read_ptr:self.read_ptr + need]
 
-                else:  # 跨界，两段读取
+                else:  # Cross-boundary read in two parts
                     first_len = end_space
                     second_len = need - first_len
 
                     vals = np.empty(need, dtype=self.pool_data.dtype)
                     cols = np.empty(need, dtype=self.pool_gene_id.dtype)
 
-                    # 尾部
+                    # Tail part
                     vals[:first_len] = self.pool_data[self.read_ptr:]
                     cols[:first_len] = self.pool_gene_id[self.read_ptr:]
 
-                    # 头部
+                    # Head part
                     vals[first_len:] = self.pool_data[:second_len]
                     cols[first_len:] = self.pool_gene_id[:second_len]
 
                 self.read_ptr = (self.read_ptr + need) % self.pool_size
                 self.used_size -= need
 
-                # 构建当前 batch 的 filter_cell_ids 和 indptr
+                # Build filter_cell_ids and indptr for the current batch
                 indptr_rb = self.indptr_queue.get()
 
-                # 当前 X 每一行对应的 filter_cell_id
+                # The filter_cell_id corresponding to each row of the current X
                 filter_cell_ids = np.array(indptr_rb.column(0), dtype=np.int64)
 
-                # 原始累积 indptr 在第 1 列
+                # The original cumulative indptr is in column 1
                 indptr_raw = np.array(indptr_rb.column(1), dtype=np.int64)
                 last_val = indptr_raw[-1]
                 indptr_now = np.concatenate(([0], indptr_raw - global_indptr_offset))
                 global_indptr_offset = last_val
 
-                # 检查 indptr 行数是否等于当前 batch cell 数
+                # Check whether the number of indptr rows equals the number of cells in the current batch
                 if len(indptr_now) != current_batch_cells + 1:
                     raise RuntimeError(
-                        f"[Consumer] indptr 长度不匹配: "
+                        f"[Consumer] indptr length mismatch: "
                         f"len(indptr_now)={len(indptr_now)}, "
                         f"current_batch_cells={current_batch_cells}, "
                         f"batch_idx={self.batch_idx}"
@@ -872,14 +950,14 @@ class MultiThreadedMinibatchFetcher:
 
                 if len(filter_cell_ids) != current_batch_cells:
                     raise RuntimeError(
-                        f"[Consumer] filter_cell_ids 长度不匹配: "
+                        f"[Consumer] filter_cell_ids length mismatch: "
                         f"len(filter_cell_ids)={len(filter_cell_ids)}, "
                         f"current_batch_cells={current_batch_cells}, "
                         f"batch_idx={self.batch_idx}"
                     )
 
                 if self.X_type == "CSR":
-                    # 输出类型1 ：CSR 格式
+                    # Output type 1: CSR format
                     X = sp.csr_matrix((current_batch_cells, self.gene_num), dtype=np.float32)
 
                     X.data = vals.copy()
@@ -892,47 +970,48 @@ class MultiThreadedMinibatchFetcher:
                     )
 
                 if self.X_type == "dense":
-                    # 输出类型2 ：dense 格式
+                    # Output type 2: dense format
 
                     X_dense = np.empty((current_batch_cells, self.gene_num), dtype=np.float32)
-                    X_dense[:] = self.zero_scale_transform  # 按 gene_id 填充，self.zero_scale_transform
-                    #  zero_scale_transform    将每个基因的 ( 0 - g.mean) / g.std 存入var表的该字段，以便将来调用
-                    # 如果没有运行过 scale()，说明当前数据仍然是 normalize/log1p 等未中心化数据，则 self.zero_scale_transform 为全0填充
+                    X_dense[:] = self.zero_scale_transform  # Fill by gene_id using self.zero_scale_transform
+                    # zero_scale_transform stores each gene's (0 - g.mean) / g.std in the corresponding field of the var table for future use
+                    # If scale() has not been run, the current data is still uncentered data such as normalize/log1p,
+                    # so self.zero_scale_transform is filled with all zeros
                     # X_dense =
-                    # [ 填充每个基因的 zero_scale_transform
+                    # [ Fill each gene with zero_scale_transform
                     #  [-0.5, 0.2, -1.1, ...],
                     #  [-0.5, 0.2, -1.1, ...],
                     #  ...
                     # ]
-                    rows = np.repeat(  # [0,0, 1, 2,2,2] 每个非零元素对应的“行号”
-                        np.arange(current_batch_cells),  # [0,1,2,...]  表示每个 cell（行）
-                        np.diff(indptr_now)  # [2, 1, 3, ...]  每个 cell 有多少个非零值（nnz）
+                    rows = np.repeat(  # [0,0, 1, 2,2,2] Row index corresponding to each nonzero element
+                        np.arange(current_batch_cells),  # [0,1,2,...] Represents each cell (row)
+                        np.diff(indptr_now)  # [2, 1, 3, ...] Number of nonzero values (nnz) for each cell
                     )
                     X_dense[rows, cols] = vals
-                    # 将非零值写入对应的 行列
+                    # Write nonzero values into the corresponding rows and columns
                     # X_dense[0,1] = 10
                     # X_dense[0,3] = 20
 
-                    if self.pass_mode == "single-pass":  # 单次遍历
+                    if self.pass_mode == "single-pass":  # Single traversal
                         self._put_output(
                             X_dense.copy(),
                             filter_cell_ids.copy(),
                         )
 
-                    if self.pass_mode == "multi-pass":  # 多次遍历 （加入缓存区，保证多次的随机性）
+                    if self.pass_mode == "multi-pass":  # Multiple traversals; add to buffer to ensure randomness across passes
 
-                        # multi-pass 下，先统计 prepared_batches
-                        # 这个 batch 已经进入 ShuffleBuffer，
-                        # 即使暂时没输出，后面 flush_remaining 也会输出。
+                        # In multi-pass mode, count prepared_batches first
+                        # This batch has already entered ShuffleBuffer,
+                        # so even if it is not output temporarily, it will be output later by flush_remaining.
                         shuffle_buffer.add_batch(
                             X_dense,
                             filter_cell_ids,
-                        )  # 写入输出缓存区 shuffle buffer
+                        )  # Write into the output cache shuffle buffer
                         prepared_batches += 1
 
-                        # 一旦 ShuffleBuffer 满了，立刻把当前 shuffle 后的 buffer 全部吐出去。
+                        # Once ShuffleBuffer is full, immediately output all batches from the shuffled buffer.
                         while True:
-                            batch_random = shuffle_buffer.sample_batch()  # 从输出缓存区随机采样 batch，保证多次遍历随机性
+                            batch_random = shuffle_buffer.sample_batch()  # Randomly sample a batch from the output buffer to ensure randomness across multiple passes
 
                             if batch_random is None:
                                 break
@@ -940,27 +1019,28 @@ class MultiThreadedMinibatchFetcher:
                             X_dense_random, filter_cell_ids_random = batch_random
 
                             ok = self._put_output(
-                                X_dense_random.copy(),  # 你每轮都会复用同一块 buffer， 不 copy 会被覆盖
+                                X_dense_random.copy(),  # The same buffer will be reused every round; without copy, it will be overwritten
                                 filter_cell_ids_random.copy(),
                             )
 
                             if not ok or self._output_limit_reached():
                                 break
 
-                        # 如果已经准备够 max_batches，后面不再继续读新 batch，交给尾部 flush 输出剩余。
+                        # If enough max_batches have already been prepared, do not continue reading new batches;
+                        # let tail flush output the remaining data.
                         if self._read_limit_reached(prepared_batches):
                             self.stop_event.set()
 
                 self.batch_idx += 1
 
-        #  multi-pass 模式：输出 ShuffleBuffer 里没凑满的尾部 batch
+        # multi-pass mode: output tail batches in ShuffleBuffer that did not fill the buffer
         if self.X_type == "dense" and self.pass_mode == "multi-pass":
 
             remain_batches = shuffle_buffer.flush_remaining()
 
             for X_remain, filter_cell_ids_remain in remain_batches:
 
-                # 防止尾部输出超过 max_batches
+                # Prevent tail output from exceeding max_batches
                 if self._output_limit_reached():
                     self.stop_event.set()
                     break
@@ -975,50 +1055,55 @@ class MultiThreadedMinibatchFetcher:
             f"output_batches={self.total_batches}"
         )
 
-        # 通知 run() 结束
+        # Notify run() to finish
         self.out_queue.put(None)
 
 
     def run(self):
-        """执行 ``run`` 的核心功能。
+        """Execute the core functionality of ``run``.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        Restore CSR or dense minibatches from filtered HyS sparse tables and serve PCA,
+        KMeans, and large-scale training.
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
+        The function directly reads from or writes to related tables in the Atlas
+        database and reduces memory usage as much as possible through SQL, chunked
+        reading, or streaming computation.
 
-        整体用法和 Scanpy 中相近的 ``sap.run`` 风格 API 类似，但结果保存在 Atlas 数据库表中，便于后续步骤复用。
+        The overall usage is similar to Scanpy-style ``sap.run`` APIs, but the results
+        are stored in Atlas database tables for reuse in subsequent steps.
 
         Yields
         -------
         batch
-            当 ``return_cell_ids=False`` 时，逐批生成 CSR 或 dense 矩阵；
-            当 ``return_cell_ids=True`` 时，逐批生成
-            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``。
+            When ``return_cell_ids=False``, CSR or dense matrices are generated batch by batch;
+            when ``return_cell_ids=True``, dictionaries are generated batch by batch:
+
+            ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``.
 
         Examples
         --------
-        调用该函数：::
+        Call this function::
 
             sap.run(...)
         """
 
-        # producers 多线程
+        # producers: multithreaded
         producers = []
         for i in range(self.producer_num):
             t = threading.Thread(target=self._producer, args=(i,))
             t.start()
             producers.append(t)
 
-        # consumer 单线程
+        # consumer: single-threaded
         consumer = threading.Thread(target=self._consumer)
         consumer.start()
 
-        # 从 out_queue 统一 yield
+        # Yield uniformly from out_queue
         while True:
-            batch = self.out_queue.get()  # 阻塞
-            if batch is None:  # 收到哨兵，说明所有 batch 都吐完
+            batch = self.out_queue.get()  # Blocking
+            if batch is None:  # Sentinel received, indicating all batches have been output
                 break
-            yield batch  # 正常 batch 继续向外 yield
+            yield batch  # Normal batch continues to be yielded outward
 
         for t in producers:
             t.join()
@@ -1026,25 +1111,31 @@ class MultiThreadedMinibatchFetcher:
         consumer.join()
 
 
-    # 辅助函数 1：是否已经达到输出上限
+    # Helper function 1: whether the output limit has been reached
     def _output_limit_reached(self):
 
-        """执行 ``_output_limit_reached`` 的核心功能。
+        """Execute the core functionality of ``_output_limit_reached``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
         return (
                 self.max_batches is not None
@@ -1052,74 +1143,86 @@ class MultiThreadedMinibatchFetcher:
         )
 
 
-    # 辅助函数 2：是否应该停止继续读取新 batch
+    # Helper function 2: whether reading new batches should stop
     def _read_limit_reached(self, prepared_batches: int):
 
-        """执行 ``_read_limit_reached`` 的核心功能。
+        """Execute the core functionality of ``_read_limit_reached``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Parameters
         ----------
         prepared_batches
-            已经准备并放入 shuffle buffer 的 batch 数量。
+            Number of batches that have already been prepared and put into the shuffle buffer.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
         if self.max_batches is None:
             return False
 
-        # dense + multi-pass 下，batch 先进入 ShuffleBuffer，
-        # 不一定马上输出，所以看 prepared_batches
+        # In dense + multi-pass mode, batches enter ShuffleBuffer first
+        # and may not be output immediately, so prepared_batches is checked
         if self.X_type == "dense" and self.pass_mode == "multi-pass":
             return prepared_batches >= self.max_batches
 
-        # 其他情况，读取后基本就会输出，所以看 total_batches
+        # In other cases, reading is basically followed by output, so total_batches is checked
         return self.total_batches >= self.max_batches
 
 
-    # 辅助函数 3：统一输出 batch
+    # Helper function 3: unified batch output
     def _put_output(
             self,
             X_batch,
             filter_cell_ids: np.ndarray,
     ):
 
-        """执行 ``_put_output`` 的核心功能。
+        """Execute the core functionality of ``_put_output``.
 
-        该内部函数属于minibatch 流式读取模块，用于支撑同一模块中的公共 API。
+        This internal function belongs to the minibatch streaming reading module and
+        supports public APIs in the same module.
 
-        从过滤后的 HyS 稀疏表恢复 CSR 或 dense minibatch，服务于 PCA、KMeans 和大规模训练。
+        It restores CSR or dense minibatches from filtered HyS sparse tables and serves
+        PCA, KMeans, and large-scale training.
 
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        It is usually not called directly as a user-facing entry point. When called
+        directly, the caller must ensure that the input object, database connection,
+        and related temporary tables have already been prepared by upstream steps.
 
         Parameters
         ----------
         X_batch
-            当前 batch 的表达矩阵或 embedding 矩阵。
+            Expression matrix or embedding matrix of the current batch.
 
         filter_cell_ids
-            当前 batch 中每一行对应的 ``filter_cell_id``。
+            The ``filter_cell_id`` corresponding to each row in the current batch.
 
         Returns
         -------
         result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+            Function return value. The specific type depends on the parameter settings
+            and internal execution path.
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        This is an internal helper. Unless extending the internal workflow of
+        scAtlasPy, it is generally not recommended to call it directly in user code.
         """
         if self._output_limit_reached():
             self.stop_event.set()
@@ -1127,7 +1230,7 @@ class MultiThreadedMinibatchFetcher:
 
         if len(filter_cell_ids) != X_batch.shape[0]:
             raise RuntimeError(
-                f"filter_cell_ids 长度必须等于 X_batch 行数: "
+                f"the length of filter_cell_ids must equal the number of rows in X_batch: "
                 f"len(filter_cell_ids)={len(filter_cell_ids)}, "
                 f"X_batch.shape[0]={X_batch.shape[0]}"
             )
@@ -1143,7 +1246,7 @@ class MultiThreadedMinibatchFetcher:
         self.out_queue.put(batch)
         self.total_batches += 1
 
-        # 当前速度 + 平均速度
+        # Current speed + average speed
         now = time.perf_counter()
 
         if self.output_start_time is None:

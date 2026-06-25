@@ -11,49 +11,56 @@ logger = logging.getLogger('Atlas')
 
 def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 
-    """计算高维和低维空间的近邻重叠率。
+    """Calculate the nearest-neighbor overlap between high-dimensional and low-dimensional spaces.
 
-    该函数分别在高维坐标和低维 embedding 中计算每个样本的 k 近邻集合，
-    然后返回两个近邻集合的平均重叠比例。它用于评估 UMAP embedding 对 PCA
-    局部邻域结构的保留程度。
+    This function calculates the k-nearest-neighbor set of each sample in the
+    high-dimensional coordinates and in the low-dimensional embedding,
+    respectively, and then returns the average overlap ratio between the two
+    neighbor sets. It is used to evaluate how well the UMAP embedding preserves
+    the local neighborhood structure of PCA.
 
-    对每个样本，函数会分别取 ``X_high`` 和 ``X_low`` 中除自身以外的前
-    ``k`` 个最近邻，计算两个近邻集合的交集比例，最后对所有样本取平均。
-    分数越接近 ``1``，表示低维 embedding 越能保留高维空间中的局部邻域。
+    For each sample, the function takes the first ``k`` nearest neighbors other
+    than itself from ``X_high`` and ``X_low``, calculates the intersection ratio
+    of the two neighbor sets, and finally averages it over all samples. The closer
+    the score is to ``1``, the better the low-dimensional embedding preserves the
+    local neighborhood in the high-dimensional space.
 
     Parameters
     ----------
     X_high
-        高维空间中的坐标矩阵，例如 PCA 坐标。
+        Coordinate matrix in the high-dimensional space, such as PCA coordinates.
+
     X_low
-        低维空间中的坐标矩阵，例如 UMAP 坐标。
+        Coordinate matrix in the low-dimensional space, such as UMAP coordinates.
+
     k
-        计算重叠率时使用的近邻数量。
+        Number of nearest neighbors used to calculate the overlap ratio.
 
     Returns
     -------
     float
-        所有样本的平均 kNN overlap，取值范围通常为 ``0`` 到 ``1``。
+        Average kNN overlap over all samples, usually ranging from ``0`` to ``1``.
 
     Notes
     -----
-    当样本数较少时，函数会自动把 ``k`` 限制到 ``n_samples - 1``，避免把样本
-    自身或不存在的近邻纳入计算。
+    When the number of samples is small, the function automatically limits ``k``
+    to ``n_samples - 1`` to avoid including the sample itself or nonexistent
+    neighbors in the calculation.
 
     Examples
     --------
-    比较 PCA 和 UMAP 坐标的局部邻域一致性::
+    Compare the local-neighborhood consistency between PCA and UMAP coordinates::
 
         score = knn_overlap(X_pca, X_umap, k=15)
         print(score)
 
-    在 UMAP 评估流程中和 trustworthiness 一起使用::
+    Use it together with trustworthiness in the UMAP evaluation workflow::
 
         tw = trustworthiness(X_pca, X_umap, n_neighbors=15)
         overlap = knn_overlap(X_pca, X_umap, k=15)"""
     n = X_high.shape[0]
 
-    # 防止样本太少
+    # Prevent too few samples
     k = min(k, n - 1)
 
     nn_high = NearestNeighbors(n_neighbors=k + 1, metric="euclidean")
@@ -92,87 +99,112 @@ def umap(
         eval_sample_n: int = 5000,
         save_eval_table: str = "uns_umap_eval"
 ):
-    """基于 PCA embedding 计算 UMAP。
+    """Calculate UMAP based on PCA embeddings.
 
-    该函数从 Atlas 数据库的 ``obsm_X_pca`` 表读取 PCA 坐标，先抽样拟合
-    UMAP 模型，再把全量细胞分批 ``transform`` 到低维空间，并将 UMAP 坐标
-    写入数据库。它类似 Scanpy 的 ``sc.tl.umap``，但面向大规模数据采用
-    “抽样拟合 + 全量分块转换”的方式，以降低一次性加载全部 PCA 坐标带来的
-    内存压力。
+    This function reads PCA coordinates from the ``obsm_X_pca`` table in the
+    Atlas database, first fits a UMAP model on a sampled subset, then
+    ``transform``s all cells into the low-dimensional space in batches, and writes
+    the UMAP coordinates to the database. It is similar to Scanpy's
+    ``sc.tl.umap``, but for large-scale data it uses a "sampled fitting + full
+    batched transformation" strategy to reduce the memory pressure caused by
+    loading all PCA coordinates at once.
 
-    运行完成后，函数会写入三类结果：
+    After running, the function writes three types of results:
 
-    - ``add_table``：每个细胞的 UMAP 坐标，默认 ``obsm_X_umap``；
-    - ``save_params_table``：本次 UMAP 使用的关键参数；
-    - ``save_eval_table``：抽样评估得到的 trustworthiness 和 kNN overlap。
+    - ``add_table``: UMAP coordinates for each cell, defaulting to ``obsm_X_umap``;
+    - ``save_params_table``: key parameters used in this UMAP run;
+    - ``save_eval_table``: trustworthiness and kNN overlap obtained from sampled evaluation.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中已经存在``obsm_X_pca`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the ``obsm_X_pca`` table must already exist in the database.
 
     fit_sample_n
-        用于拟合 UMAP 模型的细胞抽样数量。默认值为 ``None``，表示使用
-        ``obsm_X_pca`` 中的全部细胞拟合。
+        Number of sampled cells used to fit the UMAP model. The default value is
+        ``None``, meaning that all cells in ``obsm_X_pca`` are used for fitting.
 
-        对超大数据集可以设置为较小的抽样数量，例如 ``500_000``，以加快拟合
-        并降低内存占用。
+        For very large datasets, this can be set to a smaller sample size, such
+        as ``500_000``, to speed up fitting and reduce memory usage.
+
     transform_batch_size
-        模型拟合后，对全量 PCA 坐标执行 ``transform`` 时每个 batch 的细胞
-        数量。较大的值通常更快，但会增加单批内存占用。
-    n_components
-        UMAP 低维 embedding 的维度数量。默认值为 ``2``。
+        Number of cells in each batch when performing ``transform`` on the full
+        PCA coordinates after the model has been fitted. A larger value is
+        usually faster, but increases memory usage for each batch.
 
-        当前结果表固定写入 ``umap1`` 和 ``umap2`` 两列，因此常规使用应保持
-        ``n_components=2``。
+    n_components
+        Number of dimensions in the low-dimensional UMAP embedding. The default
+        value is ``2``.
+
+        The current result table always writes two columns, ``umap1`` and
+        ``umap2``, so regular usage should keep ``n_components=2``.
+
     n_pcs
-        用于 UMAP 的 PCA 维度数量。为 ``None`` 时使用 ``obsm_X_pca`` 中全部
-        PC 列；传入整数时只使用前 ``n_pcs`` 个 PC。
+        Number of PCA dimensions used for UMAP. When set to ``None``, all PC
+        columns in ``obsm_X_pca`` are used; when an integer is passed, only the
+        first ``n_pcs`` PCs are used.
+
     n_neighbors
-        UMAP 构建局部邻域图时使用的近邻数。较小值更强调局部结构，较大值更
-        强调整体连续结构。
+        Number of nearest neighbors used by UMAP when constructing the local
+        neighborhood graph. Smaller values emphasize local structure more, while
+        larger values emphasize global continuous structure more.
+
     min_dist
-        UMAP 低维空间中点与点之间允许的最小距离。较小值会让 cluster 更紧凑，
-        较大值会让 embedding 更分散。
+        Minimum distance allowed between points in the low-dimensional UMAP
+        space. Smaller values make clusters more compact, while larger values
+        make the embedding more dispersed.
+
     spread
-        UMAP 低维空间的整体铺开尺度。通常要求 ``spread >= min_dist``。
+        Overall spread scale of the low-dimensional UMAP space. Usually,
+        ``spread >= min_dist`` is required.
+
     metric
-        距离度量。PCA embedding 通常使用 ``"euclidean"``。
+        Distance metric. PCA embeddings usually use ``"euclidean"``.
+
     random_state
-        随机种子。设为固定整数时结果更容易复现。
+        Random seed. Setting it to a fixed integer makes the result easier to reproduce.
+
     n_jobs
-        计算使用的线程数。
+        Number of threads used for computation.
+
     add_table
-        写入数据库的结果表名。
+        Name of the result table written to the database.
+
     save_params_table
-        保存本次运行参数的数据库表名。
+        Name of the database table used to save the parameters of this run.
+
     eval_sample_n
-        用于评估 embedding 质量的细胞抽样数量。评估只在拟合样本的子集上
-        进行，避免大规模距离计算占用过多内存。
+        Number of sampled cells used to evaluate embedding quality. Evaluation is
+        performed only on a subset of the fitting sample to avoid excessive memory
+        usage from large-scale distance calculations.
+
     save_eval_table
-        保存评估结果的数据库表名。
+        Name of the database table used to save evaluation results.
 
     Returns
     -------
     umap.UMAP
-        拟合完成的 UMAP 对象，可继续用于 ``transform`` 或检查模型参数。
+        Fitted UMAP object, which can continue to be used for ``transform`` or
+        parameter inspection.
 
     Notes
     -----
-    该函数不会自动计算 PCA。如果数据库中不存在 ``obsm_X_pca``，需要先运行
-    ``sap.tl.pca(atlas)``。
+    This function does not calculate PCA automatically. If ``obsm_X_pca`` does
+    not exist in the database, run ``sap.tl.pca(atlas)`` first.
 
-    拟合样本通过 ``hash(atlas_cell_id + seed)`` 排序后取前 ``fit_sample_n``
-    个细胞，便于在固定 ``random_state`` 时获得相对稳定的抽样结果。
+    The fitting sample is selected by sorting on ``hash(atlas_cell_id + seed)``
+    and taking the first ``fit_sample_n`` cells, making it easier to obtain a
+    relatively stable sample when ``random_state`` is fixed.
 
     Examples
     --------
-    使用默认参数计算二维 UMAP::
+    Calculate two-dimensional UMAP using default parameters::
 
         sap.tl.pca(atlas)
         sap.tl.umap(atlas)
 
-    使用 50 万细胞拟合 UMAP，并分批转换全量数据::
+    Fit UMAP with 500,000 cells and transform the full dataset in batches::
 
         sap.tl.umap(
             atlas,
@@ -188,7 +220,7 @@ def umap(
     start = datetime.now()
     conn = atlas.connection
 
-    # 检查 obsm_X_pca
+    # Check obsm_X_pca
     tables = conn.execute("""
         SELECT table_name
         FROM information_schema.tables
@@ -197,8 +229,8 @@ def umap(
 
     if len(tables) == 0:
         raise ValueError(
-            "数据库中不存在 obsm_X_pca。\n"
-            "请先运行 sap.tl.pca(atlas)"
+            "obsm_X_pca does not exist in the database.\n"
+            "Please run sap.tl.pca(atlas) first"
         )
 
     pca_cols = [
@@ -209,20 +241,20 @@ def umap(
     pc_cols = [c for c in pca_cols if c.startswith("pc")]
 
     if len(pc_cols) == 0:
-        raise ValueError("obsm_X_pca 中不存在 pc 列")
+        raise ValueError("No pc columns exist in obsm_X_pca")
 
-    # 保证 pc0, pc1, pc2 ... 按数字顺序排列
+    # Ensure pc0, pc1, pc2 ... are sorted in numeric order
     pc_cols = sorted(pc_cols, key=lambda x: int(x.replace("pc", "")))
 
     if n_pcs is not None:
         n_pcs = int(n_pcs)
 
         if n_pcs <= 0:
-            raise ValueError("n_pcs 必须大于 0")
+            raise ValueError("n_pcs must be greater than 0")
 
         if n_pcs > len(pc_cols):
             raise ValueError(
-                f"n_pcs={n_pcs} 超过 obsm_X_pca 中可用 PC 数量: {len(pc_cols)}"
+                f"n_pcs={n_pcs} exceeds the number of available PCs in obsm_X_pca: {len(pc_cols)}"
             )
 
         pc_cols = pc_cols[:n_pcs]
@@ -236,10 +268,10 @@ def umap(
 
     if float(spread) < float(min_dist):
         raise ValueError(
-            f"spread 必须大于或等于 min_dist，当前 spread={spread}, min_dist={min_dist}"
+            f"spread must be greater than or equal to min_dist; current spread={spread}, min_dist={min_dist}"
         )
 
-    # 拟合 UMAP：SQL 先抽样
+    # Fit UMAP: sample first in SQL
     if fit_sample_n is None:
         fit_query = f"""
             SELECT atlas_cell_id, {pc_cols_sql}
@@ -259,11 +291,11 @@ def umap(
     fit_df = conn.execute(fit_query).fetchdf()
 
     if len(fit_df) == 0:
-        raise ValueError("拟合 UMAP 的样本为空")
+        raise ValueError("The sample used to fit UMAP is empty")
 
     X_fit = fit_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
 
-    # 拟合 UMAP 模型
+    # Fit the UMAP model
     reducer = umap_lib.UMAP(
         n_components=n_components,
         n_neighbors=n_neighbors,
@@ -276,10 +308,10 @@ def umap(
 
     reducer.fit(X_fit)
 
-    # 训练后评估 UMAP embedding 质量
+    # Evaluate UMAP embedding quality after training
     X_fit_umap = reducer.transform(X_fit).astype(np.float32)
 
-    # 只在子样本上评估，避免 eval_n × eval_n 距离矩阵爆内存
+    # Evaluate only on a subsample to avoid eval_n × eval_n distance matrices from exploding memory
     eval_n = min(eval_sample_n, X_fit.shape[0])
 
     rng = np.random.default_rng(random_state)
@@ -310,22 +342,22 @@ def umap(
     logger.info(f"[UMAP] trustworthiness = {trustworthiness_score:.4f}")
     logger.info(f"[UMAP] knn_overlap     = {knn_overlap_score:.4f}")
 
-    # 简单自动评价
+    # Simple automatic evaluation
     if trustworthiness_score < 0.80:
-        logger.info(" UMAP局部结构保持较弱，建议增大 fit_sample_n / 调整 n_neighbors / 检查 PCA")
+        logger.info(" UMAP local structure preservation is weak; it is recommended to increase fit_sample_n / adjust n_neighbors / check PCA")
     elif trustworthiness_score < 0.90:
-        logger.info(" UMAP局部结构保持正常")
+        logger.info(" UMAP local structure preservation is normal")
     else:
-        logger.info(" UMAP局部结构保持很好")
+        logger.info(" UMAP local structure preservation is very good")
 
     if knn_overlap_score < 0.20:
-        logger.info(" KNN重叠率偏低，低维空间近邻和PCA空间差异较大")
+        logger.info(" KNN overlap is low; nearest neighbors in the low-dimensional space differ greatly from those in PCA space")
     elif knn_overlap_score < 0.40:
-        logger.info(" KNN重叠率正常，单细胞UMAP中常见")
+        logger.info(" KNN overlap is normal, which is common in single-cell UMAP")
     else:
-        logger.info(" KNN重叠率较高，局部邻域保持很好")
+        logger.info(" KNN overlap is high, and local neighborhoods are preserved very well")
 
-    # 建输出表
+    # Create output table
     conn.execute(f"DROP TABLE IF EXISTS {add_table}")
     conn.execute(f"""
         CREATE TABLE {add_table} (
@@ -376,7 +408,7 @@ def umap(
 
     conn.append(save_params_table, params_df)
 
-    # 保存评估结果
+    # Save evaluation results
     conn.execute(f"DROP TABLE IF EXISTS {save_eval_table}")
     conn.execute(f"""
         CREATE TABLE {save_eval_table} (
@@ -402,7 +434,7 @@ def umap(
 
     conn.append(save_eval_table, eval_df)
 
-    # 全量分块 transform
+    # Full-data batched transform
     total_n = conn.execute("SELECT COUNT(*) FROM obsm_X_pca").fetchone()[0]
 
     offset = 0
@@ -435,6 +467,6 @@ def umap(
 
         logger.info(f"[UMAP] transformed {offset}/{total_n}")
 
-    logger.info(f"UMAP Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
+    logger.info(f"UMAP Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds")
 
     return reducer

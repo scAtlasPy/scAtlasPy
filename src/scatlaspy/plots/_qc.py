@@ -19,66 +19,77 @@ def highest_expr_genes(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制最高表达基因占总 counts 百分比的 QC 图。
+    """Plot a QC figure showing the percentage of total counts occupied by the highest expressed genes.
 
-    该函数基于 ``X_HyS_data.data_count`` 计算每个基因在每个细胞总 counts 中所占的
-    百分比，并选出平均占比最高的 ``n_top`` 个基因。图中每一行对应一个基因，
-    横轴表示该基因在单个细胞总 counts 中的百分比，箱线图展示细胞间分布，
-    可选空心点展示离群细胞。
+    This function calculates the percentage of each gene in each cell's total counts
+    based on ``X_HyS_data.data_count``, and selects the top ``n_top`` genes with the
+    highest average percentage. Each row in the figure corresponds to one gene.
+    The x-axis represents the percentage of that gene in a single cell's total counts.
+    The boxplot shows the distribution across cells, and optional hollow points show
+    outlier cells.
 
-    该图常用于导入后 QC，帮助发现少数基因是否“垄断”表达量，例如线粒体基因、
-    核糖体基因、血红蛋白基因或其他技术偏差相关基因。
+    This plot is commonly used for post-import QC, helping detect whether a small
+    number of genes "dominate" the expression counts, such as mitochondrial genes,
+    ribosomal genes, hemoglobin genes, or other genes related to technical bias.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且数据库中包含 ``obs``、``var``和 ``X_HyS_data`` 表。
-        ``X_HyS_data`` 需要包含 ``data_count`` 字段。
+        Atlas object. It must already be connected to a DuckDB database, and the database
+        must contain the ``obs``, ``var``, and ``X_HyS_data`` tables.
+        ``X_HyS_data`` needs to contain the ``data_count`` field.
 
     n_top
-        展示平均占比最高的基因数量。
+        Number of genes with the highest average percentage to display.
 
     use_all_cells
-        是否把所有细胞纳入 top 基因和箱线图统计。为 ``True`` 时会把未检测到该基因
-        的细胞按 0 计入，更符合“占所有细胞总 counts 百分比”的定义；为 ``False`` 时
-        主要基于非零表达记录计算，速度更快，但不会把隐式 0 纳入分布。
+        Whether to include all cells in the top-gene and boxplot statistics.
+        If ``True``, cells where the gene is not detected are counted as 0, which is
+        more consistent with the definition of "percentage of total counts across all cells".
+        If ``False``, the calculation is mainly based on nonzero expression records,
+        which is faster but does not include implicit zeros in the distribution.
 
     show_outliers
-        是否在箱线图上额外绘制离群细胞点。
+        Whether to additionally draw outlier cell points on the boxplot.
 
     max_outliers
-        每个基因最多绘制的离群点数量，避免大数据下图形过密。
+        Maximum number of outlier points to draw for each gene, to avoid overly dense
+        figures on large datasets.
 
     figsize
-        Matplotlib 图像大小。
+        Matplotlib figure size.
 
     approx_quantile
-        是否使用 DuckDB 的近似分位数函数计算四分位数。大数据场景建议保持
-        ``True``，可以降低内存和计算压力；为 ``False`` 时使用精确分位数。
+        Whether to use DuckDB's approximate quantile function to calculate quartiles.
+        It is recommended to keep this as ``True`` for large datasets, as it can reduce
+        memory and computational pressure. If ``False``, exact quantiles are used.
 
     sample_cells
-        用于绘图统计的细胞抽样数量。为 ``None`` 时使用满足 ``use_all_cells`` 逻辑的
-        全部细胞；传入整数时使用基于 ``atlas_cell_id`` hash 的近似抽样，适合超大数据。
+        Number of cells sampled for plotting statistics. If ``None``, all cells satisfying
+        the ``use_all_cells`` logic are used. When an integer is provided, approximate
+        sampling based on the hash of ``atlas_cell_id`` is used, which is suitable for
+        very large datasets.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and not saved.
 
     Returns
     -------
     None
-        函数直接绘图，不返回统计表。
+        The function directly plots the figure and does not return a statistics table.
 
     Notes
     -----
-    如果 ``obs`` 中已有 ``cell_total_counts`` 或 ``total_counts``，函数会优先复用该列；
-    否则会临时从 ``X_HyS_data.data_count`` 聚合每个细胞的总 counts。
+    If ``cell_total_counts`` or ``total_counts`` already exists in ``obs``, the function
+    will reuse that column first. Otherwise, it temporarily aggregates each cell's total
+    counts from ``X_HyS_data.data_count``.
 
     Examples
     --------
-    绘制平均占比最高的 20 个基因::
+    Plot the top 20 genes with the highest average percentage::
 
         sap.pl.highest_expr_genes(atlas, n_top=20)
 
-    在大数据上抽样绘图，并使用近似分位数::
+    Plot with sampling on large datasets and use approximate quantiles::
 
         sap.pl.highest_expr_genes(
             atlas,
@@ -96,13 +107,13 @@ def highest_expr_genes(
     except Exception:
         pass
 
-    # 大数据场景下用 hash 近似抽样，避免 ORDER BY RANDOM() 全表排序
+    # Use hash-based approximate sampling in large-data scenarios to avoid full-table ORDER BY RANDOM() sorting
     if sample_cells is not None:
         sample_cells = int(sample_cells)
         if sample_cells <= 0:
             sample_cells = None
 
-    # 如果指定 sample_cells，创建一个轻量 TEMP VIEW，不物化随机排序结果
+    # If sample_cells is specified, create a lightweight TEMP VIEW instead of materializing random-sorted results
     if sample_cells is not None:
         n_cells_total = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
 
@@ -122,7 +133,7 @@ def highest_expr_genes(
                 FROM obs
             """)
 
-    # 优先复用 obs.cell_total_counts，避免每次扫描整个 X_HyS_data
+    # Prefer reusing obs.cell_total_counts to avoid scanning the entire X_HyS_data each time
     obs_cols = {r[1] for r in conn.execute("PRAGMA table_info('obs')").fetchall()}
 
     if "cell_total_counts" in obs_cols:
@@ -144,7 +155,7 @@ def highest_expr_genes(
             WHERE total_counts IS NOT NULL
         """)
     else:
-        # fallback：没有预计算结果时才扫描 X
+        # fallback: scan X only when no precomputed result exists
         conn.execute("""
             CREATE OR REPLACE TEMP TABLE _cell_total_counts AS
             SELECT
@@ -154,7 +165,7 @@ def highest_expr_genes(
             GROUP BY atlas_cell_id
         """)
 
-    # 选 top genes
+    # Select top genes
     if use_all_cells:
         if sample_cells is not None:
             conn.execute("""
@@ -232,10 +243,10 @@ def highest_expr_genes(
             LIMIT {int(n_top)}
         """)
 
-    # SQL 直接计算标准 boxplot 统计量
+    # Directly calculate standard boxplot statistics in SQL
     qfunc = "approx_quantile" if approx_quantile else "quantile_cont"
 
-    # use_all_cells=False 时，boxplot 统计可基于抽样细胞，避免 1e8 cells 下扫描/聚合过重
+    # When use_all_cells=False, boxplot statistics can be based on sampled cells to avoid overly heavy scanning/aggregation for 1e8 cells
     sample_join_sql = ""
     if sample_cells is not None:
         sample_join_sql = """
@@ -324,7 +335,7 @@ def highest_expr_genes(
             ORDER BY q.mean_pct DESC, q.atlas_gene_name
         """).fetchdf()
     else:
-        # 把 top genes 的非零表达值物化成临时表,这样后面 quartiles / whiskers 不会反复重跑同一个大 CTE
+        # Materialize the nonzero expression values of top genes into a temporary table, so the later quartiles / whiskers do not repeatedly rerun the same large CTE
         stats_df = conn.execute(f"""
                 WITH quartiles AS (
                     SELECT
@@ -336,7 +347,7 @@ def highest_expr_genes(
                         {qfunc}(CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE), 0.50) AS median,
                         {qfunc}(CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE), 0.75) AS q3
                     FROM X_HyS_data x
-                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 boxplot
+                    {sample_join_sql}                 -- If sample_cells is not empty, calculate the boxplot only on sampled cells
                     JOIN _top_expr_genes g
                         ON x.atlas_gene_id = g.atlas_gene_id
                     JOIN _cell_total_counts t
@@ -358,7 +369,7 @@ def highest_expr_genes(
                                 THEN CAST(x.data_count * 100.0 / t.total_counts AS DOUBLE)
                             END) AS whisker_high
                     FROM X_HyS_data x
-                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只对抽样细胞计算 whisker
+                    {sample_join_sql}                 -- If sample_cells is not empty, calculate whiskers only on sampled cells
                     JOIN _top_expr_genes g
                         ON x.atlas_gene_id = g.atlas_gene_id
                     JOIN _cell_total_counts t
@@ -383,16 +394,16 @@ def highest_expr_genes(
                 ORDER BY q.mean_pct DESC, q.atlas_gene_name
             """).fetchdf()
 
-    # 提取离群点
+    # Extract outliers
     outlier_df = None
 
     if show_outliers:
 
         if use_all_cells:
-            outlier_df = conn.execute(f"""  -- 改成 f-string，支持 qfunc
+            outlier_df = conn.execute(f"""  -- Changed to an f-string to support qfunc
                 WITH all_cells AS (
                     SELECT atlas_cell_id
-                    FROM _all_cells              -- 从 _all_cells 读取；如果 sample_cells 不为空则自动使用抽样细胞
+                    FROM _all_cells              -- Read from _all_cells; if sample_cells is not empty, sampled cells are used automatically
                 ),
                 cell_gene_grid AS (
                     SELECT
@@ -412,7 +423,7 @@ def highest_expr_genes(
                         ON x.atlas_cell_id = t.atlas_cell_id
                     JOIN _top_expr_genes g
                         ON x.atlas_gene_id = g.atlas_gene_id
-                    JOIN all_cells c              -- 限制到 _all_cells，支持 sample_cells
+                    JOIN all_cells c              -- Restrict to _all_cells, supporting sample_cells
                         ON x.atlas_cell_id = c.atlas_cell_id
                     WHERE t.total_counts > 0
                 ),
@@ -428,8 +439,8 @@ def highest_expr_genes(
                 bounds AS (
                     SELECT
                         atlas_gene_name,
-                        {qfunc}(pct, 0.25) AS q1,  -- quantile_cont 改为可切换 qfunc
-                        {qfunc}(pct, 0.75) AS q3   -- quantile_cont 改为可切换 qfunc
+                        {qfunc}(pct, 0.25) AS q1,  -- quantile_cont changed to switchable qfunc
+                        {qfunc}(pct, 0.75) AS q3   -- quantile_cont changed to switchable qfunc
                     FROM full_values
                     GROUP BY atlas_gene_name
                 ),
@@ -458,7 +469,7 @@ def highest_expr_genes(
                         g.atlas_gene_name,
                         x.data_count * 100.0 / t.total_counts AS pct
                     FROM X_HyS_data x
-                    {sample_join_sql}                 -- 如果 sample_cells 不为空，则只提取抽样细胞离群点
+                    {sample_join_sql}                 -- If sample_cells is not empty, extract outliers only from sampled cells
                     JOIN _cell_total_counts t
                         ON x.atlas_cell_id = t.atlas_cell_id
                     JOIN _top_expr_genes g
@@ -541,7 +552,7 @@ def highest_expr_genes(
             zorder=4
         )
 
-    # 可选 outliers
+    # Optional outliers
     if show_outliers and outlier_df is not None and len(outlier_df) > 0:
         gene_to_y = {g: y for g, y in zip(stats_df["atlas_gene_name"], y_positions)}
 
@@ -581,19 +592,20 @@ def highest_expr_genes(
 
     plt.show()
 
-    # 清理
-    # DuckDB 中同名对象可能是 VIEW，也可能是 TABLE，直接 DROP VIEW 可能因类型不匹配报错
+    # Clean up
+    # Objects with the same name in DuckDB may be either VIEW or TABLE; directly using DROP VIEW may raise an error due to type mismatch
     def _safe_drop_temp(name: str):
-        """清理 ``highest_expr_genes`` 创建的临时表或临时视图。
+        """Clean up temporary tables or temporary views created by ``highest_expr_genes``.
 
-        DuckDB 中同名临时对象可能是 VIEW，也可能是 TABLE。该 helper 会分别尝试
-        ``DROP VIEW`` 和 ``DROP TABLE``，用于保证函数结束后清理中间对象，同时不让
-        “对象类型不匹配”的清理错误影响绘图结果。
+        Objects with the same name in DuckDB may be either VIEW or TABLE. This helper
+        tries ``DROP VIEW`` and ``DROP TABLE`` separately to ensure intermediate objects
+        are cleaned up after the function finishes, while preventing cleanup errors such
+        as "object type mismatch" from affecting the plotting result.
 
         Parameters
         ----------
         name
-            需要清理的临时对象名称。
+            Name of the temporary object to clean up.
         """
         try:
             conn.execute(f"DROP VIEW IF EXISTS {name}")
@@ -626,59 +638,67 @@ def violin_qc_metrics(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 ``obs`` 中 QC 指标的小提琴图。
+    """Plot violin plots for QC metrics in ``obs``.
 
-    该函数从 ``obs`` 表读取一个或多个细胞级 QC 指标，并为每个指标绘制小提琴图，
-    同时叠加轻微抖动的散点用于观察真实细胞分布。默认绘制
-    ``n_genes_by_counts``、``cell_total_counts`` 和 ``pct_counts_mt``。
+    This function reads one or more cell-level QC metrics from the ``obs`` table and
+    draws a violin plot for each metric. It also overlays slightly jittered scatter
+    points to show the real cell distribution. By default, it plots
+    ``n_genes_by_counts``, ``cell_total_counts``, and ``pct_counts_mt``.
 
-    该图常用于检查细胞测序深度、检测基因数、线粒体比例等 QC 指标的整体分布，
-    辅助决定过滤阈值。
+    This plot is commonly used to inspect the overall distribution of QC metrics such
+    as sequencing depth, number of detected genes, and mitochondrial percentage, and
+    to help decide filtering thresholds.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``obs`` 表中包含待绘制的 QC 列。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        ``obs`` table must contain the QC columns to be plotted.
 
     keys
-        需要绘制的 QC 指标列名。可以传入单个字符串或字符串列表；为 ``None`` 时使用
-        默认 QC 指标列表。
+        QC metric column names to plot. This can be a single string or a list of strings.
+        If ``None``, the default QC metric list is used.
 
     jitter
-        小提琴图中散点抖动强度。
+        Jitter strength for scatter points in the violin plot.
 
     multi_panel
-        是否为多个指标使用横向多面板布局。为 ``False`` 时多个指标纵向排列。
+        Whether to use a horizontal multi-panel layout for multiple metrics.
+        If ``False``, multiple metrics are arranged vertically.
 
     figsize
-        Matplotlib 图像大小。为 ``None`` 时根据指标数量自动估计。
+        Matplotlib figure size. If ``None``, it is estimated automatically according
+        to the number of metrics.
 
     use_filtered
-        是否只绘制 ``filter_key = TRUE`` 的细胞。
+        Whether to plot only cells where ``filter_key = TRUE``.
 
     filter_key
-        ``obs`` 中表示细胞是否通过过滤的布尔列名，默认 ``"filter_cells"``。
+        Boolean column name in ``obs`` indicating whether a cell passed filtering.
+        Defaults to ``"filter_cells"``.
 
     sample_n
-        从 ``obs`` 中抽样的细胞数量。为 ``None`` 时使用全部满足条件的细胞。
+        Number of cells sampled from ``obs``. If ``None``, all cells satisfying the
+        conditions are used.
 
     random_state
-        随机种子；固定整数可以提高结果复现性。
+        Random seed; using a fixed integer improves reproducibility.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and not saved.
 
     Notes
     -----
-    绘图前通常需要先运行 ``sap.pp.calculate_qc_metrics`` 或其他会写入相应 QC 列的
-    预处理函数。函数会跳过全部为空的指标列。
+    Before plotting, you usually need to run ``sap.pp.calculate_qc_metrics`` or another
+    preprocessing function that writes the corresponding QC columns. Columns that are
+    entirely empty are skipped.
 
     Examples
     --------
-    绘制默认 QC 指标::
+    Plot the default QC metrics::
 
         sap.pl.violin_qc_metrics(atlas)
 
-    只绘制过滤后的细胞，并指定指标::
+    Plot only filtered cells and specify metrics::
 
         sap.pl.violin_qc_metrics(
             atlas,
@@ -693,41 +713,41 @@ def violin_qc_metrics(
     if keys is None:
         keys = ["n_genes_by_counts", "cell_total_counts", "pct_counts_mt"]
 
-    # 检查 obs 列是否存在
+    # Check whether obs columns exist
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     missing = [k for k in keys if k not in obs_cols]
     if missing:
         raise ValueError(
-            f"obs 中不存在这些列: {missing}\n"
-            f"请先运行 sap.pp.calculate_qc_metrics(atlas)"
+            f"These columns do not exist in obs: {missing}\n"
+            f"Please run sap.pp.calculate_qc_metrics(atlas) first"
         )
 
     if use_filtered and filter_key not in obs_cols:
-        raise ValueError(f"obs 中不存在过滤列: {filter_key}")
+        raise ValueError(f"The filtering column does not exist in obs: {filter_key}")
 
-    # SQL 先抽样，再 fetchdf
+    # Sample first in SQL, then fetchdf
     select_cols = ", ".join(keys)
 
     where_clauses = []
     if use_filtered:
         where_clauses.append(f"{filter_key} = TRUE")
 
-    # 只保留至少有一个 key 非空的行（减少无效点）
+    # Keep only rows where at least one key is non-null to reduce invalid points
     non_null_cond = " OR ".join([f"{k} IS NOT NULL" for k in keys])
     where_clauses.append(f"({non_null_cond})")
 
     where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
     if sample_n is None:
-        # 全量（大数据不推荐）
+        # Full data, not recommended for large datasets
         query = f"""
             SELECT {select_cols}
             FROM obs
             {where_sql}
         """
     else:
-        # 先在 SQL 中抽样，再 fetchdf
+        # Sample first in SQL, then fetchdf
         query = f"""
             SELECT {select_cols}
             FROM obs
@@ -737,19 +757,19 @@ def violin_qc_metrics(
 
     df = conn.execute(query).fetchdf()
 
-    # 清理列
+    # Clean columns
     keep_keys = []
     for k in keys:
         if k in df.columns and df[k].notna().sum() > 0:
             keep_keys.append(k)
 
     if len(keep_keys) == 0:
-        raise ValueError("没有可绘制的 QC 列（全部为空）")
+        raise ValueError("No QC columns available for plotting; all columns are empty")
 
     df = df[keep_keys]
     keys = keep_keys
 
-    # 自动布局
+    # Automatic layout
     n = len(keys)
 
     if figsize is None:
@@ -771,7 +791,7 @@ def violin_qc_metrics(
     edge_color = "#4a4a4a"
     point_color = "#2f2f2f"
 
-    # 逐列画 violin + jitter
+    # Draw violin + jitter column by column
     for ax, key in zip(axes, keys):
         vals = pd.to_numeric(df[key], errors="coerce").dropna().to_numpy()
 
@@ -846,56 +866,64 @@ def scatter_qc_metrics(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 ``obs`` 中 QC 指标两两关系的散点图。
+    """Plot scatter plots for pairwise relationships between QC metrics in ``obs``.
 
-    该函数从 ``obs`` 表读取一组或多组 QC 指标对，并用散点图展示它们之间的关系。
-    默认绘制 ``cell_total_counts`` 对 ``pct_counts_mt``，
-    以及 ``cell_total_counts`` 对``n_genes_by_counts``。
+    This function reads one or more pairs of QC metrics from the ``obs`` table and
+    displays their relationships using scatter plots.
+    By default, it plots ``cell_total_counts`` versus ``pct_counts_mt`` and
+    ``cell_total_counts`` versus ``n_genes_by_counts``.
 
-    该图适合辅助判断过滤阈值，例如识别低测序深度细胞、高线粒体比例细胞、疑似双细胞或其他 QC 异常群体。
+    This plot is suitable for helping decide filtering thresholds, such as identifying
+    cells with low sequencing depth, high mitochondrial percentage, suspected doublets,
+    or other QC-abnormal populations.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``obs`` 表中包含待绘制的 QC 列。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        ``obs`` table must contain the QC columns to be plotted.
 
     pairs
-        需要绘制的指标对列表，例如 ``[("cell_total_counts", "pct_counts_mt")]``。
-        为 ``None`` 时使用默认两组 QC 关系。
+        List of metric pairs to plot, for example
+        ``[("cell_total_counts", "pct_counts_mt")]``.
+        If ``None``, the two default QC relationships are used.
 
     figsize
-        Matplotlib 图像大小。
+        Matplotlib figure size.
 
     use_filtered
-        是否只绘制 ``filter_key = TRUE`` 的细胞。
+        Whether to plot only cells where ``filter_key = TRUE``.
 
     filter_key
-        ``obs`` 中表示细胞是否通过过滤的布尔列名，默认 ``"filter_cells"``。
+        Boolean column name in ``obs`` indicating whether a cell passed filtering.
+        Defaults to ``"filter_cells"``.
 
     sample_n
-        从 ``obs`` 中抽样的细胞数量。为 ``None`` 时使用全部满足条件的细胞。
+        Number of cells sampled from ``obs``. If ``None``, all cells satisfying the
+        conditions are used.
 
     point_size
-        散点大小。
+        Scatter point size.
 
     alpha
-        绘图透明度。
+        Plotting transparency.
 
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and not saved.
 
     Notes
     -----
-    绘图前通常需要先运行 ``sap.pp.calculate_qc_metrics`` 或其他会写入相应 QC 列的
-    预处理函数。函数会自动过滤当前指标对中任一列为空的细胞。
+    Before plotting, you usually need to run ``sap.pp.calculate_qc_metrics`` or another
+    preprocessing function that writes the corresponding QC columns. The function
+    automatically filters cells where either column in the current metric pair is empty.
 
     Examples
     --------
-    绘制默认 QC 散点图::
+    Plot the default QC scatter plots::
 
         sap.pl.scatter_qc_metrics(atlas)
 
-    自定义 QC 指标对::
+    Customize QC metric pairs::
 
         sap.pl.scatter_qc_metrics(
             atlas,
@@ -913,7 +941,7 @@ def scatter_qc_metrics(
             ("cell_total_counts", "n_genes_by_counts"),
         ]
 
-    # 检查 obs 列是否存在
+    # Check whether obs columns exist
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     needed_cols = set()
@@ -924,14 +952,14 @@ def scatter_qc_metrics(
     missing = [c for c in needed_cols if c not in obs_cols]
     if missing:
         raise ValueError(
-            f"obs 中不存在这些列: {missing}\n"
-            f"请先运行 sap.pp.calculate_qc_metrics(atlas)"
+            f"These columns do not exist in obs: {missing}\n"
+            f"Please run sap.pp.calculate_qc_metrics(atlas) first"
         )
 
     if use_filtered and filter_key not in obs_cols:
-        raise ValueError(f"obs 中不存在过滤列: {filter_key}")
+        raise ValueError(f"The filtering column does not exist in obs: {filter_key}")
 
-    # SQL 先抽样，再 fetchdf
+    # Sample first in SQL, then fetchdf
     select_cols = ", ".join(sorted(needed_cols))
 
     where_clauses = []
@@ -939,7 +967,7 @@ def scatter_qc_metrics(
     if use_filtered:
         where_clauses.append(f"{filter_key} = TRUE")
 
-    # 至少保证每个 pair 的 x/y 不是全空
+    # At least ensure that x/y in each pair are not both empty
     pair_valid_clauses = []
     for x, y in pairs:
         pair_valid_clauses.append(f"({x} IS NOT NULL AND {y} IS NOT NULL)")
@@ -956,7 +984,7 @@ def scatter_qc_metrics(
             {where_sql}
         """
     else:
-        # SQL 先抽样
+        # Sample first in SQL
         query = f"""
             SELECT {select_cols}
             FROM obs
@@ -966,14 +994,14 @@ def scatter_qc_metrics(
 
     df = conn.execute(query).fetchdf()
 
-    # 自动布局
+    # Automatic layout
     n = len(pairs)
 
     fig, axes = plt.subplots(1, n, figsize=figsize, facecolor="white")
     if n == 1:
         axes = [axes]
 
-    # 逐图绘制
+    # Draw each panel
     for ax, (x_col, y_col) in zip(axes, pairs):
         sub = df[[x_col, y_col]].copy()
         sub[x_col] = pd.to_numeric(sub[x_col], errors="coerce")
@@ -988,7 +1016,7 @@ def scatter_qc_metrics(
             sub[x_col].to_numpy(),
             sub[y_col].to_numpy(),
             s=point_size,
-            c="#7f7f7f",      # Scanpy-like 灰点
+            c="#7f7f7f",      # Scanpy-like gray points
             alpha=alpha,
             linewidths=0
         )
@@ -996,7 +1024,7 @@ def scatter_qc_metrics(
         ax.set_xlabel(x_col, fontsize=16)
         ax.set_ylabel(y_col, fontsize=16)
 
-        # Scanpy 风格：白底 + 淡网格 + 去掉右上边框
+        # Scanpy style: white background + light grid + remove the top and right borders
         ax.set_facecolor("white")
         ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
         ax.spines["top"].set_visible(False)
@@ -1011,5 +1039,3 @@ def scatter_qc_metrics(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
-
-

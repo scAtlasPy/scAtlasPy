@@ -9,46 +9,56 @@ logger = logging.getLogger('Atlas')
 
 
 class StreamingPCA:
-    """面向 Atlas 数据库的流式 PCA 模型。
+    """Streaming PCA model for the Atlas database.
 
-    该类封装 sklearn 的 ``IncrementalPCA``，用于在不一次性加载完整表达矩阵的
-    情况下训练 PCA。它会通过 Atlas minibatch 读取接口分批获取 dense 表达矩阵，
-    先使用 ``partial_fit`` 学习主成分，再将全量细胞分批投影到 PCA 空间。
+    This class wraps sklearn's ``IncrementalPCA`` and is used to train PCA
+    without loading the full expression matrix into memory at once. It obtains
+    dense expression matrices in batches through the Atlas minibatch reading
+    interface, first learns principal components with ``partial_fit``, and then
+    projects all cells into PCA space in batches.
 
-    运行完成后，结果会写入 Atlas 数据库中的三张表：
+    After the run is completed, the results are written to three tables in the
+    Atlas database:
 
-    - ``obsm_X_pca``：每个细胞的 PCA 坐标；
-    - ``varm_PCs``：每个基因在各主成分上的 loadings；
-    - ``uns_pca_stats``：每个主成分的方差和方差解释比例。
+    - ``obsm_X_pca``: PCA coordinates for each cell;
+    - ``varm_PCs``: loadings of each gene on each principal component;
+    - ``uns_pca_stats``: variance and variance explanation ratio for each
+      principal component.
 
-    该类是 ``sap.tl.pca`` 的底层实现。普通用户通常直接调用公共函数
-    ``pca``，只有在需要调试训练过程或自定义流式参数时才需要直接使用本类。
+    This class is the underlying implementation of ``sap.tl.pca``. Regular
+    users usually call the public function ``pca`` directly. This class only
+    needs to be used directly when debugging the training process or customizing
+    streaming parameters.
 
     Parameters
     ----------
     n_components
-        需要计算的 PCA 主成分数量。
+        Number of PCA principal components to calculate.
+
     fit_batches
-        用于拟合 ``IncrementalPCA`` 的 minibatch 数量上限。
+        Maximum number of minibatches used to fit ``IncrementalPCA``.
+
     buffer_batch_num
-        ``multi-pass`` 读取时 shuffle buffer 中缓存的 batch 数量。
+        Number of batches cached in the shuffle buffer during ``multi-pass`` reading.
+
     batch_size
-        每个 minibatch 包含的细胞数量。
+        Number of cells contained in each minibatch.
 
     Notes
     -----
-    运行前需要先通过 ``atlas.build_read_index(...)`` 构建读取索引，使
-    ``atlas.get_minibatch_dense`` 能够按预期读出表达矩阵。
+    Before running, the read index needs to be built through
+    ``atlas.build_read_index(...)`` so that ``atlas.get_minibatch_dense`` can
+    read the expression matrix as expected.
 
     Examples
     --------
-    推荐的公共 API 用法::
+    Recommended public API usage::
 
         atlas.build_read_index(use_hvg=True)
         sap.tl.pca(atlas, n_components=50)
     """
 
-    # 初始化
+    # Initialize
     def __init__(self,
                  n_components: int = 30,
                  fit_batches: int = 1000,
@@ -56,68 +66,81 @@ class StreamingPCA:
                  batch_size: int = 2048,
                  ):
 
-        """初始化流式 PCA 计算器。
+        """Initialize the streaming PCA calculator.
 
-        该方法只保存 PCA 参数并创建 sklearn ``IncrementalPCA`` 对象，不会立即
-        读取数据库，也不会写入任何结果表。实际训练和写库发生在 ``fit``、
-        ``transform`` 或 ``run`` 阶段。
+        This method only stores PCA parameters and creates the sklearn
+        ``IncrementalPCA`` object. It does not immediately read the database or
+        write any result tables. Actual training and database writing happen in
+        the ``fit``, ``transform``, or ``run`` stages.
 
         Parameters
         ----------
         n_components
-            需要计算的 PCA 主成分数量。该值决定 ``obsm_X_pca``、``varm_PCs``
-            和 ``uns_pca_stats`` 中的输出维度。
+            Number of PCA principal components to calculate. This value
+            determines the output dimensionality in ``obsm_X_pca``, ``varm_PCs``,
+            and ``uns_pca_stats``.
+
         fit_batches
-            训练阶段最多读取多少个 minibatch 进行 ``partial_fit``。
+            Maximum number of minibatches to read during training for ``partial_fit``.
+
         buffer_batch_num
-            ``multi-pass`` 读取时预取或 shuffle buffer 中缓存的 minibatch 数量。
+            Number of minibatches cached in the prefetch or shuffle buffer during ``multi-pass`` reading.
+
         batch_size
-            每个 minibatch 中的细胞数量。
+            Number of cells in each minibatch.
 
         Notes
         -----
-        较大的 ``batch_size`` 和 ``fit_batches`` 通常能提高 PCA 稳定性，但会增加
-        训练时间和单批内存占用。
+        Larger ``batch_size`` and ``fit_batches`` values usually improve PCA
+        stability, but they increase training time and per-batch memory usage.
         """
-        self.n_components = n_components # PCA 目标维度
-        self.ipca = IncrementalPCA(n_components=n_components) # 创建 sklearn 的增量 PCA 模型
+
+        self.n_components = n_components # Target PCA dimension
+        self.ipca = IncrementalPCA(n_components=n_components) # Create sklearn's incremental PCA model
         self.fit_batches = fit_batches
         self.buffer_batch_num = buffer_batch_num
         self.batch_size = batch_size
 
-        self.components_ = None                 # components_ = 坐标轴      → 方向（往哪里投影）
-        self.explained_variance_ = None         # variance = 每个轴有多重要   → 强度（这个方向多重要）
-        self.explained_variance_ratio_ = None   # ratio = 占总信息多少        → 占比（解释了多少信息）
+        self.components_ = None                 # components_ = coordinate axes      -> directions for projection
+        self.explained_variance_ = None         # variance = importance of each axis -> strength of this direction
+        self.explained_variance_ratio_ = None   # ratio = proportion of total information -> amount of information explained
 
 
-    # 新建 obsm_X_pca 表
+    # Create the obsm_X_pca table
     def _create_pca_table(self, atlas:Atlas, n_components: int = 30, table_name: str="obsm_X_pca"):
 
-        """创建细胞 PCA 坐标结果表。
+        """Create the cell PCA coordinate result table.
 
-        该内部函数用于创建 ``obsm_X_pca`` 风格的结果表。表中每一行对应一个
-        细胞，包含 ``atlas_cell_id`` 以及 ``pc0``、``pc1`` 等 PCA 坐标列。
-        如果同名表已经存在，会先删除旧表再重新创建，避免不同 PCA 维度的旧结果
-        混入新结果。
+        This internal function is used to create an ``obsm_X_pca``-style result
+        table. Each row in the table corresponds to one cell and contains
+        ``atlas_cell_id`` as well as PCA coordinate columns such as ``pc0`` and
+        ``pc1``. If a table with the same name already exists, the old table is
+        dropped first and then recreated, avoiding old results with different PCA
+        dimensions from being mixed into the new results.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         n_components
-            需要创建的 PCA 坐标列数量。
+            Number of PCA coordinate columns to create.
+
         table_name
-            结果表名。默认值为 ``"obsm_X_pca"``。
+            Result table name. The default value is ``"obsm_X_pca"``.
 
         Returns
         -------
         None
-            表结构直接在 Atlas 数据库中创建，不返回对象。
+            The table structure is created directly in the Atlas database.
+            No object is returned.
 
         Notes
         -----
-        这是内部建表 helper，通常由 ``run`` 自动调用。
+        This is an internal table-creation helper, usually called automatically
+        by ``run``.
         """
+
         atlas.connection.execute(f""" DROP TABLE IF EXISTS {table_name}; """)
 
         cols = ",\n".join([f"pc{i} FLOAT" for i in range(n_components)])
@@ -131,33 +154,40 @@ class StreamingPCA:
         atlas.connection.execute(sql)
 
 
-    # 新建 varm_PCs 表
+    # Create the varm_PCs table
     def _create_pcs_table(self, atlas:Atlas,  n_components: int = 30, table_name: str="varm_PCs"):
 
-        """创建基因 PCA loadings 结果表。
+        """Create the gene PCA loadings result table.
 
-        该内部函数用于创建 ``varm_PCs`` 表。表中每一行对应一个基因，包含
-        ``atlas_gene_id`` 以及 ``pc0``、``pc1`` 等主成分 loadings 列。
-        该表后续会被 KMeans、UMAP 前处理或其他需要 PCA 投影的流程复用。
+        This internal function is used to create the ``varm_PCs`` table. Each row
+        in the table corresponds to one gene and contains ``atlas_gene_id`` as
+        well as principal component loading columns such as ``pc0`` and ``pc1``.
+        This table can later be reused by KMeans, UMAP preprocessing, or other
+        workflows that require PCA projection.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         n_components
-            需要创建的 PCA loading 列数量。
+            Number of PCA loading columns to create.
+
         table_name
-            结果表名。默认值为 ``"varm_PCs"``。
+            Result table name. The default value is ``"varm_PCs"``.
 
         Returns
         -------
         None
-            表结构直接在 Atlas 数据库中创建，不返回对象。
+            The table structure is created directly in the Atlas database. No
+            object is returned.
 
         Notes
         -----
-        这是内部建表 helper，通常由 ``run`` 自动调用。
+        This is an internal table-creation helper, usually called automatically
+        by ``run``.
         """
+
         atlas.connection.execute(f""" DROP TABLE IF EXISTS {table_name}; """)
 
         cols = ",\n".join([f"pc{i} FLOAT" for i in range(n_components)])
@@ -171,31 +201,36 @@ class StreamingPCA:
         atlas.connection.execute(sql)
 
 
-    # 新建 uns_pca_stats 表
+    # Create the uns_pca_stats table
     def _create_pca_stats_table(self, atlas:Atlas, table_name: str="uns_pca_stats"):
 
-        """创建 PCA 方差统计结果表。
+        """Create the PCA variance statistics result table.
 
-        该内部函数用于创建 ``uns_pca_stats`` 表。表中每一行对应一个主成分，
-        记录 ``pc_index``、该主成分解释的方差 ``variance``，以及方差解释比例
-        ``variance_ratio``。
+        This internal function is used to create the ``uns_pca_stats`` table.
+        Each row in the table corresponds to one principal component and records
+        ``pc_index``, the variance explained by that principal component
+        ``variance``, and the variance explanation ratio ``variance_ratio``.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         table_name
-            结果表名。默认值为 ``"uns_pca_stats"``。
+            Result table name. The default value is ``"uns_pca_stats"``.
 
         Returns
         -------
         None
-            表结构直接在 Atlas 数据库中创建，不返回对象。
+            The table structure is created directly in the Atlas database. No
+            object is returned.
 
         Notes
         -----
-        这是内部建表 helper，通常由 ``run`` 自动调用。
+        This is an internal table-creation helper, usually called automatically
+        by ``run``.
         """
+
         atlas.connection.execute(f""" DROP TABLE IF EXISTS {table_name}; """)
 
         sql = f"""
@@ -208,43 +243,51 @@ class StreamingPCA:
         atlas.connection.execute(sql)
 
 
-    # 写 obsm_X_pca 表
+    # Write the obsm_X_pca table
     def _writer_obsm_x_pca(self, atlas: Atlas, X_batch: np.ndarray, cell_offset: int, table_name: str= "obsm_X_pca"):
 
-        """将一个 batch 的 PCA 坐标写入细胞结果表。
+        """Write the PCA coordinates of one batch to the cell result table.
 
-        该内部函数把当前 batch 的 PCA 投影结果转换为 ``float32`` DataFrame，
-        按 ``cell_offset`` 生成连续的 ``atlas_cell_id``，并追加写入
-        ``obsm_X_pca`` 风格的结果表。
+        This internal function converts the PCA projection results of the current
+        batch into a ``float32`` DataFrame, generates continuous
+        ``atlas_cell_id`` values based on ``cell_offset``, and appends the result
+        to an ``obsm_X_pca``-style result table.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         X_batch
-            当前 batch 的 PCA 坐标矩阵，形状为
-            ``(n_cells_in_batch, n_components)``。
+            PCA coordinate matrix of the current batch, with shape
+            ``(n_cells_in_batch, n_components)``.
+
         cell_offset
-            当前 batch 第一个细胞对应的全局 ``atlas_cell_id`` 起点。
+            Starting global ``atlas_cell_id`` corresponding to the first cell of
+            the current batch.
+
         table_name
-            写入的 PCA 坐标表名。默认值为 ``"obsm_X_pca"``。
+            PCA coordinate table to write to. The default value is
+            ``"obsm_X_pca"``.
 
         Returns
         -------
         int
-            下一个 batch 应使用的 ``cell_offset``。
+            ``cell_offset`` that should be used by the next batch.
 
         Notes
         -----
-        该函数假设 minibatch 读取顺序与 ``atlas_cell_id`` 的顺序一致。
+        This function assumes that the minibatch reading order is consistent with
+        the order of ``atlas_cell_id``.
         """
+
         n = X_batch.shape[0]
 
         cell_ids = np.arange(cell_offset, cell_offset + n, dtype=np.int32) # atlas_cell_id
 
-        X_batch = X_batch.astype(np.float32) # float32（节省空间）
+        X_batch = X_batch.astype(np.float32) # float32, which saves space
 
-        # 构建 DataFrame
+        # Build DataFrame
         df = pd.DataFrame(
             X_batch,
             columns=[f"pc{i}" for i in range(X_batch.shape[1])]
@@ -257,65 +300,74 @@ class StreamingPCA:
         return cell_offset + n
 
 
-    # 写 varm_PCs 表
+    # Write the varm_PCs table
     def _writer_varm_pcs(self, atlas: Atlas, table_name: str= "varm_PCs"):
 
-        """将 PCA loadings 写入 ``varm_PCs`` 表。
+        """Write PCA loadings to the ``varm_PCs`` table.
 
-        该内部函数读取 ``self.components_``，将 sklearn 中的
-        ``(n_components, n_genes)`` 结构转置为 ``(n_genes, n_components)``，
-        然后按基因写入 ``varm_PCs`` 风格的结果表。
+        This internal function reads ``self.components_``, transposes the sklearn
+        structure from ``(n_components, n_genes)`` to
+        ``(n_genes, n_components)``, and then writes the result by gene to a
+        ``varm_PCs``-style result table.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         table_name
-            写入的 loadings 表名。默认值为 ``"varm_PCs"``。
+            Loadings table to write to. The default value is ``"varm_PCs"``.
 
         Returns
         -------
         None
-            PCA loadings 直接追加写入数据库表，不返回对象。
+            PCA loadings are appended directly to the database table. No object
+            is returned.
 
         Notes
         -----
-        调用前需要确保 ``fit`` 已经完成，并且 ``self.components_`` 不为空。
+        Before calling this method, make sure ``fit`` has completed and
+        ``self.components_`` is not empty.
         """
+
         pcs = self.components_.T.astype(np.float32)  # (n_genes, n_components)
         df = pd.DataFrame(
             pcs,
             columns=[f"pc{i}" for i in range(pcs.shape[1])]
         )
-        # 插入 atlas_gene_id
+        # Insert atlas_gene_id
         df.insert(0, "atlas_gene_id", np.arange(pcs.shape[0], dtype=np.int32))
         atlas.connection.append(table_name, df)
 
 
-    # 写 uns_pca_stats 表
+    # Write the uns_pca_stats table
     def _writer_uns_pca_stats(self, atlas: Atlas, table_name: str="uns_pca_stats"):
 
-        """将 PCA 方差解释统计写入 ``uns_pca_stats`` 表。
+        """Write PCA variance explanation statistics to the ``uns_pca_stats`` table.
 
-        该内部函数把 ``self.explained_variance_`` 和
-        ``self.explained_variance_ratio_`` 整理成 DataFrame，并追加写入数据库。
+        This internal function organizes ``self.explained_variance_`` and
+        ``self.explained_variance_ratio_`` into a DataFrame and appends it to the database.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         table_name
-            写入的 PCA 统计表名。默认值为 ``"uns_pca_stats"``。
+            PCA statistics table to write to. The default value is ``"uns_pca_stats"``.
 
         Returns
         -------
         None
-            PCA 统计结果直接追加写入数据库表，不返回对象。
+            PCA statistics are appended directly to the database table. No object
+            is returned.
 
         Notes
         -----
-        调用前需要确保 ``fit`` 已经完成，并且方差统计数组已经生成。
+        Before calling this method, make sure ``fit`` has completed and the
+        variance statistics arrays have been generated.
         """
+
         pc_index = np.arange(len(self.explained_variance_), dtype=np.int32)
 
         df = pd.DataFrame({
@@ -327,33 +379,36 @@ class StreamingPCA:
         atlas.connection.append(table_name, df)
 
 
-    # 训练 PCA
+    # Train PCA
     def fit(self, atlas: Atlas):
 
-        """分批拟合 IncrementalPCA 模型。
+        """Fit the IncrementalPCA model in batches.
 
-        该方法通过 ``atlas.get_minibatch_dense(pass_mode="multi-pass")`` 分批读取
-        dense 表达矩阵，并使用 ``IncrementalPCA.partial_fit`` 进行流式训练。
-        训练完成后，会把主成分、方差和方差解释比例保存到当前对象的属性中。
+        This method reads the dense expression matrix in batches through
+        ``atlas.get_minibatch_dense(pass_mode="multi-pass")`` and performs
+        streaming training with ``IncrementalPCA.partial_fit``. After training is
+        completed, the principal components, variance, and variance explanation
+        ratios are saved to the current object's attributes.
 
-        该方法只训练模型，不写入 ``obsm_X_pca``、``varm_PCs`` 或
-        ``uns_pca_stats`` 表。写库由 ``fit_transform`` 或 ``run`` 完成。
+        This method only trains the model and does not write the ``obsm_X_pca``,
+        ``varm_PCs``, or ``uns_pca_stats`` tables. Database writing is handled by
+        ``fit_transform`` or ``run``.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求已经连接数据库，并且已经构建可用于 dense minibatch
-            读取的索引。
+            Atlas object. The object must already be connected to the database,
+            and an index available for dense minibatch reading must have already been built.
 
         Returns
         -------
         StreamingPCA
-            当前 ``StreamingPCA`` 对象，便于链式调用。
+            The current ``StreamingPCA`` object, enabling chained calls.
 
         Notes
         -----
-        如果没有读到任何 minibatch，函数会抛出 ``RuntimeError``，避免生成空的
-        PCA 模型。
+        If no minibatch is read, the function raises ``RuntimeError`` to avoid
+        generating an empty PCA model.
 
         """
 
@@ -377,70 +432,75 @@ class StreamingPCA:
                 logger.info(f"[PCA] partial_fit batch = {batch_count}/{self.fit_batches}")
 
         if batch_count == 0:
-            raise RuntimeError("[PCA] 没有获得任何 minibatch，无法训练 PCA")
+            raise RuntimeError("[PCA] No minibatch was obtained, so PCA cannot be trained")
 
-        # 保存结果
+        # Save results
         self.components_ = self.ipca.components_.astype(np.float32)
         self.explained_variance_ = self.ipca.explained_variance_.astype(np.float32)
         self.explained_variance_ratio_ = self.ipca.explained_variance_ratio_.astype(np.float32)
 
         cum_ratio = np.cumsum(self.explained_variance_ratio_)
 
-        logger.info("[PCA] 累计解释方差比例（前 {} 个主成分）：{:.4f}".format(
+        logger.info("[PCA] Cumulative explained variance ratio (first {} principal components): {:.4f}".format(
             len(self.explained_variance_ratio_),
             self.explained_variance_ratio_.sum()
         ))
 
-        logger.info("[PCA] 前 10 个主成分的累计解释方差比例：")
+        logger.info("[PCA] Cumulative explained variance ratio of the first 10 principal components:")
         logger.info(cum_ratio[:10])
 
-        logger.info("[PCA] 最终累计解释方差比例：{:.4f}".format(cum_ratio[-1]))
+        logger.info("[PCA] Final cumulative explained variance ratio: {:.4f}".format(cum_ratio[-1]))
 
         total_ratio = cum_ratio[-1]
 
         if total_ratio < 0.1:
-            logger.info(" PCA解释比例较低，可能需要检查数据或增加主成分数")
+            logger.info(" PCA explanation ratio is low; you may need to check the data or increase the number of principal components")
         elif total_ratio < 0.2:
-            logger.info(" PCA解释比例一般（单细胞中常见）")
+            logger.info(" PCA explanation ratio is moderate, which is common in single-cell data")
         elif total_ratio < 0.4:
-            logger.info(" PCA解释比例正常")
+            logger.info(" PCA explanation ratio is normal")
         else:
-            logger.info(" PCA解释比例较高，结构较明显")
+            logger.info(" PCA explanation ratio is high, and the structure is relatively clear")
 
         return self
 
 
     def transform(self, atlas: Atlas):
-        """将全量细胞分批投影到 PCA 空间。
+        """Project all cells into PCA space in batches.
 
-        该方法通过 ``atlas.get_minibatch_dense(pass_mode="single-pass")`` 读取全量
-        表达矩阵，并使用已经拟合好的 ``IncrementalPCA`` 模型计算每个 batch 的
-        PCA 坐标。每个 batch 的结果会立即追加写入 ``obsm_X_pca`` 表。
+        This method reads the full expression matrix through
+        ``atlas.get_minibatch_dense(pass_mode="single-pass")`` and uses the
+        fitted ``IncrementalPCA`` model to calculate PCA coordinates for each
+        batch. The results of each batch are immediately appended to the
+        ``obsm_X_pca`` table.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求已经连接数据库，并且已经构建可用于 dense minibatch
-            读取的索引。
+            Atlas object. The object must already be connected to the database,
+            and an index available for dense minibatch reading must have already
+            been built.
 
         Returns
         -------
         None
-            PCA 坐标直接写入 ``obsm_X_pca`` 表，不返回对象。
+            PCA coordinates are written directly to the ``obsm_X_pca`` table. No
+            object is returned.
 
         Notes
         -----
-        调用前需要先运行 ``fit``，并确保 ``_create_pca_table`` 已经创建好目标表。
+        Before calling this method, run ``fit`` first and make sure
+        ``_create_pca_table`` has already created the target table.
 
         """
 
-        cell_offset = 0  # 全局递增
+        cell_offset = 0  # Global increment
 
         for X_batch in progress(atlas.get_minibatch_dense(pass_mode="single-pass")):
 
             X_pca = self.ipca.transform(X_batch)
 
-            # 只写 obsm（每个batch）
+            # Only write obsm, one batch at a time
             cell_offset = self._writer_obsm_x_pca(
                 atlas,
                 X_pca,
@@ -448,68 +508,72 @@ class StreamingPCA:
             )
 
 
-    # 主函数
+    # Main function
     def fit_transform(self, atlas: Atlas):
 
-        """训练 PCA 模型并写入全部 PCA 结果。
+        """Train the PCA model and write all PCA results.
 
-        该方法先调用 ``fit`` 完成 IncrementalPCA 训练，然后写入基因 loadings
-        和 PCA 方差统计，最后调用 ``transform`` 把全量细胞投影到 PCA 空间。
+        This method first calls ``fit`` to complete IncrementalPCA training, then
+        writes gene loadings and PCA variance statistics, and finally calls
+        ``transform`` to project all cells into PCA space.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求已经连接数据库，并且 dense minibatch 读取流程可用。
+            Atlas object. The object must already be connected to the database,
+            and the dense minibatch reading workflow must be available.
 
         Returns
         -------
         StreamingPCA
-            当前 ``StreamingPCA`` 对象。
+            The current ``StreamingPCA`` object.
 
         Notes
         -----
-        调用前应先创建 ``obsm_X_pca``、``varm_PCs`` 和 ``uns_pca_stats`` 表；
-        ``run`` 方法会自动完成这些建表步骤。
+        Before calling this method, the ``obsm_X_pca``, ``varm_PCs``, and
+        ``uns_pca_stats`` tables should be created first. The ``run`` method
+        automatically completes these table-creation steps.
 
         """
 
-        # 训练
+        # Train
         self.fit(atlas)
 
-        # 写一次模型结果
+        # Write model results once
         self._writer_varm_pcs(atlas)
         self._writer_uns_pca_stats(atlas)
 
-        # transform（写 obsm）
+        # transform, writing obsm
         self.transform(atlas)
         return self
 
 
-    # 获取结果
+    # Get results
     def get_results(self):
-        """获取当前 PCA 模型保存在内存中的结果。
+        """Get the results currently stored in memory by the PCA model.
 
-        该方法返回 ``fit`` 后保存在当前对象中的 PCA 主成分、方差和方差解释比例。
-        它不会访问数据库，也不会读取 ``obsm_X_pca``、``varm_PCs`` 或
-        ``uns_pca_stats`` 表。
+        This method returns the PCA principal components, variance, and variance
+        explanation ratios saved in the current object after ``fit``. It does not
+        access the database or read the ``obsm_X_pca``, ``varm_PCs``, or
+        ``uns_pca_stats`` tables.
 
         Returns
         -------
         dict
-            包含以下键：
+            Contains the following keys:
 
-            - ``"components"``：PCA loadings，形状为 ``(n_components, n_genes)``；
-            - ``"explained_variance"``：每个主成分解释的方差；
-            - ``"explained_variance_ratio"``：每个主成分的方差解释比例。
+            - ``"components"``: PCA loadings, with shape ``(n_components, n_genes)``;
+            - ``"explained_variance"``: variance explained by each principal component;
+            - ``"explained_variance_ratio"``: variance explanation ratio of each principal component.
 
         Notes
         -----
-        调用前需要先运行 ``fit`` 或 ``fit_transform``，否则返回的数组可能为
-        ``None``。
+        ``fit`` or ``fit_transform`` must be run before calling this method;
+        otherwise, the returned arrays may be ``None``.
 
         Examples
         --------
-        查看前几个主成分的解释比例::
+        View the explanation ratio of the first few principal components::
 
             model.fit(atlas)
             result = model.get_results()
@@ -522,89 +586,97 @@ class StreamingPCA:
         }
 
 
-    # 从数据库读取 PCA components，并恢复到 self.components_
+    # Read PCA components from the database and restore them to self.components_
     def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
 
-        """从数据库读取 PCA loadings。
+        """Read PCA loadings from the database.
 
-        该方法读取 ``varm_PCs`` 风格的表，按 ``atlas_gene_id`` 排序后去掉基因
-        ID 列，并转置回 sklearn ``IncrementalPCA`` 使用的
-        ``(n_components, n_genes)`` 形状。
+        This method reads a ``varm_PCs``-style table, sorts it by
+        ``atlas_gene_id``, removes the gene ID column, and transposes it back to
+        the ``(n_components, n_genes)`` shape used by sklearn
+        ``IncrementalPCA``.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected to a DuckDB database.
+
         table_name
-            读取的 PCA loadings 表名。默认值为 ``"varm_PCs"``。
+            PCA loadings table to read. The default value is ``"varm_PCs"``.
 
         Returns
         -------
         numpy.ndarray
-            PCA loadings 数组，形状为 ``(n_components, n_genes)``，类型为
-            ``float32``。
+            PCA loadings array, with shape ``(n_components, n_genes)`` and type
+            ``float32``.
 
         Notes
         -----
-        该方法常用于检查数据库中保存的 PCA loadings 是否与内存中的
-        ``self.components_`` 一致，也可供 KMeans 等后续流程读取 PCA 投影矩阵。
+        This method is often used to check whether the PCA loadings saved in the
+        database are consistent with ``self.components_`` in memory. It can also
+        be used by later workflows such as KMeans to read the PCA projection
+        matrix.
 
         Examples
         --------
-        从数据库恢复 PCA loadings::
+        Restore PCA loadings from the database::
 
             components = model.load_components(atlas)
         """
+
         conn = atlas.connection
 
-        # 读取整张表
+        # Read the entire table
         df = conn.execute(f"""
             SELECT * FROM {table_name}
             ORDER BY atlas_gene_id
         """).fetchdf()
 
-        # 去掉 atlas_gene_id
+        # Remove atlas_gene_id
         pcs = df.drop(columns=["atlas_gene_id"]).values
 
-        # 转置回 PCA 原始格式；(gene, pc) -> (pc, gene)
+        # Transpose back to the original PCA format: (gene, pc) -> (pc, gene)
         components_ = pcs.T.astype(np.float32)
 
         return components_
 
 
     def run(self, atlas: Atlas):
-        """执行完整流式 PCA 计算流程。
+        """Execute the complete streaming PCA computation workflow.
 
-        该方法会先创建 PCA 坐标表、PC loadings 表和 PCA 统计表，然后调用
-        ``fit_transform`` 完成 IncrementalPCA 的训练和全量细胞投影。运行结束后，
-        结果写入 Atlas 数据库。
+        This method first creates the PCA coordinate table, PC loadings table,
+        and PCA statistics table, then calls ``fit_transform`` to complete
+        IncrementalPCA training and full-cell projection. After the run ends, the
+        results are written to the Atlas database.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求已经完成过滤索引构建，并能够通过
-            ``atlas.get_minibatch_dense`` 读取表达矩阵 minibatch。
+            Atlas object. Filtering index construction must have already been
+            completed, and expression matrix minibatches must be readable through
+            ``atlas.get_minibatch_dense``.
 
         Returns
         -------
         None
-            PCA 坐标、loadings 和方差解释比例直接写入 Atlas 数据库表。
+            PCA coordinates, loadings, and variance explanation ratios are
+            written directly to Atlas database tables.
 
         Examples
         --------
-        通过公共 API 运行 PCA::
+        Run PCA through the public API::
 
             atlas.build_read_index(use_hvg=True)
             sap.tl.pca(atlas, n_components=50)
         """
 
-        # 建表；建表维度必须和本次 PCA 输出维度 self.n_components 对齐
+        # Create tables; the table dimensions must align with self.n_components for this PCA output
         self._create_pca_table(
             atlas,
             n_components=self.n_components
         )
 
-        # varm_PCs 表维度必须和 self.components_.T 的列数一致
+        # The dimensions of the varm_PCs table must match the number of columns in self.components_.T
         self._create_pcs_table(
             atlas,
             n_components=self.n_components
@@ -612,15 +684,15 @@ class StreamingPCA:
 
         self._create_pca_stats_table(atlas)
 
-        # 运行PCA
+        # Run PCA
         self.fit_transform(atlas)
 
-        # 对比信息
+        # Comparison information
         components = self.load_components(atlas)
         if np.array_equal(components, self.components_):
-            logger.info(" components 提取正确")
+            logger.info(" components were extracted correctly")
         if np.allclose(components, self.components_):
-            logger.info(" components 提取正确")
+            logger.info(" components were extracted correctly")
 
 
 def pca(
@@ -629,48 +701,57 @@ def pca(
         fit_batches: int = 1000,
         batch_size: int = 2048,
 ):
-    """基于 Atlas 表达矩阵计算 PCA。
+    """Calculate PCA based on the Atlas expression matrix.
 
-    该函数是 scAtlasPy 的 PCA 公共入口。它从 Atlas 的 dense minibatch 读取接口
-    中分批读取表达矩阵，使用 sklearn ``IncrementalPCA`` 流式拟合主成分，
-    再把全量细胞投影到 PCA 空间，并将结果写入数据库。
+    This function is the public PCA entry point of scAtlasPy. It reads the
+    expression matrix in batches from Atlas's dense minibatch reading interface,
+    uses sklearn ``IncrementalPCA`` to fit principal components in a streaming
+    manner, then projects all cells into PCA space and writes the results to the
+    database.
 
-    运行完成后会生成或覆盖以下结果表：
+    After running, the following result tables are generated or overwritten:
 
-    - ``obsm_X_pca``：细胞 PCA 坐标；
-    - ``varm_PCs``：基因 PCA loadings；
-    - ``uns_pca_stats``：PCA 方差和方差解释比例。
+    - ``obsm_X_pca``: cell PCA coordinates;
+    - ``varm_PCs``: gene PCA loadings;
+    - ``uns_pca_stats``: PCA variance and variance explanation ratios.
 
-    该流程类似 Scanpy 的 ``sc.tl.pca``，但为了适配大规模数据，训练和投影都
-    通过 minibatch 分块完成。
+    This workflow is similar to Scanpy's ``sc.tl.pca``, but to support large-scale
+    data, both training and projection are completed through minibatch chunks.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且已经通过
-        ``atlas.build_read_index(...)`` 构建好可用于 dense minibatch 读取的索引。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and an index available for dense minibatch reading must already have been
+        built through ``atlas.build_read_index(...)``.
+
     n_components
-        需要计算并保存的 PCA 主成分数量。默认值为 ``50``。
+        Number of PCA principal components to calculate and save.
+        The default value is ``50``.
+
     fit_batches
-        用于拟合 ``IncrementalPCA`` 的 minibatch 数量上限。较大的值通常更稳定，
-        但训练时间更长。
+        Maximum number of minibatches used to fit ``IncrementalPCA``.
+        A larger value is usually more stable, but training takes longer.
+
     batch_size
-        每个 minibatch 包含的细胞数量。较大的值通常吞吐更高，但会增加单批
-        内存占用。
+        Number of cells contained in each minibatch. A larger value usually gives
+        higher throughput, but increases per-batch memory usage.
 
     Returns
     -------
     None
-        PCA 结果直接写入 Atlas 数据库，不返回对象。
+        PCA results are written directly to the Atlas database. No object is
+        returned.
 
     Notes
     -----
-    如果希望 PCA 只基于高变基因或过滤后的基因运行，需要在调用本函数前通过
-    ``atlas.build_read_index`` 构建对应读取索引。
+    If you want PCA to run only on highly variable genes or filtered genes, you
+    need to build the corresponding read index through ``atlas.build_read_index``
+    before calling this function.
 
     Examples
     --------
-    在默认读取索引上计算 50 个主成分::
+    Calculate 50 principal components on the default read index::
 
         atlas.build_read_index(use_hvg=True)
         sap.tl.pca(atlas, n_components=50)

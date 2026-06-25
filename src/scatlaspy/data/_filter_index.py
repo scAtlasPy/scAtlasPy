@@ -10,34 +10,38 @@ logger.addHandler(logging.NullHandler())
 
 class FilterIndexBuilder:
 
-    """过滤索引构建器。
+    """Filter index builder.
 
-    该类根据 ``obs`` 和 ``var`` 中的过滤标记，重建连续的细胞索引和基因索引，
-    并生成后续小批量读取所需的过滤后 HyS 表。它是 ``Atlas.build_read_index``
-    的底层实现，普通用户通常不需要直接实例化。
+    This class rebuilds continuous cell indices and gene indices based on the filtering
+    markers in ``obs`` and ``var``, and generates the filtered HyS tables required for
+    subsequent minibatch reading. It is the underlying implementation of
+    ``Atlas.build_read_index``. Regular users usually do not need to instantiate it directly.
 
     Parameters
     ----------
     file_path
-        Atlas ``.sasql`` 数据库文件路径。
+        Path to the Atlas ``.sasql`` database file.
     cell_condition
-        ``obs`` 中用于筛选细胞的布尔列名或条件；为 ``None`` 时保留全部细胞。
+        Boolean column name or condition in ``obs`` used to filter cells;
+        if ``None``, all cells are retained.
     gene_condition
-        ``var`` 中用于筛选基因的布尔列名或条件；为 ``None`` 时保留全部基因。
+        Boolean column name or condition in ``var`` used to filter genes;
+        if ``None``, all genes are retained.
     use_hvg
-        是否在基因过滤条件之外继续限制为高变基因。
+        Whether to additionally restrict genes to highly variable genes.
     use_data
-    从 ``X_HyS_data`` 表中读取的表达值列名，例如 ``"data_count"``、
-    ``"data_normalize"``、``"data_log1p"`` 或 ``"data_scale"``。
+        Expression value column name read from the ``X_HyS_data`` table, such as
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, or ``"data_scale"``.
 
     Notes
     -----
-    推荐使用 ``atlas.build_read_index(...)`` 调用该流程。直接使用本类时，需要确保
-    Atlas 数据库已经包含 ``obs``、``var`` 和 ``X_HyS_data`` 等基础表。
+    It is recommended to call this workflow through ``atlas.build_read_index(...)``.
+    When using this class directly, make sure the Atlas database already contains
+    basic tables such as ``obs``, ``var``, and ``X_HyS_data``.
 
     Examples
     --------
-    通过 Atlas 对象构建过滤索引::
+    Build a filtered index through an Atlas object::
 
         sap.pp.filter_cells(atlas, min_genes=200)
         sap.pp.filter_genes(atlas, min_cells=3)
@@ -48,7 +52,8 @@ class FilterIndexBuilder:
             use_data="data_log1p",
         )
 
-    直接使用底层构建器，适合调试或扩展内部流程::
+    Use the underlying builder directly, which is suitable for debugging or extending
+    internal workflows::
 
         builder = FilterIndexBuilder(
             atlas.file_path,
@@ -58,56 +63,62 @@ class FilterIndexBuilder:
             use_data="data_count",
         )
         builder.run()"""
+
     def __init__(
         self,
         file_path: PathLike[str] | str,
-        *, # file_path 可以按位置传， * 后面的参数必须写参数名
+        *, # file_path can be passed positionally; parameters after * must be passed by name
         cell_condition: str | None = None,
         gene_condition: str | None = None,
         use_hvg: bool = True,
         use_data: str = "data_log1p",
     ):
-        """初始化过滤索引构建器。
+        """Initialize the filter index builder.
 
-        该构造函数保存 Atlas 数据库路径、过滤条件、HVG 设置和表达值列名，
-        并建立一个新的 DuckDB 连接。实际的索引重建流程由 ``run()`` 执行。
+        This constructor saves the Atlas database path, filtering conditions, HVG setting,
+        and expression value column name, and creates a new DuckDB connection.
+        The actual index rebuilding workflow is executed by ``run()``.
 
         Parameters
         ----------
         file_path
-            Atlas ``.sasql`` 数据库文件路径。
+            Path to the Atlas ``.sasql`` database file.
 
         cell_condition
-            ``obs`` 表中用于筛选细胞的布尔列名。为 ``None`` 时保留全部细胞。
+            Boolean column name in the ``obs`` table used to filter cells.
+            If ``None``, all cells are retained.
 
         gene_condition
-            ``var`` 表中用于筛选基因的布尔列名。为 ``None`` 时保留全部基因。
+            Boolean column name in the ``var`` table used to filter genes.
+            If ``None``, all genes are retained.
 
         use_hvg
-            是否在基因过滤条件之外继续叠加 ``highly_variable_genes=TRUE``。
+            Whether to additionally apply ``highly_variable_genes=TRUE`` on top of
+            the gene filtering condition.
 
         use_data
-            从 ``X_HyS_data`` 表中读取的表达值列名。
+            Expression value column name read from the ``X_HyS_data`` table.
 
         Notes
         -----
-        该类通常由 ``Atlas.build_read_index(...)`` 调用，普通用户一般不需要直接实例化。
+        This class is usually called by ``Atlas.build_read_index(...)``.
+        Regular users generally do not need to instantiate it directly.
         """
 
-        self.file_path = fspath(file_path)       # sasql 文件绝对路径
-        self.producer_num = 10           # minibatch 流式读取的线程数
-        self.fetch_size = 500_0000    # minibatch 流式读取的size
-        self.chunk_size = 1000_0000    # 每次处理的数据量
+        self.file_path = fspath(file_path)       # Absolute path to the sasql file
+        self.producer_num = 10           # Number of threads for minibatch streaming reading
+        self.fetch_size = 500_0000    # Fetch size for minibatch streaming reading
+        self.chunk_size = 1000_0000    # Amount of data processed each time
 
-        self.cell_condition = cell_condition # cell 过滤条件 filter_cells ：表示只选 filter_cells = True 的cell
-        self.gene_condition = gene_condition # gene 过滤条件 filter_genes ：表示只选 filter_genes = True 的gene
-        self.use_hvg = use_hvg               # 是否 使用hvg基因
-        self.use_data = use_data       # 选择什么数据进行处理
+        self.cell_condition = cell_condition # Cell filtering condition filter_cells: indicates only cells with filter_cells = True are selected
+        self.gene_condition = gene_condition # Gene filtering condition filter_genes: indicates only genes with filter_genes = True are selected
+        self.use_hvg = use_hvg               # Whether to use HVG genes
+        self.use_data = use_data       # Select which data column to process
 
         self.conn = duckdb.connect(file_path)
         self.conn.execute("PRAGMA preserve_insertion_order=true")
-        #  false 不强制保留插入时的输入顺序，允许 DuckDB 为了性能重新组织执行和写入顺序。
-        #  true  尽量保留 INSERT / COPY / SELECT 写入时的输入顺序
+        # false does not force preservation of the input insertion order, allowing DuckDB to reorganize execution and write order for performance.
+        # true tries to preserve the input order when writing through INSERT / COPY / SELECT
 
 
     def _has_column(self, table_name: str, column_name: str) -> bool:
@@ -136,35 +147,35 @@ class FilterIndexBuilder:
             return
 
         raise ValueError(
-            f"{table_name} 表中缺少过滤字段 {column_name}，"
-            f"请先运行 sap.pp.{function_name}(...) 生成该字段，"
+            f"The {table_name} table is missing the filtering field {column_name}. "
+            f"Please run sap.pp.{function_name}(...) first to generate this field, "
         )
 
 
-    # 外部入口
+    # External entry point
     def run(self):
 
-        """执行完整的读取索引构建流程。
+        """Execute the complete read index construction workflow.
 
-        该方法依次完成：
+        This method performs the following steps in order:
 
-        1. 重建 ``obs.filter_cell_id``
-        2. 重建 ``var.filter_gene_id``
-        3. 构建过滤后的表达矩阵表 ``X_HyS_data_filtered``
-        4. 构建过滤后的 indptr 表 ``X_HyS_indptr_filtered``
+        1. Rebuild ``obs.filter_cell_id``
+        2. Rebuild ``var.filter_gene_id``
+        3. Build the filtered expression matrix table ``X_HyS_data_filtered``
+        4. Build the filtered indptr table ``X_HyS_indptr_filtered``
 
-        执行完成后会关闭当前 DuckDB 连接。
+        After execution, the current DuckDB connection is closed.
 
         Returns
         -------
         None
-            结果直接写入 Atlas ``.sasql`` 数据库。
+            The result is written directly into the Atlas ``.sasql`` database.
         """
 
         start = datetime.now()
 
-        self._rebuild_obs_filter_id()   # 重排 obs： 过滤细胞 + 生成 filter_cell_id
-        self._rebuild_var_filter_id()   # 重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
+        self._rebuild_obs_filter_id()   # Reorder obs: filter cells + generate filter_cell_id
+        self._rebuild_var_filter_id()   # Reorder var: filter genes + select HVG genes + generate filter_gene_id
 
         self._rebuild_x_hys_data_filtered()
 
@@ -172,32 +183,33 @@ class FilterIndexBuilder:
 
         self.conn.close()
 
-        logger.info(f"build_read_index Done, 耗时: {(datetime.now() - start).total_seconds():.2f} 秒")
+        logger.info(f"build_read_index Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds")
 
 
-    # 1.重排 obs： 过滤细胞 + 生成 filter_cell_id
+    # 1. Reorder obs: filter cells + generate filter_cell_id
     def _rebuild_obs_filter_id(self):
 
-        """重建 ``obs.filter_cell_id``。
+        """Rebuild ``obs.filter_cell_id``.
 
-        该方法先删除旧的 ``filter_cell_id`` 列，再重新创建该列。
-        随后根据 ``cell_condition`` 选择需要保留的细胞，并按 ``atlas_cell_id``
-        顺序生成从 0 开始的连续 ``filter_cell_id``。
+        This method first drops the old ``filter_cell_id`` column and then recreates it.
+        It then selects the cells to retain according to ``cell_condition`` and generates
+        continuous ``filter_cell_id`` values starting from 0 in ``atlas_cell_id`` order.
 
-        未通过过滤条件的细胞，其 ``filter_cell_id`` 保持为 ``NULL``。
+        Cells that do not pass the filtering condition keep ``filter_cell_id`` as ``NULL``.
 
         Returns
         -------
         None
-            结果直接写入 ``obs`` 表。
+            The result is written directly into the ``obs`` table.
 
         Raises
         ------
         ValueError
-            当 ``cell_condition`` 指向的过滤列不存在时，返回中文报错。
+            Raised when the filtering column pointed to by ``cell_condition`` does not exist.
         """
 
-        # 如果使用过滤列，先确认 obs 中已经有对应字段，避免 DuckDB 返回不易理解的英文错误
+        # If a filtering column is used, first confirm that the corresponding field exists in obs,
+        # to avoid less understandable DuckDB errors
         if self.cell_condition is not None and self.cell_condition.isidentifier():
             self._require_filter_column(
                 table_name="obs",
@@ -205,21 +217,21 @@ class FilterIndexBuilder:
                 function_name="filter_cells",
             )
 
-        # 删除旧列
+        # Drop the old column
         self.conn.execute(""" ALTER TABLE obs DROP COLUMN IF EXISTS filter_cell_id """)
 
-        # 新增列
+        # Add a new column
         self.conn.execute(""" ALTER TABLE obs ADD COLUMN filter_cell_id INTEGER """)
 
-        # cell_condition=None 表示不过滤细胞；否则按指定布尔字段筛选细胞
+        # cell_condition=None means no cell filtering; otherwise filter cells by the specified boolean field
         if self.cell_condition is None:
             where_sql = "TRUE"
-            logger.info("  -> 不使用 cell 过滤，保留全部 cells")
+            logger.info("  -> Cell filtering is not used; keeping all cells")
         else:
             where_sql = f"{self.cell_condition}=TRUE"
-            logger.info(f"  -> 使用 cell 条件: {where_sql} 过滤")
+            logger.info(f"  -> Using cell condition for filtering: {where_sql}")
 
-        # 只对满足条件的 cell 重新编号
+        # Renumber only the cells that satisfy the condition
         self.conn.execute(f"""
         UPDATE obs
         SET filter_cell_id = sub.new_id
@@ -234,34 +246,36 @@ class FilterIndexBuilder:
         """)
 
 
-    # 2.重排 var： 过滤基因 + 选择HVG基因 + 生成 filter_gene_id
+    # 2. Reorder var: filter genes + select HVG genes + generate filter_gene_id
     def _rebuild_var_filter_id(self):
 
-        """重建 ``var.filter_gene_id``。
+        """Rebuild ``var.filter_gene_id``.
 
-        该方法先删除旧的 ``filter_gene_id`` 列，再重新创建该列。
-        随后根据 ``gene_condition`` 和 ``use_hvg`` 选择需要保留的基因，
-        并按 ``atlas_gene_id`` 顺序生成从 0 开始的连续 ``filter_gene_id``。
+        This method first drops the old ``filter_gene_id`` column and then recreates it.
+        It then selects the genes to retain according to ``gene_condition`` and ``use_hvg``,
+        and generates continuous ``filter_gene_id`` values starting from 0 in
+        ``atlas_gene_id`` order.
 
-        当 ``use_hvg=True`` 时，基因需要同时满足：
+        When ``use_hvg=True``, genes need to satisfy both:
 
         - ``gene_condition=TRUE``
         - ``highly_variable_genes=TRUE``
 
-        未通过过滤条件的基因，其 ``filter_gene_id`` 保持为 ``NULL``。
+        Genes that do not pass the filtering condition keep ``filter_gene_id`` as ``NULL``.
 
         Returns
         -------
         None
-            结果直接写入 ``var`` 表。
+            The result is written directly into the ``var`` table.
 
         Raises
         ------
         ValueError
-            当 ``gene_condition`` 指向的过滤列不存在时，返回中文报错。
+            Raised when the filtering column pointed to by ``gene_condition`` does not exist.
         """
 
-        # 如果使用过滤列，先确认 var 中已经有对应字段，避免 DuckDB 返回不易理解的英文错误
+        # If a filtering column is used, first confirm that the corresponding field exists in var,
+        # to avoid less understandable DuckDB errors
         if self.gene_condition is not None and self.gene_condition.isidentifier():
             self._require_filter_column(
                 table_name="var",
@@ -269,30 +283,30 @@ class FilterIndexBuilder:
                 function_name="filter_genes",
             )
 
-        # 删除旧列 + 新增列
+        # Drop the old column + add a new column
         self.conn.execute(""" ALTER TABLE var DROP COLUMN IF EXISTS filter_gene_id """)
 
         self.conn.execute(""" ALTER TABLE var ADD COLUMN filter_gene_id USMALLINT """)
 
-        # gene_condition=None 表示不过滤基因；否则按指定布尔字段筛选基因
+        # gene_condition=None means no gene filtering; otherwise filter genes by the specified boolean field
         conditions = []
 
         if self.gene_condition is not None:
             conditions.append(f"({self.gene_condition})=TRUE")
-            logger.info(f"  -> 使用 gene 条件: {self.gene_condition}=TRUE")
+            logger.info(f"  -> Using gene condition: {self.gene_condition}=TRUE")
         else:
-            logger.info("  -> 不使用 gene 过滤条件")
+            logger.info("  -> No gene filtering condition is used")
 
-        # 如果启用 HVG，则叠加 highly_variable_genes
+        # If HVG is enabled, additionally apply highly_variable_genes
         if self.use_hvg:
             conditions.append("highly_variable_genes=TRUE")
-            logger.info("  -> 使用 HVG gene 子集")
+            logger.info("  -> Using the HVG gene subset")
         else:
-            logger.info("  -> 不使用 HVG 过滤，保留全部 genes")
+            logger.info("  -> HVG filtering is not used; keeping all genes")
 
         condition = " AND ".join(conditions) if conditions else "TRUE"
 
-        # 重排 gene_id
+        # Reorder gene_id
         self.conn.execute(f"""
         UPDATE var
         SET filter_gene_id = sub.new_id
@@ -307,28 +321,30 @@ class FilterIndexBuilder:
         """)
 
 
-    # 3.重建新表：X_HyS_data_filtered
+    # 3. Rebuild the new table: X_HyS_data_filtered
     def _rebuild_x_hys_data_filtered(self):
 
-        """构建过滤后的表达矩阵表 ``X_HyS_data_filtered``。
+        """Build the filtered expression matrix table ``X_HyS_data_filtered``.
 
-        该方法从原始 ``X_HyS_data`` 表中读取表达记录，并通过
-        ``obs.filter_cell_id`` 和 ``var.filter_gene_id`` 只保留通过过滤的细胞和基因。
+        This method reads expression records from the original ``X_HyS_data`` table and
+        keeps only the cells and genes that pass filtering through ``obs.filter_cell_id``
+        and ``var.filter_gene_id``.
 
-        输出表包含：
+        The output table contains:
 
-        - ``filter_cell_id``：过滤后的连续细胞索引
-        - ``filter_gene_id``：过滤后的连续基因索引
-        - ``data``：由 ``use_data`` 指定的表达值列
-        - ``tid``：用于后续 minibatch 流式读取的分片编号
+        - ``filter_cell_id``: continuous cell index after filtering
+        - ``filter_gene_id``: continuous gene index after filtering
+        - ``data``: expression value column specified by ``use_data``
+        - ``tid``: shard ID used for subsequent minibatch streaming reading
 
-        实现上会先创建 ``_obs_keep`` 和 ``_var_keep`` 临时映射表，
-        然后按 ``X_HyS_data.rowid`` 分块扫描和插入，避免一次性处理过大的表达矩阵。
+        In implementation, temporary mapping tables ``_obs_keep`` and ``_var_keep`` are
+        created first, and then ``X_HyS_data.rowid`` is scanned and inserted in chunks
+        to avoid processing an overly large expression matrix at once.
 
         Returns
         -------
         None
-            结果直接写入 ``X_HyS_data_filtered`` 表。
+            The result is written directly into the ``X_HyS_data_filtered`` table.
         """
 
         conn = self.conn
@@ -336,7 +352,7 @@ class FilterIndexBuilder:
         conn.execute("PRAGMA preserve_insertion_order = true")
         conn.execute("PRAGMA threads=10")
 
-        # 提前建 轻量映射表
+        # Create lightweight mapping tables in advance
         conn.execute("""
         CREATE OR REPLACE TEMP TABLE _obs_keep AS
         SELECT
@@ -355,14 +371,15 @@ class FilterIndexBuilder:
         WHERE filter_gene_id IS NOT NULL
         """)
 
-        # ANALYZE 是给 DuckDB 优化器看的统计信息，不改变数据、不建索引，只是可能让后面的 JOIN 更快更稳
+        # ANALYZE provides statistics for the DuckDB optimizer. It does not change data or create indexes,
+        # but may make subsequent JOIN operations faster and more stable
         try:
             conn.execute("ANALYZE _obs_keep")
             conn.execute("ANALYZE _var_keep")
         except Exception:
             pass
 
-        # 创建目标表
+        # Create the target table
         conn.execute("DROP TABLE IF EXISTS X_HyS_data_filtered")
 
         conn.execute("""
@@ -374,21 +391,21 @@ class FilterIndexBuilder:
         )
         """)
 
-        # 获取 rowid 范围
+        # Get the rowid range
         min_id, max_id = conn.execute("""
             SELECT MIN(rowid), MAX(rowid)
             FROM X_HyS_data
         """).fetchone()
 
         if min_id is None:
-            logger.debug(" X_HyS_data 是空表，跳过")
+            logger.debug(" X_HyS_data is an empty table, skipping")
             return
 
         total_rows = max_id - min_id + 1
         current = min_id
 
-        logger.debug(f"rowid 范围: {min_id:,} ~ {max_id:,}")
-        logger.debug(f"总扫描行数: {total_rows:,}")
+        logger.debug(f"rowid range: {min_id:,} ~ {max_id:,}")
+        logger.debug(f"total rows to scan: {total_rows:,}")
         logger.debug(f"chunk_size = {self.chunk_size:,}")
 
         pbar = progress(
@@ -398,7 +415,7 @@ class FilterIndexBuilder:
             ncols=130
         )
 
-        # 分块顺序插入
+        # Insert sequentially in chunks
         while current <= max_id:
             end = min(current + self.chunk_size, max_id + 1)
 
@@ -424,7 +441,7 @@ class FilterIndexBuilder:
 
         pbar.close()
 
-        # 计算 tid
+        # Calculate tid
         conn.execute(f"""
             UPDATE X_HyS_data_filtered
             SET tid = CAST((rowid // {self.fetch_size}) % {self.producer_num} AS TINYINT)
@@ -435,36 +452,39 @@ class FilterIndexBuilder:
             FROM X_HyS_data_filtered
         """).fetchone()[0]
 
-        logger.info(f" X_HyS_data_filtered 构建完成！nnz = {final_nnz:,}")
+        logger.info(f" X_HyS_data_filtered has been constructed successfully! nnz = {final_nnz:,}")
 
-        # 清理临时表
+        # Clean up temporary tables
         conn.execute("DROP TABLE IF EXISTS _obs_keep")
         conn.execute("DROP TABLE IF EXISTS _var_keep")
 
 
-    # 4.重建新表：X_HyS_indptr_filtered
+    # 4. Rebuild the new table: X_HyS_indptr_filtered
     def _rebuild_x_hys_indptr_filtered(self):
-        """构建过滤后的 CSR-like indptr 表 ``X_HyS_indptr_filtered``。
+        """Build the filtered CSR-like indptr table ``X_HyS_indptr_filtered``.
 
-        该方法统计 ``X_HyS_data_filtered`` 中每个 ``filter_cell_id`` 的非零元素数量，
-        并从 ``obs`` 表出发补齐所有保留下来的细胞。即使某些细胞没有任何非零表达值，
-        也会在 indptr 表中保留对应记录。
+        This method counts the number of nonzero elements for each ``filter_cell_id``
+        in ``X_HyS_data_filtered`` and completes all retained cells starting from
+        the ``obs`` table. Even if some cells have no nonzero expression values,
+        corresponding records are still kept in the indptr table.
 
-        最终生成的 ``indptr`` 表示每个细胞的累计结束位置，即 end pointer：
+        The final generated ``indptr`` represents the cumulative end position of each
+        cell, namely the end pointer:
 
-        - 第 0 个细胞的起始位置默认为 0
-        - 第 i 个细胞的结束位置为 ``indptr[i]``
-        - 第 i 个细胞的起始位置需要由前一个细胞的 ``indptr[i-1]`` 得到
+        - The start position of cell 0 is 0 by default
+        - The end position of cell i is ``indptr[i]``
+        - The start position of cell i should be obtained from the previous cell's
+          ``indptr[i-1]``
 
         Returns
         -------
         None
-            结果直接写入 ``X_HyS_indptr_filtered`` 表。
+            The result is written directly into the ``X_HyS_indptr_filtered`` table.
         """
 
         conn = self.conn
 
-        # 1. 先统计 X 表中每个 cell 的非零元素数量
+        # 1. First count the number of nonzero elements for each cell in the X table
         conn.execute("""
         CREATE OR REPLACE TEMP TABLE cell_nnz_raw AS
         SELECT
@@ -474,8 +494,8 @@ class FilterIndexBuilder:
         GROUP BY filter_cell_id
         """)
 
-        # 2. 从 obs 出发，补齐所有保留下来的 cell
-        #    如果某个 cell 在 X 里不存在，说明它没有非零值，cnt 补 0
+        # 2. Start from obs and complete all retained cells
+        #    If a cell does not exist in X, it means it has no nonzero values, so cnt is filled with 0
         conn.execute("""
         CREATE OR REPLACE TEMP TABLE cell_nnz AS
         SELECT
@@ -488,7 +508,7 @@ class FilterIndexBuilder:
         ORDER BY obs.filter_cell_id
         """)
 
-        # 3. 生成 prefix sum ；这里 indptr 存的是每个 cell 的结束位置 end_ptr
+        # 3. Generate prefix sum; here indptr stores the end position end_ptr of each cell
         conn.execute("""
         CREATE OR REPLACE TABLE X_HyS_indptr_filtered AS
         SELECT
@@ -500,4 +520,3 @@ class FilterIndexBuilder:
 
         conn.execute("DROP TABLE IF EXISTS cell_nnz_raw")
         conn.execute("DROP TABLE IF EXISTS cell_nnz")
-

@@ -9,12 +9,12 @@ from typing import Any
 
 
 # =====================================================
-# 统一离散分类颜色池
+# Unified discrete categorical color palette pool
 # -----------------------------------------------------
-# 用于 obs 分类变量上色，例如：
-# kmeans / cell_type / batch / organ 等
+# Used for coloring obs categorical variables, such as:
+# kmeans / cell_type / batch / organ, etc.
 #
-# 这些 palette 拼起来大约有 100 个离散颜色：
+# These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
 # + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
 # =====================================================
@@ -30,15 +30,15 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 # =====================================================
-# 通用分类标签自然排序
+# General natural sorting for categorical labels
 # -----------------------------------------------------
-# 解决：
+# Solves:
 # embryo_1, embryo_10, embryo_11, embryo_2
 #
-# 排成：
+# Sorted as:
 # embryo_1, embryo_2, embryo_3, ..., embryo_10
 #
-# 同样适用于：
+# Also works for:
 # cluster_1 / cluster_10
 # batch2 / batch10
 # group_3_day_2 / group_3_day_12
@@ -64,51 +64,74 @@ def pca(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制细胞 PCA embedding 散点图。
+    """Plot a cell PCA embedding scatter plot.
 
-    该函数从 ``obsm_X_pca`` 表读取细胞 PCA 坐标，使用 ``x_pc`` 和 ``y_pc`` 指定的两个
-    主成分绘制二维散点图。
-    ``color`` 可以是 ``obs`` 表中的细胞级字段，也可以是``var.atlas_gene_name`` 中的基因名：
-    前者按 obs 列上色，后者会从 ``X_HyS_data`` 的``use_data`` 字段读取该基因表达量并按连续色条上色。
+    This function reads cell PCA coordinates from the ``obsm_X_pca`` table and uses
+    the two principal components specified by ``x_pc`` and ``y_pc`` to draw a
+    two-dimensional scatter plot.
+    ``color`` can be either a cell-level field in the ``obs`` table or a gene name
+    in ``var.atlas_gene_name``. The former colors points by an obs column, while the
+    latter reads the expression value of that gene from the ``use_data`` field in
+    ``X_HyS_data`` and colors points with a continuous colorbar.
 
-    该图类似 Scanpy 的 ``sc.pl.pca``，常用于查看 PCA 降维结果、批次效应、QC 指标或
-    marker gene 在 PCA 空间中的分布。
+    This plot is similar to Scanpy ``sc.pl.pca`` and is commonly used to inspect PCA
+    dimensionality reduction results, batch effects, QC metrics, or the distribution
+    of marker genes in PCA space.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成
-        ``obsm_X_pca`` 表；如需坐标轴标注方差解释率，还需要 ``uns_pca_stats`` 表。
+        Atlas object. It must already be connected to a DuckDB database and PCA must
+        have been run to generate the ``obsm_X_pca`` table. If variance explained
+        ratios need to be annotated on the axes, the ``uns_pca_stats`` table is also
+        required.
+
     color
-        用于给散点上色的名称。可以是 ``obs`` 表列名，也可以是基因名。
-        为 ``None`` 时使用统一灰色。
+        Name used to color the scatter points. It can be an ``obs`` table column name
+        or a gene name. If ``None``, a uniform gray color is used.
+
     x_pc
-        横轴使用的 PCA 主成分编号，从 0 开始。
+        PCA component index used for the x-axis, starting from 0.
+
     y_pc
-        纵轴使用的 PCA 主成分编号，从 0 开始。
+        PCA component index used for the y-axis, starting from 0.
+
     annotate_var_explained
-        是否在坐标轴上标注每个主成分解释的方差比例。
+        Whether to annotate the variance explained ratio of each principal component on the axes.
+
     sample_n
-        绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells to sample for plotting. If ``None``, all cells are used.
+
     use_data
-        当 ``color`` 是基因名时，从 ``X_HyS_data`` 读取的表达值字段，例如
-        ``"data_log1p"``、``"data_count"`` 或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data`` when ``color`` is a gene name,
+        such as ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
+
     figsize
-        Matplotlib 图像大小。
+        Matplotlib figure size.
+
     point_size
-        散点大小。
+        Scatter point size.
+
     alpha
-        图形元素透明度。
+        Transparency of graphical elements.
+
     cmap
-        连续变量或基因表达量使用的 Matplotlib colormap 名称。
+        Matplotlib colormap name used for continuous variables or gene expression.
+
     palette
-        离散 ``obs`` 分类变量使用的 Matplotlib palette 名称或 palette 名称序列。
+        Matplotlib palette name or sequence of palette names used for discrete
+        ``obs`` categorical variables.
+
     legend_loc
-        离散分类图例位置。默认值为``"right_margin"`` 会把图例放到右侧留白处；
+        Legend location for discrete categories. The default value ``"right_margin"``
+        places the legend in the right-side margin.
+
     frameon
-        是否显示坐标轴边框。
+        Whether to show the axis frame.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
@@ -116,12 +139,12 @@ def pca(
 
     Examples
     --------
-    绘制 PC1 和 PC2，并按 K-means cluster 着色::
+    Plot PC1 and PC2 colored by K-means clusters::
 
         sap.tl.pca(atlas)
         sap.pl.pca(atlas, color="kmeans")
 
-    绘制 PC2 和 PC3，并按 QC 指标连续上色::
+    Plot PC2 and PC3 colored by a QC metric continuously::
 
         sap.pl.pca(
             atlas,
@@ -131,7 +154,7 @@ def pca(
             sample_n=200000,
         )
 
-    按基因表达量上色::
+    Color by gene expression::
 
         sap.pl.pca(atlas, color="MS4A1", use_data="data_log1p")"""
 
@@ -139,31 +162,33 @@ def pca(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
-    # DuckDB 字段安全引用
+    # Safe quoting for DuckDB fields
     def _q(name: str) -> str:
-        """为 DuckDB SQL 标识符添加双引号引用。
+        """Add double-quote quoting for DuckDB SQL identifiers.
 
-        该内部 helper 用于安全拼接列名，避免 ``obs`` 字段、表达字段或其他 SQL 标识符
-        与关键字冲突。函数只处理标识符引用，不处理 SQL 值的转义。
+        This internal helper is used to safely concatenate column names, avoiding
+        conflicts between ``obs`` fields, expression fields, or other SQL identifiers
+        and SQL keywords. The function only handles identifier quoting and does not
+        escape SQL values.
 
         Parameters
         ----------
         name
-            需要作为 SQL 标识符使用的列名。
+            Column name to use as a SQL identifier.
 
         Returns
         -------
         str
-            已加双引号并转义内部双引号的 SQL 标识符。
+            SQL identifier with double quotes added and internal double quotes escaped.
         """
         return '"' + name.replace('"', '""') + '"'
 
     pcx = f"pc{x_pc}"
     pcy = f"pc{y_pc}"
 
-    # 检查 PCA 表和 PC 列是否存在
+    # Check whether the PCA table and PC columns exist
     pca_table_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -171,7 +196,7 @@ def pca(
     """).fetchone()[0]
 
     if pca_table_exists == 0:
-        raise ValueError("数据库中不存在 obsm_X_pca，请先运行 PCA")
+        raise ValueError("obsm_X_pca does not exist in the database. Please run PCA first")
 
     obsm_cols = [
         r[1]
@@ -180,11 +205,11 @@ def pca(
 
     if pcx not in obsm_cols or pcy not in obsm_cols:
         raise ValueError(
-            f"obsm_X_pca 中不存在列: {pcx} 或 {pcy}\n"
-            f"请确认 PCA 是否已经计算，或者 x_pc / y_pc 是否超出范围。"
+            f"The column does not exist in obsm_X_pca: {pcx} or {pcy}\n"
+            f"Please confirm whether PCA has been computed, or whether x_pc / y_pc is out of range."
         )
 
-    # 读取 explained variance ratio
+    # Read explained variance ratio
     evr_map = {}
 
     pca_stats_exists = conn.execute("""
@@ -212,7 +237,7 @@ def pca(
         if y_pc in evr_map:
             y_label += f" ({evr_map[y_pc] * 100:.2f}%)"
 
-    # SQL 先抽样 PCA 坐标
+    # First sample PCA coordinates by SQL
     if sample_n is None:
         pca_query = f"""
             SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
@@ -228,7 +253,7 @@ def pca(
     pca_df = conn.execute(pca_query).fetchdf()
 
     if pca_df.shape[0] == 0:
-        raise ValueError("PCA 抽样结果为空，无法绘图")
+        raise ValueError("The PCA sampling result is empty, unable to plot")
 
     plot_df = pca_df.copy()
 
@@ -236,7 +261,7 @@ def pca(
 
     if color is not None:
 
-        # 获取 obs / var / X_HyS_data 字段
+        # Get fields from obs / var / X_HyS_data
         obs_cols = [
             r[1]
             for r in conn.execute("PRAGMA table_info(obs)").fetchall()
@@ -252,7 +277,7 @@ def pca(
             for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()
         ]
 
-        # color 是 obs 表列名
+        # color is a column name in the obs table
         if color in obs_cols:
 
             conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
@@ -276,7 +301,7 @@ def pca(
 
             color_kind = "obs"
 
-        # color 是 var.atlas_gene_name 基因名
+        # color is a gene name in var.atlas_gene_name
         else:
             gene_row = conn.execute("""
                 SELECT atlas_gene_id
@@ -289,7 +314,7 @@ def pca(
 
                 if use_data not in x_cols:
                     raise ValueError(
-                        f"X_HyS_data 中不存在表达字段: {use_data}"
+                        f"The expression field does not exist in X_HyS_data: {use_data}"
                     )
 
                 gene_id = int(gene_row[0])
@@ -318,29 +343,29 @@ def pca(
 
                 color_kind = "gene"
 
-            # 如果是 var 普通列，明确报错
+            # If it is a normal var column, raise an explicit error
             elif color in var_cols:
                 raise ValueError(
-                    f"color='{color}' 是 var 表中的列。\n"
-                    f"但是 PCA 图的每个点是 cell，var 列是 gene-level 信息，"
-                    f"不能直接用于 cell PCA 上色。\n"
-                    f"如果想按基因表达上色，请传入 var.atlas_gene_name 中的基因名。"
+                    f"color='{color}' is a column in the var table.\n"
+                    f"However, each point in a PCA plot is a cell, while a var column is gene-level information, "
+                    f"so it cannot be directly used to color cell PCA points.\n"
+                    f"If you want to color by gene expression, please pass a gene name from var.atlas_gene_name."
                 )
 
             else:
                 raise ValueError(
-                    f"找不到 color='{color}'。\n"
-                    f"它既不是 obs 表列名，也不是 var.atlas_gene_name 中的基因名。"
+                    f"Cannot find color='{color}'.\n"
+                    f"It is neither an obs table column name nor a gene name in var.atlas_gene_name."
                 )
 
-    # 绘图
+    # Plot
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
     x = plot_df[pcx].to_numpy()
     y = plot_df[pcy].to_numpy()
 
-    # 情况 A：不指定 color，灰色散点
+    # Case A: no color specified, gray scatter points
     if color is None:
         ax.scatter(
             x,
@@ -352,7 +377,7 @@ def pca(
             rasterized=True,
         )
 
-    # 情况 B：基因表达，连续色条
+    # Case B: gene expression, continuous colorbar
     elif color_kind == "gene":
         sc_plot = ax.scatter(
             x,
@@ -369,17 +394,17 @@ def pca(
         cbar.set_label(color, fontsize=12)
         cbar.ax.tick_params(labelsize=10)
 
-    # 情况 C：obs 列
-    #       数值型 → 连续色条
-    #       分类/字符串/布尔 → 离散 legend
+    # Case C: obs column
+    #       numeric type -> continuous colorbar
+    #       categorical / string / bool -> discrete legend
     elif color_kind == "obs":
         values = plot_df["color_value"]
 
-        # bool 不按连续变量处理，而是按分类变量处理
+        # bool is not treated as a continuous variable, but as a categorical variable
         is_bool = pd.api.types.is_bool_dtype(values)
         is_numeric = pd.api.types.is_numeric_dtype(values)
 
-        # C1. obs 数值列：连续色条
+        # C1. numeric obs column: continuous colorbar
         if is_numeric and not is_bool:
             sc_plot = ax.scatter(
                 x,
@@ -396,16 +421,16 @@ def pca(
             cbar.set_label(color, fontsize=12)
             cbar.ax.tick_params(labelsize=10)
 
-        # C2. obs 分类列：离散颜色 + legend
+        # C2. categorical obs column: discrete colors + legend
         else:
             values = values.astype("object").where(values.notna(), "NA")
             values_str = values.astype(str)
 
-            # 默认使用自然排序
+            # Use natural sorting by default
             # embryo_1, embryo_2, ..., embryo_10
             cats = _sort_categories_natural(pd.unique(values_str))
 
-            # 显式指定 category 顺序
+            # Explicitly specify category order
             values = pd.Series(
                 pd.Categorical(
                     values_str,
@@ -421,7 +446,7 @@ def pca(
                 palette=palette,
             )
 
-            # 按类别分组绘图，Scanpy 风格 legend
+            # Plot by category group, Scanpy-style legend
             for cat in cats:
                 mask = values == cat
 
@@ -437,13 +462,13 @@ def pca(
                 )
 
             if legend_loc == "right_margin":
-                # 根据类别数量自动调整 legend 列数和字体
+                # Automatically adjust legend columns and font size according to the number of categories
                 n_cat = len(cats)
                 max_label_len = max([len(str(c)) for c in cats], default=0)
 
                 if n_cat <= 14:
-                    legend_ncol = 1  # 列数
-                    legend_fontsize = 20  # 字体大小
+                    legend_ncol = 1  # Number of columns
+                    legend_fontsize = 20  # Font size
                 elif n_cat <= 30:
                     legend_ncol = 2
                     legend_fontsize = 20
@@ -454,7 +479,7 @@ def pca(
                     legend_ncol = 5
                     legend_fontsize = 12
 
-                if max_label_len >= 18: # 图例中所有类别名称里，最长那个名称的字符长度
+                if max_label_len >= 18: # Character length of the longest category name in the legend
                     legend_fontsize = min(legend_fontsize, 15)
                 if max_label_len >= 28:
                     legend_fontsize = min(legend_fontsize, 15)
@@ -464,7 +489,7 @@ def pca(
                     bbox_to_anchor=(1.03, 0.5),
                     loc="center left",
                     frameon=False,
-                    markerscale=8.0, # 图例圆点
+                    markerscale=8.0, # Legend dots
                     fontsize=legend_fontsize,
                     borderaxespad=0.0,
                     ncol=legend_ncol,
@@ -474,16 +499,16 @@ def pca(
                     handlelength=0.8,
                 )
 
-                # 强制放大 legend 里的 scatter 圆点，更稳定
+                # Force enlarge scatter dots in the legend, making it more stable
                 for h in leg.legend_handles:
                     if hasattr(h, "set_sizes"):
                         h.set_sizes([100])
 
-                # 不让 tight_layout / layout 系统为了 legend 压缩主图
+                # Prevent tight_layout / layout systems from compressing the main plot for the legend
                 leg.set_in_layout(False)
 
             elif legend_loc == "on_data":
-                # 简单 on_data：把类别名放到该类 PCA 坐标中位数附近
+                # Simple on_data: place category names near the median PCA coordinates of each category
                 for cat in cats:
                     mask = values == cat
                     if mask.sum() == 0:
@@ -505,10 +530,10 @@ def pca(
                 pass
             else:
                 raise ValueError(
-                    "legend_loc 只支持 'right_margin'、'on_data' 或 None"
+                    "legend_loc only supports 'right_margin', 'on_data', or None"
                 )
 
-    # Scanpy 风格美化
+    # Scanpy-style refinement
     ax.set_xlabel(x_label, fontsize=14)
     ax.set_ylabel(y_label, fontsize=14)
 
@@ -517,7 +542,7 @@ def pca(
     else:
         ax.set_title(str(color), fontsize=14, pad=8)
 
-    # 更接近 Scanpy，默认不画网格
+    # Closer to Scanpy: do not draw grid by default
     ax.grid(False)
 
     if frameon:
@@ -538,12 +563,12 @@ def pca(
 
     ax.set_aspect("auto")
 
-    # 控制 PCA 主图框的高宽比例，避免变成图2那种瘦高图
+    # Control the height-width ratio of the PCA main plot frame to avoid becoming a narrow tall plot like Figure 2
     ax.set_box_aspect(0.75)
 
-    # 不要让 tight_layout 把主图挤窄
+    # Do not let tight_layout squeeze the main plot narrow
     if legend_loc == "right_margin":
-        # 手动给右侧 legend 留空间，主图不会被压成竖条
+        # Manually leave space for the right-side legend so the main plot will not be compressed into a vertical strip
         fig.subplots_adjust(
             left=0.06,
             right=0.38,
@@ -568,33 +593,38 @@ def pca_variance_ratio(
         figsize: tuple[float, float] | None = (7, 6),
         save_path: PathLike[str] | str | None = None,
 ):
-    """绘制 PCA 各主成分的方差解释比例。
+    """Plot the variance explained ratio of each PCA component.
 
-    该函数从 ``uns_pca_stats`` 表读取每个主成分的 ``variance_ratio``，并以类似
-    Scanpy ``sc.pl.pca_variance_ratio`` 的风格绘图：
-    横轴为主成分 ranking，纵轴为方差解释比例，每个 PC 用竖排文本标注。
+    This function reads ``variance_ratio`` for each principal component from the
+    ``uns_pca_stats`` table and plots it in a style similar to Scanpy
+    ``sc.pl.pca_variance_ratio``:
+    the x-axis is the principal component ranking, the y-axis is the variance
+    explained ratio, and each PC is labeled with vertical text.
 
-    该图用于观察前几个主成分分别解释了多少变异，辅助判断 PCA 维度是否足够、
-    是否存在单个主成分解释比例异常偏高等情况。
+    This plot is used to observe how much variation the first few principal components
+    explain, helping determine whether the PCA dimensionality is sufficient or whether
+    a single principal component explains an abnormally high proportion of variance.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成``uns_pca_stats`` 表。
+        Atlas object. It must already be connected to a DuckDB database, and PCA must
+        have been run to generate the ``uns_pca_stats`` table.
 
     n_pcs
-        展示前多少个 PCA 主成分。
+        Number of leading PCA components to display.
 
     log
-        是否使用 y 轴对数坐标。
+        Whether to use a logarithmic y-axis.
 
     show
-        是否显示图像。为 ``None`` 时默认显示。
+        Whether to display the figure. If ``None``, the figure is displayed by default.
 
     figsize
-        Matplotlib 图像大小。
+        Matplotlib figure size.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
@@ -602,7 +632,7 @@ def pca_variance_ratio(
 
     Examples
     --------
-    查看前 30 个主成分的方差解释比例::
+    View the variance explained ratios of the first 30 principal components::
 
         sap.tl.pca(atlas)
         sap.pl.pca_variance_ratio(atlas, n_pcs=30)
@@ -612,9 +642,9 @@ def pca_variance_ratio(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
-    # 1. 读取 PCA 方差解释率
+    # 1. Read PCA variance explained ratios
     df = conn.execute(f"""
         SELECT pc_index, variance_ratio
         FROM uns_pca_stats
@@ -623,10 +653,10 @@ def pca_variance_ratio(
     """).fetchdf()
 
     if df.empty:
-        raise ValueError("uns_pca_stats 为空，请先运行 PCA 后再绘图。")
+        raise ValueError("uns_pca_stats is empty. Please run PCA before plotting.")
 
-    # 2. 准备数据
-    # Scanpy 风格：x 轴是 ranking，从 0 开始
+    # 2. Prepare data
+    # Scanpy style: the x-axis is ranking, starting from 0
     x = np.arange(df.shape[0])
     y = df["variance_ratio"].to_numpy(dtype=float)
 
@@ -635,10 +665,10 @@ def pca_variance_ratio(
         for pc_index in df["pc_index"].to_numpy()
     ]
 
-    # 3. 创建图像
+    # 3. Create figure
     fig, ax = plt.subplots(figsize=figsize)
 
-    # 4. 用文字标注每个 PC，而不是画折线
+    # 4. Label each PC with text instead of drawing a line
     for xi, yi, lab in zip(x, y, pc_labels):
         ax.text(
             xi,
@@ -651,21 +681,21 @@ def pca_variance_ratio(
             clip_on=False,
         )
 
-    # 5. 坐标轴样式，尽量接近 Scanpy
+    # 5. Axis style, as close to Scanpy as possible
     ax.set_title("variance ratio", fontsize=18, pad=8)
     ax.set_xlabel("ranking", fontsize=18)
     ax.set_ylabel("")
 
-    # x 轴显示 ranking
+    # Show ranking on the x-axis
     ax.set_xlim(-0.8, len(x) - 0.2)
 
-    # 尽量让右侧有 20 这个刻度，接近 Scanpy 示例
+    # Try to include tick 20 on the right side, close to the Scanpy example
     if len(x) <= 20:
         ax.set_xticks(np.arange(0, len(x) + 1, 5))
     else:
         ax.set_xticks(np.arange(0, len(x), 5))
 
-    # y 轴留一点上方空间，避免 PC1 标签被裁掉
+    # Leave some top space on the y-axis to avoid clipping the PC1 label
     y_max = float(np.nanmax(y))
     y_min = float(np.nanmin(y))
 
@@ -683,7 +713,7 @@ def pca_variance_ratio(
             y_max * 1.20,
         )
 
-    # 网格和边框：Scanpy 图是有网格和完整边框的
+    # Grid and border: Scanpy plots have a grid and a full border
     ax.grid(True, color="#cccccc", linewidth=0.8, alpha=0.9)
 
     for spine in ax.spines.values():
@@ -699,11 +729,11 @@ def pca_variance_ratio(
 
     fig.tight_layout()
 
-    # 6. 保存图像
+    # 6. Save figure
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
-    # 7. 显示或关闭
+    # 7. Show or close
     if show is None:
         show = True
 
@@ -722,27 +752,40 @@ def pca_variance_ratio_cumsum(
         figsize: tuple[float, float] | None=(16, 8),
         save_path: PathLike[str] | str | None = None,
 ):
-    """绘制 PCA 累积方差解释比例。
+    """Plot the cumulative PCA variance explained ratio.
 
-    该函数从 ``uns_pca_stats`` 表读取每个主成分的 ``variance_ratio``，计算累积和后绘制折线图。
-    横轴为主成分编号，纵轴为累计解释比例。
+    This function reads ``variance_ratio`` for each principal component from the
+    ``uns_pca_stats`` table, computes the cumulative sum, and then draws a line plot.
+    The x-axis is the principal component number, and the y-axis is the cumulative
+    explained variance ratio.
 
-    该图用于判断保留多少个 PCA 维度可以覆盖主要变异，例如查看前 30、50 或 80 个 PC的累计解释比例是否达到预期。
+    This plot is used to determine how many PCA dimensions should be retained to cover
+    the major variation, for example checking whether the cumulative explained ratio
+    of the first 30, 50, or 80 PCs reaches the expected level.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成``uns_pca_stats`` 表。
+        Atlas object. It must already be connected to a DuckDB database, and PCA must
+        have been run to generate the ``uns_pca_stats`` table.
+
     n_pcs
-        展示的 PCA 主成分数量。
+        Number of PCA components to display.
+
     log
-        是否使用 y 轴对数坐标。累计解释比例通常不需要对数坐标，保留该参数用于接口统一。
+        Whether to use a logarithmic y-axis. The cumulative explained ratio usually
+        does not need a logarithmic axis; this parameter is kept for interface consistency.
+
     show
-        是否立即显示图形。为 ``None`` 时默认显示。
+        Whether to display the figure immediately. If ``None``, the figure is displayed
+        by default.
+
     figsize
-        Matplotlib 图像大小。
+        Matplotlib figure size.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
@@ -750,11 +793,11 @@ def pca_variance_ratio_cumsum(
 
     Examples
     --------
-    查看前 50 个主成分的累积解释比例::
+    View the cumulative explained ratio of the first 50 principal components::
 
         sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=50)
 
-    保存累计解释比例图::
+    Save the cumulative explained ratio plot::
 
         sap.pl.pca_variance_ratio_cumsum(
             atlas,
@@ -763,10 +806,10 @@ def pca_variance_ratio_cumsum(
             show=False,
         )"""
 
-    # 1. 获取数据库连接
+    # 1. Get database connection
     conn = atlas.connection
 
-    # 2. 从 uns_pca_stats 表中读取 PCA 方差解释率
+    # 2. Read PCA variance explained ratios from the uns_pca_stats table
     df = conn.execute(f"""
         SELECT pc_index, variance_ratio
         FROM uns_pca_stats
@@ -774,22 +817,22 @@ def pca_variance_ratio_cumsum(
         LIMIT {int(n_pcs)}
     """).fetchdf()
 
-    # 如果表中没有数据，说明还没有运行 PCA，或者 PCA 结果没有写入数据库
+    # If there is no data in the table, PCA has not been run yet, or PCA results have not been written to the database
     if df.empty:
-        raise ValueError("uns_pca_stats 为空，请先运行 PCA 后再绘图。")
+        raise ValueError("uns_pca_stats is empty. Please run PCA before plotting.")
 
-    # 3. 准备绘图数据
-    # 数据库中的 pc_index 通常从 0 开始；
-    # Scanpy 风格绘图中通常显示为 PC1, PC2, PC3...
+    # 3. Prepare plotting data
+    # pc_index in the database usually starts from 0;
+    # in Scanpy-style plots, it is usually displayed as PC1, PC2, PC3...
     x = df["pc_index"].to_numpy() + 1
 
-    # 每个 PC 的方差解释率
+    # Variance explained ratio of each PC
     y = df["variance_ratio"].to_numpy()
 
-    # 累计方差解释率
+    # Cumulative variance explained ratio
     y_cum = np.cumsum(y)
 
-    # 4. 创建图像对象
+    # 4. Create figure object
     fig, ax = plt.subplots(figsize=figsize)
 
     ax.plot(x, y_cum, marker="o")
@@ -798,18 +841,18 @@ def pca_variance_ratio_cumsum(
     ax.set_ylabel("Cumulative explained variance ratio")
     ax.set_title("Cumulative PCA variance ratio")
 
-    # 一般累计解释率不需要 log，但保留这个参数以统一接口
+    # The cumulative explained ratio generally does not need log, but this parameter is kept for interface consistency
     if log:
         ax.set_yscale("log")
 
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
 
-    # 5. 保存图像
+    # 5. Save figure
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
-    # 6. 显示或关闭图像
+    # 6. Show or close figure
     if show is None:
         show = True
 
@@ -822,7 +865,7 @@ def pca_variance_ratio_cumsum(
     return None
 
 
-# 画 PCA loadings
+# Plot PCA loadings
 def pca_loadings(
         atlas: Atlas,
         components: int | tuple[int, ...] | list[int] = (1, 2),
@@ -832,53 +875,59 @@ def pca_loadings(
         show: bool | None = None,
         save_path: PathLike[str] | str | None = None,
 ):
-    """绘制 PCA loadings 图。
+    """Plot PCA loadings.
 
-    该函数从 ``varm_PCs`` 表读取每个基因在指定主成分上的 loading，并为每个 PC
-    绘制贡献最大的基因。``include_lowest=True`` 时会同时展示 loading 最小的一端，
-    用于观察正负两个方向分别由哪些基因驱动。
+    This function reads each gene's loading on the specified principal components
+    from the ``varm_PCs`` table and plots the genes with the largest contributions
+    for each PC. When ``include_lowest=True``, the lowest-loading side is also shown,
+    which helps identify which genes drive the positive and negative directions.
 
-    该图类似 ``scanpy.pl.pca_loadings``，常用于解释 PCA 轴的生物学含义，判断某个
-    主成分是否由特定 marker、线粒体基因、核糖体基因或批次相关基因主导。
+    This plot is similar to ``scanpy.pl.pca_loadings`` and is commonly used to
+    interpret the biological meaning of PCA axes, such as whether a principal component
+    is dominated by specific markers, mitochondrial genes, ribosomal genes, or
+    batch-related genes.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成 ``varm_PCs``
-        表；如果 ``var`` 表中有 ``atlas_gene_name``，图中会优先显示基因名。
+        Atlas object. It must already be connected to a DuckDB database, and PCA must
+        have been run to generate the ``varm_PCs`` table. If the ``var`` table contains
+        ``atlas_gene_name``, gene names are preferentially displayed in the plot.
 
     components
-        需要展示的主成分编号。注意这里和 Scanpy 一样，从 1 开始。
-        例如 ``components=(1, 2)`` 表示 PC1 和 PC2。
+        Principal component numbers to display. Note that, as in Scanpy, this is
+        1-based. For example, ``components=(1, 2)`` means PC1 and PC2.
 
     n_genes
-        每侧展示的基因数量。
-        当 ``include_lowest=True`` 时，每个 PC 会展示 top n_genes 和 bottom n_genes。
+        Number of genes to display on each side.
+        When ``include_lowest=True``, each PC displays the top n_genes and bottom n_genes.
 
     include_lowest
-        是否同时展示 loading 最小的基因。
+        Whether to also show genes with the lowest loadings.
 
     figsize
-        图像大小。为 ``None`` 时自动根据 components 数量设置。
+        Figure size. If ``None``, it is automatically set according to the number of
+        components.
 
     show
-        是否显示图像。默认为 True。
+        Whether to display the figure. Defaults to True.
 
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
     None
-        函数直接绘图或保存图片，不返回 figure。
+        The function directly plots or saves the figure and does not return a figure.
 
     Examples
     --------
-    绘制 PC1 和 PC2 两端贡献最高的基因::
+    Plot genes with the highest contributions on both sides of PC1 and PC2::
 
         sap.pl.pca_loadings(atlas, components=(1, 2), n_genes=10)
 
-    只展示 PC3 loading 最大的一端，并保存图片::
+    Display only the highest-loading side of PC3 and save the figure::
 
         sap.pl.pca_loadings(
             atlas,
@@ -893,25 +942,25 @@ def pca_loadings(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
     def _q(name: str) -> str:
-        """为 DuckDB SQL 标识符添加双引号引用。
+        """Add double-quote quoting for DuckDB SQL identifiers.
 
         Parameters
         ----------
         name
-            需要作为 SQL 标识符使用的列名。
+            Column name to use as a SQL identifier.
 
         Returns
         -------
         str
-            已加双引号并转义内部双引号的 SQL 标识符。
+            SQL identifier with double quotes added and internal double quotes escaped.
         """
         return '"' + name.replace('"', '""') + '"'
 
     # -------------------------------------------------
-    # 1. 处理 components
+    # 1. Process components
     # -------------------------------------------------
     if isinstance(components, int):
         components = (components,)
@@ -919,14 +968,14 @@ def pca_loadings(
         components = tuple(components)
 
     if len(components) == 0:
-        raise ValueError("components 不能为空")
+        raise ValueError("components cannot be empty")
 
     for comp in components:
         if comp < 1:
-            raise ValueError("components 使用 Scanpy 风格编号，必须从 1 开始，例如 PC1 写 1")
+            raise ValueError("components uses Scanpy-style numbering and must start from 1; for example, use 1 for PC1")
 
     # -------------------------------------------------
-    # 2. 检查 varm_PCs 和 var 表
+    # 2. Check varm_PCs and var tables
     # -------------------------------------------------
     varm_exists = conn.execute("""
         SELECT COUNT(*)
@@ -935,7 +984,7 @@ def pca_loadings(
     """).fetchone()[0]
 
     if varm_exists == 0:
-        raise ValueError("数据库中不存在 varm_PCs 表，请先运行 PCA")
+        raise ValueError("varm_PCs does not exist in the database. Please run PCA first")
 
     var_exists = conn.execute("""
         SELECT COUNT(*)
@@ -944,7 +993,7 @@ def pca_loadings(
     """).fetchone()[0]
 
     if var_exists == 0:
-        raise ValueError("数据库中不存在 var 表")
+        raise ValueError("The var table does not exist in the database")
 
     varm_cols = [
         r[1]
@@ -957,34 +1006,34 @@ def pca_loadings(
     ]
 
     if "atlas_gene_id" not in varm_cols:
-        raise ValueError("varm_PCs 表中不存在 atlas_gene_id 字段")
+        raise ValueError("The atlas_gene_id field does not exist in the varm_PCs table")
 
     if "atlas_gene_id" not in var_cols:
-        raise ValueError("var 表中不存在 atlas_gene_id 字段")
+        raise ValueError("The atlas_gene_id field does not exist in the var table")
 
     gene_name_col = "atlas_gene_name" if "atlas_gene_name" in var_cols else "atlas_gene_id"
 
     # -------------------------------------------------
-    # 3. 自动匹配 PC 列名
+    # 3. Automatically match PC column names
     # -------------------------------------------------
     def _find_pc_col(comp: int) -> str:
-        """在 ``varm_PCs`` 中查找指定主成分对应的 loading 列。
+        """Find the loading column corresponding to the specified principal component in ``varm_PCs``.
 
-        ``components`` 使用 Scanpy 风格的 1-based 编号，而数据库列可能使用
-        ``pc0``、``PC1``、``1`` 等不同命名方式。该 helper 会尝试一组常见列名并返回
-        第一个匹配项。
+        ``components`` uses Scanpy-style 1-based numbering, while database columns may
+        use different naming styles such as ``pc0``, ``PC1``, or ``1``. This helper
+        tries a set of common column names and returns the first match.
 
         Parameters
         ----------
         comp
-            1-based 主成分编号，例如 ``1`` 表示 PC1。
+            1-based principal component number, for example ``1`` means PC1.
 
         Returns
         -------
         str
-            ``varm_PCs`` 中实际存在的 loading 列名。
+            Loading column name that actually exists in ``varm_PCs``.
         """
-        # comp 是 1-based，pc_index 是 0-based
+        # comp is 1-based, while pc_index is 0-based
         pc_index = comp - 1
 
         candidates = [
@@ -1001,13 +1050,13 @@ def pca_loadings(
                 return c
 
         raise ValueError(
-            f"varm_PCs 中找不到 PC{comp} 对应的 loading 列。\n"
-            f"尝试过这些列名: {candidates}\n"
-            f"当前 varm_PCs 字段为: {varm_cols}"
+            f"Cannot find the loading column corresponding to PC{comp} in varm_PCs.\n"
+            f"Tried these column names: {candidates}\n"
+            f"Current fields in varm_PCs are: {varm_cols}"
         )
 
     # -------------------------------------------------
-    # 4. 创建图像
+    # 4. Create figure
     # -------------------------------------------------
     n_components = len(components)
 
@@ -1024,7 +1073,7 @@ def pca_loadings(
     axes = axes.ravel()
 
     # -------------------------------------------------
-    # 5. 每个 PC 单独画一个 panel
+    # 5. Draw a separate panel for each PC
     # -------------------------------------------------
     for ax, comp in zip(axes, components):
 
@@ -1041,12 +1090,12 @@ def pca_loadings(
         """).fetchdf()
 
         if df.empty:
-            raise ValueError(f"PC{comp} 的 loading 数据为空")
+            raise ValueError(f"The loading data for PC{comp} is empty")
 
         df["gene_name"] = df["gene_name"].astype(str)
         df["loading"] = df["loading"].astype(float)
 
-        # loading 最大的基因
+        # Genes with the largest loadings
         top_df = (
             df.sort_values("loading", ascending=False)
               .head(int(n_genes))
@@ -1054,14 +1103,14 @@ def pca_loadings(
         )
 
         if include_lowest:
-            # loading 最小的基因
+            # Genes with the smallest loadings
             low_df = (
                 df.sort_values("loading", ascending=True)
                   .head(int(n_genes))
                   .copy()
             )
 
-            # 为了显示上更像 Scanpy，负向基因从接近 0 到最负排列
+            # To make the display more Scanpy-like, sort negative-direction genes from near 0 to most negative
             low_df = low_df.sort_values("loading", ascending=False).copy()
 
             plot_df = pd.concat([top_df, low_df], ignore_index=True)
@@ -1069,7 +1118,7 @@ def pca_loadings(
             x_top = np.arange(len(top_df))
             x_low = np.arange(len(top_df) + 1, len(top_df) + 1 + len(low_df))
 
-            # 正向基因
+            # Positive-direction genes
             for xi, row in zip(x_top, top_df.itertuples(index=False)):
                 ax.text(
                     xi,
@@ -1082,7 +1131,7 @@ def pca_loadings(
                     clip_on=False,
                 )
 
-            # 中间省略号
+            # Middle ellipsis
             y_mid = 0.0
             if len(plot_df) > 0:
                 y_mid = float((plot_df["loading"].max() + plot_df["loading"].min()) / 2)
@@ -1096,7 +1145,7 @@ def pca_loadings(
                 fontsize=10,
             )
 
-            # 负向基因
+            # Negative-direction genes
             for xi, row in zip(x_low, low_df.itertuples(index=False)):
                 ax.text(
                     xi,
@@ -1130,7 +1179,7 @@ def pca_loadings(
                 )
 
         # -------------------------------------------------
-        # 6. Scanpy-like 样式
+        # 6. Scanpy-like style
         # -------------------------------------------------
         ax.set_title(f"PC{comp}", fontsize=18, pad=8)
         ax.set_xlabel("ranking", fontsize=16)
@@ -1177,13 +1226,13 @@ def pca_loadings(
     fig.tight_layout()
 
     # -------------------------------------------------
-    # 7. 保存图像
+    # 7. Save figure
     # -------------------------------------------------
     if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
     # -------------------------------------------------
-    # 8. 显示或关闭
+    # 8. Show or close
     # -------------------------------------------------
     if show is None:
         show = True
@@ -1195,30 +1244,32 @@ def pca_loadings(
 
 
 def _natural_sort_key(value: Any):
-    """生成分类标签的自然排序键。
+    """Generate a natural sorting key for categorical labels.
 
-    该内部 helper 用于让离散分类图例按更符合阅读习惯的顺序排列，避免
-    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
-    的标签会被放到最后。
+    This internal helper is used to arrange discrete category legends in a more
+    readable order, avoiding cases where ``cluster_10`` appears before ``cluster_2``.
+    Labels that look like missing values, such as empty strings, ``NA``, and ``nan``,
+    are placed at the end.
 
     Parameters
     ----------
     value
-        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+        Categorical label to sort. It can be a string, number, or any object that
+        can be converted to a string.
 
     Returns
     -------
     tuple
-        可传给 ``sorted(..., key=...)`` 的排序键。
+        Sorting key that can be passed to ``sorted(..., key=...)``.
 
     Examples
     --------
-    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    ``embryo_1 < embryo_2 < embryo_10`` and ``cluster_1 < cluster_2 < cluster_11``.
     """
 
     s = str(value).strip()
 
-    # 缺失值标签放最后
+    # Put missing-value labels at the end
     if s.casefold() in _MISSING_CATEGORY_LABELS:
         return (1, ())
 
@@ -1238,62 +1289,66 @@ def _natural_sort_key(value: Any):
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:
-    """对分类标签去重并执行自然排序。
+    """Deduplicate categorical labels and perform natural sorting.
 
-    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供 PCA
-    离散上色图例和类别绘图顺序使用。
+    This internal helper first converts labels to strings and then sorts them using
+    ``_natural_sort_key``. It is used for PCA discrete coloring legends and category
+    plotting order.
 
     Parameters
     ----------
     labels
-        分类标签序列。
+        Sequence of categorical labels.
 
     Returns
     -------
     list[str]
-        去重后的自然排序标签列表。
+        Deduplicated list of naturally sorted labels.
     """
 
     labels = [str(x) for x in list(labels)]
 
-    # 去重，避免重复 category
+    # Deduplicate to avoid repeated categories
     labels = list(dict.fromkeys(labels))
 
     return sorted(labels, key=_natural_sort_key)
 
 
 def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """为离散分类标签构建颜色映射。
+    """Build a color mapping for discrete categorical labels.
 
-    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
-    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+    This internal helper takes colors from one or more Matplotlib discrete palettes
+    according to the order of ``labels``. When the number of categories exceeds the
+    default color pool, ``hsv`` is used to provide additional colors, ensuring that
+    every category has a corresponding color.
 
     Parameters
     ----------
     labels
-        已排序的分类标签列表。
+        Sorted list of categorical labels.
 
     palette
-        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
-        ``DEFAULT_DISCRETE_PALETTES``。
+        Matplotlib colormap name, sequence of colormap names, or ``None``.
+        If ``None``, ``DEFAULT_DISCRETE_PALETTES`` is used.
 
     Returns
     -------
     dict
-        ``{label: color}`` 形式的字典，可直接传给 Matplotlib scatter/legend。
+        Dictionary in the form ``{label: color}``, which can be directly passed to
+        Matplotlib scatter/legend.
     """
 
     labels = list(labels)
 
-    #  默认使用大颜色池
+    # Use the large color pool by default
     if palette is None:
         palette_names = DEFAULT_DISCRETE_PALETTES
 
-    # 兼容原来的 palette="tab20" 写法
+    # Compatible with the original palette="tab20" usage
     elif isinstance(palette, str):
         palette_names = (palette,)
 
-    # 支持 palette=["tab20", "tab20b", ...]
+    # Support palette=["tab20", "tab20b", ...]
     else:
         palette_names = tuple(palette)
 
@@ -1302,11 +1357,11 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     for cmap_name in palette_names:
         cmap_obj = plt.get_cmap(cmap_name)
 
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        # ListedColormap, such as tab20 / Set3, usually has .colors
         if hasattr(cmap_obj, "colors"):
             palette_colors.extend(list(cmap_obj.colors))
 
-        # 兜底：如果是连续 colormap，就均匀取色
+        # Fallback: if it is a continuous colormap, sample colors evenly
         else:
             n = getattr(cmap_obj, "N", 256)
             palette_colors.extend([
@@ -1314,7 +1369,7 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
                 for i in range(n)
             ])
 
-    # 如果类别数超过颜色池，继续用 hsv 补足
+    # If the number of categories exceeds the color pool, continue filling with hsv
     if len(palette_colors) < len(labels):
         extra_n = len(labels) - len(palette_colors)
         hsv = plt.get_cmap("hsv")

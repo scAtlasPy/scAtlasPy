@@ -8,13 +8,13 @@ from anndata import AnnData
 from datetime import datetime
 from os import PathLike, fspath
 from typing import TYPE_CHECKING
-if TYPE_CHECKING:  # TYPE_CHECKING = 给 IDE / 类型检查器看的导入;  正常运行时 = 不执行这个导入，避免循环导入
+if TYPE_CHECKING:  # TYPE_CHECKING = imports for IDEs / type checkers; not executed at runtime to avoid circular imports
     from ..data import Atlas
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
-# 数据导出: 把数据直接变成文件
+
 def write_h5ad(
     atlas: Atlas,
     out_h5ad_path: PathLike[str] | str,
@@ -22,55 +22,64 @@ def write_h5ad(
     batch_cells: int = 1_000_000,
     use_data: str = "data_count",
 ):
-    """将 Atlas 数据库导出为 h5ad 文件。
+    """Export an Atlas database to an h5ad file.
 
-    该函数从 Atlas 的 DuckDB 数据库读取 ``obs``、``var``、稀疏表达矩阵、
-    ``obsm_*`` 和 ``varm_*`` 结果表，并写出为标准 AnnData ``.h5ad`` 文件，
-    方便继续在 Scanpy 或其他支持 AnnData 的工具中分析。
+    This function reads ``obs``, ``var``, the sparse expression matrix,
+    ``obsm_*`` result tables, and ``varm_*`` result tables from the Atlas DuckDB
+    database, and writes them out as a standard AnnData ``.h5ad`` file for
+    continued analysis in Scanpy or other tools that support AnnData.
 
-    表达矩阵会按照 Atlas 内部的 HyS 稀疏结构重新组装为 h5ad 中的 CSR
-    ``X``。其中 ``X.data`` 来自 ``X_HyS_data`` 表中由 ``use_data`` 指定的
-    字段，``X.indices`` 来自 ``atlas_gene_id``，``X.indptr`` 来自
-    ``X_HyS_indptr``。
+    The expression matrix is reassembled into the CSR ``X`` in h5ad according to
+    the internal Atlas HyS sparse structure. ``X.data`` comes from the field
+    specified by ``use_data`` in the ``X_HyS_data`` table, ``X.indices`` comes
+    from ``atlas_gene_id``, and ``X.indptr`` comes from ``X_HyS_indptr``.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``,
+        ``X_HyS_indptr``, and ``X_HyS_data`` tables.
     out_h5ad_path
-        输出 ``.h5ad`` 文件路径。
+        Output ``.h5ad`` file path.
     batch_cells
-        分批写出表达矩阵 ``data`` 和 ``indices`` 时每批处理的非零表达记录数量。
-        较大的值通常更快，但会增加单批内存占用。
+        Number of nonzero expression records processed per batch when writing
+        expression matrix ``data`` and ``indices``.
+        A larger value is usually faster, but increases per-batch memory usage.
     use_data
-        从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
-        也可以传入 ``"data_log1p"``、``"data_normalize"`` 等已经存在的字段。
+        Expression value field exported from the ``X_HyS_data`` table. The default
+        is ``"data_count"``.
+        Existing fields such as ``"data_log1p"`` and ``"data_normalize"`` can
+        also be used.
 
     Returns
     -------
     None
-        结果直接写入 ``out_h5ad_path`` 指定的 h5ad 文件，不返回对象。
+        The result is written directly to the h5ad file specified by
+        ``out_h5ad_path`` and no object is returned.
 
     Notes
     -----
-    ``obsm_*`` 表会导出到 h5ad 的 ``obsm``，表名中的 ``obsm_`` 前缀会被去掉；
-    ``varm_*`` 表会导出到 h5ad 的 ``varm``，表名中的 ``varm_`` 前缀会被去掉。
+    ``obsm_*`` tables are exported to h5ad ``obsm``. The ``obsm_`` prefix in the
+    table name is removed.
+    ``varm_*`` tables are exported to h5ad ``varm``. The ``varm_`` prefix in the
+    table name is removed.
 
-    导出前会检查 ``use_data`` 是否存在于 ``X_HyS_data`` 表中；不存在时会直接
-    抛出中文错误，避免导出空矩阵或错误字段。
+    Before export, the function checks whether ``use_data`` exists in the
+    ``X_HyS_data`` table. If it does not exist, an error is raised directly to
+    avoid exporting an empty matrix or an incorrect field.
 
     Examples
     --------
-    导出当前数据库::
+    Export the current database::
 
         atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
 
-    使用对象式 API 并降低单批内存占用::
+    Use the object-style API and reduce per-batch memory usage::
 
         atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
 
-    导出 log1p 表达矩阵::
+    Export the log1p expression matrix::
 
         atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
 
@@ -81,31 +90,32 @@ def write_h5ad(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
     if not isinstance(use_data, str):
-        raise TypeError("use_data 必须是 str")
+        raise TypeError("use_data must be str")
 
     if use_data == "":
-        raise ValueError("use_data 不能为空字符串")
+        raise ValueError("use_data cannot be an empty string")
 
-    # 安全引用 SQL 标识符
+    # Safely quote SQL identifiers
     def _q(name: str) -> str:
-        """为 DuckDB SQL 标识符添加安全引用。
+        """Add safe quoting for DuckDB SQL identifiers.
 
-        该内部 helper 用于引用动态字段名或表名，例如 ``use_data``、
-        ``obsm_*`` 和 ``varm_*`` 表。函数会转义名称中的双引号，并在外层补上
-        双引号，避免特殊字符或关键字导致 SQL 解析失败。
+        This internal helper is used to quote dynamic field names or table names,
+        such as ``use_data``, ``obsm_*``, and ``varm_*`` tables. The function escapes
+        double quotes in the name and wraps the result with double quotes to avoid
+        SQL parsing failures caused by special characters or keywords.
 
         Parameters
         ----------
         name
-            需要引用的 SQL 标识符。
+            SQL identifier to quote.
 
         Returns
         -------
         str
-            加双引号后的 SQL 标识符。
+            SQL identifier wrapped in double quotes.
         """
         return '"' + str(name).replace('"', '""') + '"'
 
@@ -120,11 +130,11 @@ def write_h5ad(
     ).fetchone()[0]
 
     if x_field_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
 
     use_data_sql = _q(use_data)
 
-    # 读取 obs / var
+    # Read obs / var
 
     obs = conn.execute("SELECT * FROM obs ORDER BY atlas_cell_id").df()
     var = conn.execute("SELECT * FROM var ORDER BY atlas_gene_id").df()
@@ -135,7 +145,7 @@ def write_h5ad(
     n_cells = obs.shape[0]
     n_genes = var.shape[0]
 
-    # 读取 CSR indptr
+    # Read CSR indptr
     indptr_df = conn.execute("""
         SELECT indptr
         FROM X_HyS_indptr
@@ -148,16 +158,16 @@ def write_h5ad(
 
     nnz = int(indptr[-1])
 
-    # 创建 h5ad 文件
+    # Create h5ad file
     with h5py.File(out_h5ad_path, "w") as f:
 
-        # ---------- 根节点属性 ----------
+        # ---------- Root node attributes ----------
         f.attrs["encoding-type"] = "anndata"
         f.attrs["encoding-version"] = "0.1.0"
 
         gX = f.create_group("X")
 
-        # AnnData CSR 必须写在 attrs，而不是 dataset
+        # AnnData CSR must be written in attrs, not as a dataset
         gX.attrs["encoding-type"] = "csr_matrix"
         gX.attrs["encoding-version"] = "0.1.0"
         gX.attrs["shape"] = (n_cells, n_genes)
@@ -254,7 +264,7 @@ def write_h5ad(
 
             if arr.shape[0] != n_cells:
                 raise ValueError(
-                    f"obsm[{key}] 行数错误: {arr.shape[0]} != n_cells {n_cells}"
+                    f"obsm[{key}] row count error: {arr.shape[0]} != n_cells {n_cells}"
                 )
 
             g_obsm.create_dataset(key, data=arr)
@@ -272,8 +282,8 @@ def write_h5ad(
 
             key = table_name.replace("varm_", "")
 
-            # AnnData 要求 varm[key] 的第一维必须等于 var 的行数。
-            # 读取 varm 表中除 atlas_gene_id 外的数值列
+            # AnnData requires the first dimension of varm[key] to equal the number of rows in var.
+            # Read numeric columns in the varm table except atlas_gene_id
             value_cols = [
                 row[0]
                 for row in conn.execute("""
@@ -303,58 +313,62 @@ def write_h5ad(
             """).df()
 
             # ============================================================
-            #   HVG 基因     : 原始 PCA loading
-            #   非 HVG 基因  : NaN
+            #   HVG genes      : original PCA loading
+            #   non-HVG genes  : NaN
             # ============================================================
             arr = df.to_numpy(dtype=np.float32)
 
             if arr.shape[0] != n_genes:
                 raise ValueError(
-                    f"varm[{key}] 行数错误: {arr.shape[0]} != n_genes {n_genes}"
+                    f"varm[{key}] row count error: {arr.shape[0]} != n_genes {n_genes}"
                 )
 
             g_varm.create_dataset(key, data=arr)
 
-    logger.info(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f" write_h5ad Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
-# 将 DuckDB 中的 obs 表导出为 pandas DataFrame
+# Export the obs table in DuckDB as a pandas DataFrame
 def get_obs_df(
     atlas: Atlas,
     columns: list[str] | str | None = None,
 ):
-    """读取 Atlas 数据库中的 obs 表。
+    """Read the obs table from the Atlas database.
 
-    该函数把 ``obs`` 表中的全部列或指定列读取为 pandas DataFrame，适合快速
-    检查细胞元数据、导出统计结果或与外部分析结果合并。
-    返回结果会以``atlas_cell_id`` 作为 pandas index，同时保留 ``atlas_cell_id`` 列本身。
+    This function reads all columns or selected columns from the ``obs`` table
+    into a pandas DataFrame. It is suitable for quickly checking cell metadata,
+    exporting statistical results, or merging with external analysis results.
+    The returned result uses ``atlas_cell_id`` as the pandas index while also
+    preserving the ``atlas_cell_id`` column itself.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在
-        ``obs`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain the ``obs`` table.
     columns
-        需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
-        为 ``None`` 时读取全部列。
+        Column names to read from ``obs``. This can be a single string, a list of
+        strings, or ``None``.
+        If ``None``, all columns are read.
 
     Returns
     -------
     pandas.DataFrame
-        ``obs`` 的查询结果。默认 index 为 ``atlas_cell_id``。
+        Query result from ``obs``. The default index is ``atlas_cell_id``.
 
     Notes
     -----
-    即使 ``columns`` 中没有显式包含 ``atlas_cell_id``，函数也会自动把
-    ``atlas_cell_id`` 放在第一列，用于设置 DataFrame index。
+    Even if ``atlas_cell_id`` is not explicitly included in ``columns``, the
+    function automatically places ``atlas_cell_id`` as the first column to set
+    the DataFrame index.
 
     Examples
     --------
-    读取全部 obs 信息::
+    Read all obs information::
 
         obs = atlas.get_obs_df()
 
-    只读取聚类和自动注释列::
+    Read only clustering and automatic annotation columns::
 
         obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
 
@@ -363,9 +377,9 @@ def get_obs_df(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
-    # 1. 检查 obs 表是否存在
+    # 1. Check whether the obs table exists
     obs_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -373,9 +387,9 @@ def get_obs_df(
     """).fetchone()[0]
 
     if obs_exists == 0:
-        raise ValueError("数据库中不存在 obs 表")
+        raise ValueError("The obs table does not exist in the database")
 
-    # 2. 获取 obs 所有字段
+    # 2. Get all fields in obs
     obs_columns = [
         row[0]
         for row in conn.execute("""
@@ -387,27 +401,27 @@ def get_obs_df(
     ]
 
     if "atlas_cell_id" not in obs_columns:
-        raise ValueError("obs 表中不存在 atlas_cell_id 字段，无法设置 pandas index")
+        raise ValueError("The atlas_cell_id field does not exist in the obs table, so the pandas index cannot be set")
 
-    # 3. 处理 columns
+    # 3. Process columns
     if columns is None:
         select_columns = obs_columns
     else:
         if isinstance(columns, str):
             columns = [columns]
 
-        # 检查字段是否存在
+        # Check whether fields exist
         missing = [c for c in columns if c not in obs_columns]
         if missing:
-            raise ValueError(f"obs 表中不存在这些字段: {missing}")
+            raise ValueError(f"These fields do not exist in the obs table: {missing}")
 
-        # atlas_cell_id 一定要有，并且放在第一列
+        # atlas_cell_id must be included and placed as the first column
         select_columns = ["atlas_cell_id"] + [
             c for c in columns
             if c != "atlas_cell_id"
         ]
 
-    # 4. 查询 obs
+    # 4. Query obs
     select_sql = ", ".join([f'"{c}"' for c in select_columns])
 
     sql = f"""
@@ -417,15 +431,15 @@ def get_obs_df(
 
     df = conn.execute(sql).df()
 
-    # 5. 默认 atlas_cell_id 作为 pandas index
+    # 5. Use atlas_cell_id as the pandas index by default
     df = df.set_index("atlas_cell_id", drop=False)
 
-    logger.info(f" get_obs_df Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    logger.info(f" get_obs_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df
 
 
-# 根据 atlas_cell_id list，从 DuckDB 中导出子集 AnnData 到内存
+# Export a subset AnnData from DuckDB to memory according to an atlas_cell_id list
 def get_anndata(
     atlas: Atlas,
     atlas_cell_ids: list[int] | np.ndarray | None,
@@ -433,53 +447,59 @@ def get_anndata(
     include_obsm: bool = True,
     include_varm: bool = True,
 ):
-    """从 Atlas 数据库构建 AnnData 对象。
+    """Construct an AnnData object from the Atlas database.
 
-    该函数根据用户提供的 ``atlas_cell_ids`` 从 Atlas 数据库中导出一个内存
-    AnnData 对象。函数会保留输入细胞 ID 的顺序，读取对应的 ``obs`` 子集、
-    全量 ``var``、指定表达字段组成的稀疏 CSR ``X``，并可选读取 ``obsm_*`` 和
-    ``varm_*`` 结果表。
+    This function exports an in-memory AnnData object from the Atlas database
+    according to the user-provided ``atlas_cell_ids``. It preserves the order of
+    the input cell IDs, reads the corresponding ``obs`` subset, the full ``var``,
+    a sparse CSR ``X`` composed from the specified expression field, and optionally
+    reads ``obsm_*`` and ``varm_*`` result tables.
 
-    该函数适合小规模抽样导出、局部 Scanpy 分析、模型检查或把 Atlas 中的一组
-    细胞临时转换回 AnnData。
+    This function is suitable for small-scale sampling export, local Scanpy analysis,
+    model checking, or temporarily converting a group of cells in Atlas back to AnnData.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
     atlas_cell_ids
-        需要导出的 Atlas 细胞 ID 列表。不能为空，且不能包含重复值。
+        List of Atlas cell IDs to export. It cannot be empty and cannot contain
+        duplicate values.
 
-        返回 AnnData 中细胞的顺序会与该列表顺序一致。
+        The order of cells in the returned AnnData object will be the same as
+        the order of this list.
     use_data
-        从 ``X_HyS_data`` 表读取的表达字段名。常用值包括 ``"data_count"``、
-        ``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
+        Expression field read from the ``X_HyS_data`` table. Common values include
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
     include_obsm
-        是否把 ``obsm_*`` 结果表写入返回的 AnnData。
+        Whether to write ``obsm_*`` result tables into the returned AnnData object.
     include_varm
-        是否把 ``varm_*`` 结果表写入返回的 AnnData。
+        Whether to write ``varm_*`` result tables into the returned AnnData object.
 
     Returns
     -------
     AnnData
-        从 Atlas 数据库构建的 AnnData 对象。
+        AnnData object constructed from the Atlas database.
 
     Notes
     -----
-    ``obsm_*`` 表会按所选细胞顺序左连接导出；某些细胞没有 embedding 时，对应
-    位置会写入 ``NaN``。``varm_*`` 表按全量基因顺序导出。
+    ``obsm_*`` tables are exported by left-joining according to the selected cell
+    order. If some cells do not have embeddings, the corresponding positions are
+    written as ``NaN``. ``varm_*`` tables are exported in full gene order.
 
-    该函数会创建临时表 ``_selected_cells``，用于保留用户传入的细胞顺序。
+    This function creates a temporary table ``_selected_cells`` to preserve the
+    order of user-provided cells.
 
     Examples
     --------
-    导出指定细胞::
+    Export specified cells::
 
         cell_ids = [0, 1, 2, 3]
         adata = atlas.get_anndata(cell_ids, use_data="data_log1p")
 
-    导出过滤后的前 5000 个细胞并包含 UMAP/PCA::
+    Export the first 5000 filtered cells and include UMAP/PCA::
 
         cell_ids = atlas.query(
             "SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000"
@@ -490,43 +510,43 @@ def get_anndata(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
 
-    # 0. 基本检查
+    # 0. Basic checks
     if atlas_cell_ids is None or len(atlas_cell_ids) == 0:
-        raise ValueError("atlas_cell_ids 不能为空")
+        raise ValueError("atlas_cell_ids cannot be empty")
 
     atlas_cell_ids = [int(x) for x in atlas_cell_ids]
 
     if len(atlas_cell_ids) != len(set(atlas_cell_ids)):
-        raise ValueError("atlas_cell_ids 中存在重复值，请先去重")
+        raise ValueError("Duplicate values exist in atlas_cell_ids. Please deduplicate them first")
 
-    # DuckDB 标识符安全引用
+    # Safe quoting for DuckDB identifiers
     def _q(name: str) -> str:
-        """为 SQL 标识符添加安全引用。
+        """Add safe quoting for SQL identifiers.
 
-        该内部 helper 用于在 ``get_anndata`` 中引用动态字段名或表名，例如
-        ``use_data``、``obsm_*`` 和 ``varm_*``。函数会转义名称中的双引号，并在
-        外层添加双引号。
+        This internal helper is used in ``get_anndata`` to quote dynamic field names
+        or table names, such as ``use_data``, ``obsm_*``, and ``varm_*``. The function
+        escapes double quotes in the name and adds double quotes around the outside.
 
         Parameters
         ----------
         name
-            需要引用的 SQL 标识符。
+            SQL identifier to quote.
 
         Returns
         -------
         quoted_name
-            加双引号后的 SQL 标识符。
+            SQL identifier wrapped in double quotes.
 
         Notes
         -----
-        该函数只用于 SQL 标识符，不用于普通字符串值。
+        This function is only used for SQL identifiers, not for regular string values.
         """
         return '"' + name.replace('"', '""') + '"'
 
-    # 检查 use_data 是否存在
+    # Check whether use_data exists
     x_field_exists = conn.execute(
         """
         SELECT COUNT(*)
@@ -538,9 +558,9 @@ def get_anndata(
     ).fetchone()[0]
 
     if x_field_exists == 0:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
 
-    # 1. 创建临时 selected cell 表，保留用户输入顺序
+    # 1. Create a temporary selected cell table to preserve the user input order
     selected_df = pd.DataFrame({
         "atlas_cell_id": atlas_cell_ids,
         "_cell_order": np.arange(len(atlas_cell_ids), dtype=np.int64),
@@ -558,7 +578,7 @@ def get_anndata(
     """)
     conn.unregister("_selected_cells_df")
 
-    # 2. 读取 obs 子集
+    # 2. Read obs subset
     obs = conn.execute("""
         SELECT o.*
         FROM obs AS o
@@ -571,12 +591,12 @@ def get_anndata(
         found = set(obs["atlas_cell_id"].astype(int).tolist())
         missing = [x for x in atlas_cell_ids if x not in found]
         raise ValueError(
-            f"有 {len(missing)} 个 atlas_cell_id 在 obs 中不存在，"
-            f"例如: {missing[:10]}"
+            f"{len(missing)} atlas_cell_id values do not exist in obs, "
+            f"for example: {missing[:10]}"
         )
 
     if "atlas_cell_name" not in obs.columns:
-        raise ValueError("obs 表中不存在 atlas_cell_name 字段，无法作为 AnnData obs index")
+        raise ValueError("The atlas_cell_name field does not exist in the obs table, so it cannot be used as the AnnData obs index")
 
     obs = obs.set_index("atlas_cell_name", drop=False)
     obs.index = obs.index.astype(str)
@@ -588,10 +608,10 @@ def get_anndata(
     """).df()
 
     if "atlas_gene_id" not in var.columns:
-        raise ValueError("var 表中不存在 atlas_gene_id 字段")
+        raise ValueError("The atlas_gene_id field does not exist in the var table")
 
     if "atlas_gene_name" not in var.columns:
-        raise ValueError("var 表中不存在 atlas_gene_name 字段，无法作为 AnnData var index")
+        raise ValueError("The atlas_gene_name field does not exist in the var table, so it cannot be used as the AnnData var index")
 
     var = var.set_index("atlas_gene_name", drop=False)
     var.index = var.index.astype(str)
@@ -599,7 +619,7 @@ def get_anndata(
     n_cells = obs.shape[0]
     n_genes = var.shape[0]
 
-    # 4. 读取 X 子集，并组装 CSR
+    # 4. Read X subset and assemble CSR
     x_sql = f"""
         SELECT
             s._cell_order AS row_id,
@@ -630,14 +650,14 @@ def get_anndata(
         X.sort_indices()
         nnz = X.nnz
 
-    # 5. 创建 AnnData
+    # 5. Create AnnData
     adata = AnnData(
         X=X,
         obs=obs,
         var=var,
     )
 
-    # 6. 读取 obsm 子集
+    # 6. Read obsm subset
     if include_obsm:
 
         obsm_tables = conn.execute("""
@@ -651,9 +671,9 @@ def get_anndata(
             key = table_name.replace("obsm_", "")
 
             # ============================================================
-            #  以 _selected_cells 为基准 LEFT JOIN obsm 表：
-            #   有 embedding 的 cell     -> 保留原值
-            #   没有 embedding 的 cell   -> NaN
+            #  Use _selected_cells as the base and LEFT JOIN the obsm table:
+            #   cells with embeddings     -> keep original values
+            #   cells without embeddings  -> NaN
             # ============================================================
 
             value_cols = [
@@ -688,12 +708,12 @@ def get_anndata(
 
             if arr.shape[0] != n_cells:
                 raise ValueError(
-                    f"obsm[{key}] 行数错误: {arr.shape[0]} != selected cells {n_cells}"
+                    f"obsm[{key}] row count error: {arr.shape[0]} != selected cells {n_cells}"
                 )
 
             adata.obsm[key] = arr
 
-    # 7. 读取 varm 全集
+    # 7. Read full varm
     if include_varm:
 
         varm_tables = conn.execute("""
@@ -738,50 +758,51 @@ def get_anndata(
 
             if arr.shape[0] != n_genes:
                 raise ValueError(
-                    f"varm[{key}] 行数错误: {arr.shape[0]} != genes {n_genes}"
+                    f"varm[{key}] row count error: {arr.shape[0]} != genes {n_genes}"
                 )
 
             adata.varm[key] = arr
 
-    # 8. 清理临时表
+    # 8. Clean up temporary table
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
-    logger.info(" AnnData 导出完成")
+    logger.info(" AnnData export completed")
     logger.info(f"  - cells: {adata.n_obs:,}")
     logger.info(f"  - genes: {adata.n_vars:,}")
 
     return adata
 
 
-# 写 AnnData 到 h5ad
+# Write AnnData to h5ad
 def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
 
-    """按 AnnData dataframe 编码写入 pandas DataFrame。
+    """Write a pandas DataFrame using the AnnData dataframe encoding.
 
-    该内部函数用于 ``write_h5ad``，负责把 ``obs`` 或 ``var`` 这类
-    pandas DataFrame 写入已经打开的 HDF5 文件。函数会创建对应的 HDF5 group，
-    写入 index、列数据、列顺序和 AnnData dataframe 编码属性，使导出的文件
-    可以被 AnnData/Scanpy 正常读取。
+    This internal function is used by ``write_h5ad`` and is responsible for writing
+    pandas DataFrames such as ``obs`` or ``var`` into an already opened HDF5 file.
+    The function creates the corresponding HDF5 group, writes the index, column data,
+    column order, and AnnData dataframe encoding attributes, so that the exported file
+    can be properly read by AnnData/Scanpy.
 
     Parameters
     ----------
     f
-        打开的 HDF5 文件句柄。
+        Open HDF5 file handle.
     key
-        HDF5 group 名称，例如 ``"obs"`` 或 ``"var"``。
+        HDF5 group name, such as ``"obs"`` or ``"var"``.
     df
-        需要写入 h5ad 的 DataFrame。
+        DataFrame to write into h5ad.
 
     Returns
     -------
     None
-        DataFrame 直接写入 HDF5 文件，不返回对象。
+        The DataFrame is written directly into the HDF5 file and no object is returned.
 
     Notes
     -----
-    字符串列会使用 UTF-8 可变长度字符串写入；pandas categorical 列会先转换为
-    字符串。该实现是轻量写出，不展开 AnnData 对 categorical 的完整 category
-    编码。
+    String columns are written using UTF-8 variable-length strings. pandas categorical
+    columns are first converted to strings. This implementation is a lightweight writer
+    and does not expand the full AnnData category encoding for categorical columns.
     """
     g = f.create_group(key)
 
@@ -812,7 +833,7 @@ def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
 
         arr = series.to_numpy()
 
-        # ===== 字符串列 =====
+        # ===== string columns =====
         if arr.dtype.kind in {"U", "O"}:
             data = np.array(series.astype(str).tolist(), dtype=object)
 
@@ -822,10 +843,10 @@ def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
                 dtype=h5py.string_dtype(encoding="utf-8"),
             )
 
-        # ===== 数值列 =====
+        # ===== numeric columns =====
         else:
             g.create_dataset(col, data=arr)
 
-    # AnnData spec attrs（关键）
+    # AnnData spec attrs (key)
     g.attrs["column-order"] = np.array(colnames, dtype="S")
     g.attrs["_index"] = index_name

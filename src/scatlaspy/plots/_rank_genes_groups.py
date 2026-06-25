@@ -19,36 +19,50 @@ def rank_genes_groups(
         save_path: PathLike[str] | str | None = None,
         show: bool = True,
 ):
-    """绘制每个分组的 top marker gene 排名图。
+    """Plot the top marker gene ranking for each group.
 
-    该函数读取 ``sap.tl.rank_genes_groups`` 写入的差异基因结果表，按分组展示排名靠前的
-    marker genes，并在每个子图中用散点和文字标签展示 ``score_key`` 对应的统计分数。
-    它类似 Scanpy 的 ``sc.pl.rank_genes_groups``，适合快速浏览每个 cluster 的候选
-    marker gene 排名。
+    This function reads the differential gene result table written by
+    ``sap.tl.rank_genes_groups``, displays the top-ranked marker genes for each group,
+    and shows the statistical score corresponding to ``score_key`` using scatter points
+    and text labels in each subplot.
+    It is similar to Scanpy ``sc.pl.rank_genes_groups`` and is suitable for quickly
+    browsing candidate marker gene rankings for each cluster.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，或可以通过 ``atlas.connect("r+")``
-        重新连接。数据库中需要包含 ``use_table`` 指定的差异基因结果表。
+        Atlas object. It must already be connected to a DuckDB database, or be able
+        to reconnect through ``atlas.connect("r+")``. The database must contain the
+        differential gene result table specified by ``use_table``.
+
     use_table
-        差异基因结果表名，默认 ``"rank_genes_groups"``。
+        Differential gene result table name. Defaults to ``"rank_genes_groups"``.
+
     groups
-        需要展示的分组列表。为 ``None`` 时展示结果表中的全部分组。
+        List of groups to display. If ``None``, all groups in the result table are displayed.
+
     n_genes
-        每个分组展示的 top gene 数量。
+        Number of top genes to display for each group.
+
     score_key
-        结果表中用于 y 轴绘图的分数字段名，例如 ``"scores"``。
+        Score field name in the result table used for y-axis plotting, such as ``"scores"``.
+
     gene_label
-        结果表中用于显示基因名的字段名，默认 ``"names"``。
+        Field name in the result table used to display gene names. Defaults to ``"names"``.
+
     ncols
-        子图每行最多显示的列数。
+        Maximum number of subplot columns per row.
+
     figsize
-        Matplotlib 图像大小。为 ``None`` 时根据分组数量和 ``ncols`` 自动估计。
+        Matplotlib figure size. If ``None``, it is automatically estimated according
+        to the number of groups and ``ncols``.
+
     save_path
-        图片保存路径。为 ``None`` 时不保存。
+        Path for saving the figure. If ``None``, the figure is not saved.
+
     show
-        是否立即显示图形。为 ``False`` 时关闭当前 figure，适合批量保存。
+        Whether to display the figure immediately. If ``False``, the current figure is
+        closed, which is suitable for batch saving.
 
     Returns
     -------
@@ -56,12 +70,12 @@ def rank_genes_groups(
 
     Examples
     --------
-    计算并绘制默认差异基因排名图::
+    Calculate and plot the default differential gene ranking figure::
 
         sap.tl.rank_genes_groups(atlas, groupby="kmeans")
         sap.pl.rank_genes_groups(atlas)
 
-    从自定义结果表读取，并只展示部分分组::
+    Read from a custom result table and display only selected groups::
 
         sap.pl.rank_genes_groups(
             atlas,
@@ -76,7 +90,7 @@ def rank_genes_groups(
         conn = atlas.connection
 
     # -------------------------------------------------
-    # 1. 检查结果表是否存在
+    # 1. Check whether the result table exists
     # -------------------------------------------------
     table_exists = conn.execute("""
         SELECT COUNT(*)
@@ -86,12 +100,12 @@ def rank_genes_groups(
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {use_table}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
+            f"The result table does not exist in the database: {use_table}."
+            f"Please run sap.tl.rank_genes_groups(..., key_added='{use_table}') first"
         )
 
     # -------------------------------------------------
-    # 2. 读取结果表
+    # 2. Read the result table
     # -------------------------------------------------
     df = conn.execute(f"""
         SELECT *
@@ -99,36 +113,37 @@ def rank_genes_groups(
     """).fetchdf()
 
     if len(df) == 0:
-        raise ValueError(f"{use_table} 表为空，无法绘图")
+        raise ValueError(f"The {use_table} table is empty, unable to plot")
 
     required_cols = {"group", "rank", gene_label, score_key}
     missing = required_cols - set(df.columns)
 
     if len(missing) > 0:
         raise ValueError(
-            f"{use_table} 表缺少必要字段: {missing}。"
-            f"当前字段为: {list(df.columns)}"
+            f"The {use_table} table is missing required fields: {missing}."
+            f"Current fields are: {list(df.columns)}"
         )
 
-    # group 统一转字符串，避免 int / str 混乱
+    # Convert group uniformly to string to avoid int / str confusion
     df["group"] = df["group"].astype(str)
 
-    # group 排序函数，能转成数字的按数字排，不能转数字的按字符串排
+    # Group sorting function: values that can be converted to numbers are sorted numerically; others are sorted as strings
     def _group_sort_key(x: Any):
-        """生成差异基因分组标签的排序键。
+        """Generate a sorting key for differential gene group labels.
 
-        能转换为整数或浮点数的分组按数值排序，其他标签按字符串排序，避免
-        ``"10"`` 排在 ``"2"`` 前面。
+        Groups that can be converted to integers or floats are sorted numerically;
+        other labels are sorted as strings, avoiding cases where ``"10"`` appears
+        before ``"2"``.
 
         Parameters
         ----------
         x
-            单个分组标签。
+            A single group label.
 
         Returns
         -------
         tuple
-            可传给 ``sorted(..., key=...)`` 的排序键。
+            Sorting key that can be passed to ``sorted(..., key=...)``.
         """
         try:
             return (0, int(x))
@@ -139,7 +154,7 @@ def rank_genes_groups(
                 return (1, str(x))
 
     # -------------------------------------------------
-    # 3. 过滤 groups
+    # 3. Filter groups
     # -------------------------------------------------
     all_groups = df["group"].dropna().unique().tolist()
 
@@ -153,11 +168,11 @@ def rank_genes_groups(
 
     if len(plot_groups) == 0:
         raise ValueError(
-            f"groups 过滤后为空。可用 groups: {all_groups}"
+            f"No groups remain after filtering. Available groups: {all_groups}"
         )
 
     # -------------------------------------------------
-    # 4. 准备画布
+    # 4. Prepare canvas
     # -------------------------------------------------
     n_panels = len(plot_groups)
     ncols = min(int(ncols), n_panels)
@@ -177,7 +192,7 @@ def rank_genes_groups(
     axes = axes.reshape(-1)
 
     # -------------------------------------------------
-    # 5. 逐 group 作图
+    # 5. Plot group by group
     # -------------------------------------------------
     for ax, group in zip(axes, plot_groups):
 
@@ -223,7 +238,7 @@ def rank_genes_groups(
                 va="bottom",
             )
 
-        # 标题尽量使用 group vs reference
+        # Try to use group vs reference as the title
         if "reference" in plot_df.columns:
             ref = str(plot_df["reference"].iloc[0])
             title = f"{group} vs. {ref}"
@@ -241,14 +256,14 @@ def rank_genes_groups(
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
-    # 多余 panel 关掉
+    # Turn off extra panels
     for ax in axes[n_panels:]:
         ax.set_axis_off()
 
     plt.tight_layout()
 
     # -------------------------------------------------
-    # 6. 保存 / 显示
+    # 6. Save / show
     # -------------------------------------------------
     if save_path is not None:
         fig.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -279,50 +294,73 @@ def rank_genes_groups_volcano(
         label_fontsize: int = 7,
         label_offset_step: int = 12,
 ):
-    """绘制单个分组的差异基因火山图。
+    """Plot a volcano plot for differential genes in a single group.
 
-    该函数从差异基因结果表中读取指定 ``group`` 的结果，根据 log fold change 和校正p 值绘制火山图。
-    显著上调基因显示为红色，显著下调基因显示为蓝色，不显著基因显示为
-    灰色，并自动标注最显著的一批基因。
+    This function reads the results of the specified ``group`` from the differential
+    gene result table and plots a volcano plot based on log fold change and adjusted
+    p-values.
+    Significantly upregulated genes are shown in red, significantly downregulated
+    genes are shown in blue, nonsignificant genes are shown in gray, and the most
+    significant genes are automatically labeled.
 
-    该图用于检查某个 cluster 或细胞类型相对于参考组的 marker genes 是否显著、方向是否清楚，
-    以及是否存在极端 logFC 或 p 值。
+    This plot is used to check whether marker genes of a cluster or cell type are
+    significant relative to the reference group, whether the direction is clear, and
+    whether extreme logFC or p-values exist.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，或可以通过 ``atlas.connect("r+")``
-        重新连接。数据库中需要包含 ``use_table`` 指定的差异基因结果表。
+        Atlas object. It must already be connected to a DuckDB database, or be able
+        to reconnect through ``atlas.connect("r+")``. The database must contain the
+        differential gene result table specified by ``use_table``.
+
     use_table
-        读取已有结果的数据库表名。
+        Database table name for reading existing results.
+
     group
-        需要绘制火山图的分组标签。
+        Group label to plot in the volcano plot.
+
     lfc_key
-        结果表中保存 log fold change 的字段名。
+        Field name in the result table storing log fold change.
+
     pval_key
-        结果表中保存校正 p 值的字段名，默认 ``"pvals_adj"``。
+        Field name in the result table storing adjusted p-values. Defaults to``"pvals_adj"``.
+
     gene_label
-        结果表中用于显示基因名的字段名。
+        Field name in the result table used to display gene names.
+
     pval_cutoff
-        显著性判断的校正 p 值阈值。
+        Adjusted p-value threshold for significance.
+
     logfc_cutoff
-        显著性判断的绝对 log fold change 阈值。
+        Absolute log fold change threshold for significance.
+
     top_n
-        自动标注的基因数量。函数会优先在显著上调和显著下调基因中各取一部分。
+        Number of genes to automatically label. The function preferentially selects
+        part of the genes from significantly upregulated and significantly downregulated genes.
+
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        Figure size. If ``None``, the function default size is used.
+
     y_cap
-        y 轴 ``-log10(padj)`` 的显示截断上限。为 ``None`` 时不截断。
+        Display clipping upper limit for the y-axis ``-log10(padj)``. If ``None``,no clipping is applied.
+
     xlim_abs
-        x 轴左右对称显示范围的绝对值。为 ``None`` 时根据 logFC 分布自动估计。
+        Absolute value of the symmetric x-axis display range. If ``None``, it is
+        automatically estimated from the logFC distribution.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示或返回图对象。
+        Path for saving the figure. If ``None``, the figure is only displayed or returned.
+
     show
-        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
+        Whether to display the figure immediately. If ``None``, the current Matplotlib
+        behavior is followed.
+
     label_fontsize
-        自动标注基因名的字体大小。
+        Font size for automatically labeled gene names.
+
     label_offset_step
-        自动标注基因名时用于错开标签的偏移强度。
+        Offset strength used to stagger labels when automatically labeling gene names.
 
     Returns
     -------
@@ -330,12 +368,12 @@ def rank_genes_groups_volcano(
 
     Examples
     --------
-    绘制默认差异基因火山图::
+    Plot the default differential gene volcano plot::
 
         sap.tl.rank_genes_groups(atlas, groupby="kmeans")
         sap.pl.rank_genes_groups_volcano(atlas)
 
-    指定分组、top genes 和保存路径::
+    Specify group, top genes, and save path::
 
         sap.pl.rank_genes_groups_volcano(
             atlas,
@@ -349,7 +387,7 @@ def rank_genes_groups_volcano(
         atlas.connect("r+")
         conn = atlas.connection
 
-    # 1. 检查结果表
+    # 1. Check result table
     table_exists = conn.execute("""
         SELECT COUNT(*)
         FROM information_schema.tables
@@ -358,11 +396,11 @@ def rank_genes_groups_volcano(
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {use_table}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
+            f"The result table does not exist in the database: {use_table}."
+            f"Please run sap.tl.rank_genes_groups(..., key_added='{use_table}') first"
         )
 
-    # 2. 读取指定 group 的结果
+    # 2. Read results for the specified group
     df = conn.execute(f"""
         SELECT *
         FROM "{use_table}"
@@ -370,31 +408,31 @@ def rank_genes_groups_volcano(
     """, [str(group)]).fetchdf()
 
     if len(df) == 0:
-        raise ValueError(f"{use_table} 表中没有 group={group} 的结果")
+        raise ValueError(f"No result for group={group} found in the {use_table} table")
 
     required_cols = {lfc_key, pval_key, gene_label}
     missing = required_cols - set(df.columns)
 
     if len(missing) > 0:
         raise ValueError(
-            f"{use_table} 表缺少火山图必要字段: {missing}。"
-            f"当前字段为: {list(df.columns)}"
+            f"The {use_table} table is missing fields required for the volcano plot: {missing}."
+            f"Current fields are: {list(df.columns)}"
         )
 
-    # 3. 清理异常值
+    # 3. Clean abnormal values
     df = df.replace([np.inf, -np.inf], np.nan).dropna(
         subset=[lfc_key, pval_key, gene_label]
     ).copy()
 
     if len(df) == 0:
-        raise ValueError("清理 NA / inf 后没有可绘制数据")
+        raise ValueError("No data available for plotting after cleaning NA / inf")
 
-    # 确保数值列是 float
+    # Ensure numeric columns are float
     df[lfc_key] = df[lfc_key].astype(float)
     df[pval_key] = df[pval_key].astype(float)
 
-    # 4. 计算 -log10(padj)
-    # 先用极小值避免 log10(0)，再用 y_cap 做显示截断
+    # 4. Calculate -log10(padj)
+    # First use a tiny value to avoid log10(0), then use y_cap for display clipping
     tiny = np.nextafter(0, 1)
     df["neg_log10_padj"] = -np.log10(
         df[pval_key].clip(lower=tiny)
@@ -412,16 +450,16 @@ def rank_genes_groups_volcano(
     else:
         y_upper = y_max_real * 1.15 + 1.0
 
-    # 至少给一点显示空间
+    # Provide at least some display space
     y_upper = max(y_upper, 5.0)
 
-    # 5. 显著性分组
+    # 5. Significance grouping
     df["significant"] = (
         (df[pval_key] < float(pval_cutoff))
         & (df[lfc_key].abs() >= float(logfc_cutoff))
     )
 
-    # 颜色对齐 Scanpy 图风格：上调红，下调蓝，不显著灰
+    # Color style aligned with Scanpy plots: upregulated red, downregulated blue, nonsignificant gray
     colors = np.where(
         df["significant"] & (df[lfc_key] > 0),
         "#d62728",
@@ -432,7 +470,7 @@ def rank_genes_groups_volcano(
         ),
     )
 
-    # 6. 作图
+    # 6. Plot
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
 
     ax.scatter(
@@ -444,12 +482,12 @@ def rank_genes_groups_volcano(
         linewidths=0,
     )
 
-    # 阈值线
+    # Threshold lines
     ax.axvline(-float(logfc_cutoff), color="#555555", linestyle="--", linewidth=1.0)
     ax.axvline(float(logfc_cutoff), color="#555555", linestyle="--", linewidth=1.0)
     ax.axhline(-np.log10(float(pval_cutoff)), color="#555555", linestyle="--", linewidth=1.0)
 
-    # 7. 标注 top genes
+    # 7. Label top genes
     n_up = max(1, int(top_n) // 2)
     n_down = max(1, int(top_n) - n_up)
 
@@ -478,10 +516,10 @@ def rank_genes_groups_volcano(
         x0 = float(row[lfc_key])
         y0 = float(row["neg_log10_padj_plot"])
 
-        # 标签不要顶到图框
+        # Prevent labels from touching the plot frame
         y0 = min(y0, y_upper * 0.94)
 
-        # 上下错开一点，避免多个标签压在一起
+        # Stagger labels slightly up and down to avoid overlap
         y_text = y0 - (j % 4) * (y_upper * (label_offset_step / 500.0))
         y_text = max(y_text, 0.1)
 
@@ -502,7 +540,7 @@ def rank_genes_groups_volcano(
             clip_on=True,
         )
 
-    # 8. 标题
+    # 8. Title
     if "reference" in df.columns:
         ref = str(df["reference"].iloc[0])
         title = f"group {group} vs {ref}"
@@ -517,16 +555,16 @@ def rank_genes_groups_volcano(
 
     ax.tick_params(axis="both", labelsize=13)
 
-    # 只保留左/下边框
+    # Keep only the left and bottom borders
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.spines["left"].set_linewidth(1.2)
     ax.spines["bottom"].set_linewidth(1.2)
 
-    # y 轴使用自适应上限
+    # Use an adaptive upper limit for the y-axis
     ax.set_ylim(-1, y_upper)
 
-    # x 轴对称显示，视觉上更像标准火山图
+    # Use a symmetric x-axis range so the figure visually resembles a standard volcano plot
     finite_lfc = (
         df[lfc_key]
         .replace([np.inf, -np.inf], np.nan)
@@ -536,7 +574,7 @@ def rank_genes_groups_volcano(
 
     if xlim_abs is None:
         if len(finite_lfc) > 0:
-            # 用 99.5 分位，避免极端离群点把图拉得过宽
+            # Use the 99.5th percentile to prevent extreme outliers from making the plot too wide
             xlim_abs_use = float(np.nanpercentile(finite_lfc, 99.5))
             xlim_abs_use = max(xlim_abs_use, float(logfc_cutoff) * 2.5)
         else:
@@ -572,38 +610,53 @@ def rank_genes_groups_violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 marker genes 在不同分组中的表达 violin 图。
+    """Plot violin plots of marker gene expression across different groups.
 
-    该函数基于 ``rank_genes_groups`` 结果自动选择指定 ``group`` 的 top marker genes，
-    也可以通过 ``genes`` 手动指定基因列表。函数会从 ``X_HyS_data`` 的
-    ``use_expr_field`` 字段读取表达值，按 ``obs[groupby]`` 分组绘制 violin 图，
-    用于检查候选 marker 是否在目标分组中特异表达。
+    This function automatically selects the top marker genes of the specified ``group``
+    based on the ``rank_genes_groups`` results, or uses a manually specified gene list
+    through ``genes``. The function reads expression values from the ``use_expr_field``
+    field in ``X_HyS_data`` and plots violin plots grouped by ``obs[groupby]``, which
+    are used to check whether candidate markers are specifically expressed in the
+    target group.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并包含 ``obs``、``var``、
-        ``X_HyS_data`` 和 ``use_table`` 指定的差异基因结果表。
+        Atlas object. It must already be connected to a DuckDB database and contain
+        ``obs``, ``var``, ``X_HyS_data``, and the differential gene result table specified
+        by ``use_table``.
+
     group
-        需要展示 marker genes 的目标分组标签。
+        Target group label whose marker genes should be displayed.
+
     use_table
-        读取已有结果的数据库表名。
+        Database table name for reading existing results.
+
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
+        Grouping column in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+
     reference
-        差异分析参考组。为 ``None`` 时使用结果表中匹配 ``group`` 的默认结果；
-        传入值时会优先筛选对应 ``reference``。
+        Reference group for differential analysis. If ``None``, the default result
+        matching ``group`` in the result table is used; when a value is provided, the
+        corresponding ``reference`` is preferentially selected.
+
     genes
-        手动指定需要展示的基因名称列表。为 ``None`` 时从差异基因结果表按排名选择
-        ``n_genes`` 个基因。
+        Manually specified list of gene names to display. If ``None``, ``n_genes`` genes
+        are selected by rank from the differential gene result table.
+
     n_genes
-        当 ``genes`` 为 ``None`` 时，自动选择的 top marker gene 数量。
+        Number of top marker genes automatically selected when ``genes`` is ``None``.
+
     use_expr_field
-        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"`` 或 ``"data_count"``。
+        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"`` or
+        ``"data_count"``.
+
     sample_cells_per_group
-        每个 ``groupby`` 分组最多抽样用于绘图的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells sampled for plotting from each ``groupby`` group.
+        If ``None``, all cells are used.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示或返回图对象。
+        Path for saving the figure. If ``None``, the figure is only displayed or returned.
 
     Returns
     -------
@@ -611,12 +664,12 @@ def rank_genes_groups_violin(
 
     Examples
     --------
-    绘制每组 top marker 的 violin 图::
+    Plot violin plots for the top markers of each group::
 
         sap.tl.rank_genes_groups(atlas, groupby="kmeans")
         sap.pl.rank_genes_groups_violin(atlas)
 
-    指定分组和表达字段::
+    Specify a group and expression field::
 
         sap.pl.rank_genes_groups_violin(
             atlas,
@@ -627,19 +680,19 @@ def rank_genes_groups_violin(
 
     conn = atlas.connection
 
-    # 检查列
+    # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
     x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
     if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
+        raise ValueError(f"The column does not exist in obs: {groupby}")
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols:
-        raise ValueError("var 中不存在 atlas_gene_id")
+        raise ValueError("atlas_gene_id does not exist in var")
     if use_expr_field not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_expr_field}")
+        raise ValueError(f"The field does not exist in X_HyS_data: {use_expr_field}")
 
     table_exists = conn.execute("""
         SELECT COUNT(*)
@@ -649,12 +702,12 @@ def rank_genes_groups_violin(
 
     if table_exists == 0:
         raise ValueError(
-            f"数据库中不存在结果表: {use_table}。"
-            f"请先运行 sap.tl.rank_genes_groups(..., key_added='{use_table}')"
+            f"The result table does not exist in the database: {use_table}."
+            f"Please run sap.tl.rank_genes_groups(..., key_added='{use_table}') first"
         )
 
     # =====================================================
-    # 1. gene 列表
+    # 1. Gene list
     # =====================================================
     if genes is None:
         rank_df = conn.execute(f"""
@@ -669,7 +722,7 @@ def rank_genes_groups_violin(
         """, [str(group)]).fetchdf()
 
         if len(rank_df) == 0:
-            raise ValueError(f"{use_table} 表中找不到 group={group} 的结果")
+            raise ValueError(f"No result for group={group} found in the {use_table} table")
 
         genes = rank_df["atlas_gene_name"].astype(str).tolist()
 
@@ -680,7 +733,7 @@ def rank_genes_groups_violin(
             genes = [genes]
 
         if len(genes) == 0:
-            raise ValueError("genes 为空")
+            raise ValueError("genes is empty")
 
         # gene_name -> gene_id
         gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -690,7 +743,7 @@ def rank_genes_groups_violin(
         elif "gene_name" in var_cols:
             gene_name_col = "gene_name"
         else:
-            raise ValueError("var 中不存在 atlas_gene_name 或 gene_name，无法按基因名查找")
+            raise ValueError("atlas_gene_name or gene_name does not exist in var, so genes cannot be searched by gene name")
 
         gene_map_df = conn.execute(f"""
             SELECT
@@ -701,19 +754,19 @@ def rank_genes_groups_violin(
         """).fetchdf()
 
         if len(gene_map_df) == 0:
-            raise ValueError("var 中找不到这些基因")
+            raise ValueError("These genes were not found in var")
 
         gene_map = dict(zip(gene_map_df["atlas_gene_name"], gene_map_df["atlas_gene_id"]))
 
         missing_genes = [g for g in genes if g not in gene_map]
         if missing_genes:
-            raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+            raise ValueError(f"These genes were not found in var: {missing_genes}")
 
     if len(genes) == 0:
-        raise ValueError("genes 为空")
+        raise ValueError("genes is empty")
 
     # =====================================================
-    # 2. 抽样目标细胞
+    # 2. Sample target cells
     # =====================================================
     group_sql = f"'{group}'" if isinstance(group, str) else str(group)
 
@@ -752,7 +805,7 @@ def rank_genes_groups_violin(
             ref_label = "rest"
 
         else:
-            # 如果结果表里是 group vs 某个 reference
+            # If the result table uses group vs a specific reference
             ref_sql = f"'{reference_in_result}'"
 
             group_cells_df = conn.execute(f"""
@@ -795,9 +848,9 @@ def rank_genes_groups_violin(
         ref_label = str(reference)
 
     if len(group_cells_df) == 0:
-        raise ValueError(f"group={group} 没有细胞")
+        raise ValueError(f"group={group} has no cells")
     if len(rest_cells_df) == 0:
-        raise ValueError(f"reference/rest 没有细胞")
+        raise ValueError("reference/rest has no cells")
 
     group_cells_df["group_label"] = str(group)
     rest_cells_df["group_label"] = ref_label
@@ -805,12 +858,12 @@ def rank_genes_groups_violin(
     cells_df = pd.concat([group_cells_df, rest_cells_df], ignore_index=True)
 
     # =====================================================
-    # 3. 注册采样细胞和基因
+    # 3. Register sampled cells and genes
     # =====================================================
     conn.register("_violin_cells_tmp", cells_df)
     conn.register("_violin_genes_tmp", gene_map_df)
 
-    # 取表达长表（含隐式 0）
+    # Fetch expression long table, including implicit zeros
     plot_df = conn.execute(f"""
         SELECT
             c.group_label,
@@ -827,14 +880,14 @@ def rank_genes_groups_violin(
     conn.unregister("_violin_genes_tmp")
 
     if len(plot_df) == 0:
-        raise ValueError("plot_df 为空，无法作图")
+        raise ValueError("plot_df is empty, unable to plot")
 
-    # gene 顺序保持传入顺序
+    # Preserve the input gene order
     plot_df["gene"] = pd.Categorical(plot_df["gene"], categories=genes, ordered=True)
     plot_df = plot_df.sort_values(["gene", "group_label"]).reset_index(drop=True)
 
     # =====================================================
-    # 4. 作图
+    # 4. Plot
     # =====================================================
     fig, ax = plt.subplots(figsize=(1.25 * len(genes) + 2.5, 6), facecolor="white")
 
@@ -846,8 +899,8 @@ def rank_genes_groups_violin(
     pos_right = positions + width / 2
 
     color_map = {
-        str(group): "#1f77b4",   # 蓝
-        ref_label: "#ff7f0e"     # 橙
+        str(group): "#1f77b4",   # Blue
+        ref_label: "#ff7f0e"     # Orange
     }
 
     for idx, gene in enumerate(genes):
@@ -892,7 +945,7 @@ def rank_genes_groups_violin(
                 vp2["cmedians"].set_color("black")
                 vp2["cmedians"].set_linewidth(1.0)
 
-        # 少量散点增强可读性（抽样后再小抽一点）
+        # Add a small number of scatter points for readability; subsample again after sampling
         n_dot = min(250, len(vals_group))
         if n_dot > 0:
             dot_idx = np.random.choice(len(vals_group), size=n_dot, replace=False)
@@ -919,7 +972,7 @@ def rank_genes_groups_violin(
                 linewidths=0
             )
 
-    # 美化
+    # Style refinement
     ax.set_title(f"{group} vs. {ref_label}", fontsize=20, pad=10)
     ax.set_xlabel("genes", fontsize=16)
     ax.set_ylabel("expression", fontsize=16)
@@ -935,7 +988,7 @@ def rank_genes_groups_violin(
     ax.spines["bottom"].set_linewidth(1.0)
     ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
 
-    # 图例
+    # Legend
     from matplotlib.patches import Patch
     legend_handles = [
         Patch(facecolor=color_map[str(group)], edgecolor="black", label=str(group)),

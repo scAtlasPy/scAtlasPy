@@ -11,12 +11,12 @@ from typing import Any
 
 
 # =====================================================
-# 统一离散分类颜色池
+# Unified discrete category color pool
 # -----------------------------------------------------
-# 用于 obs 分类变量上色，例如：
-# kmeans / cell_type / batch / organ 等
+# Used for coloring categorical variables in obs, for example:
+# kmeans / cell_type / batch / organ, etc.
 #
-# 这些 palette 拼起来大约有 100 个离散颜色：
+# These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
 # + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
 # =====================================================
@@ -32,15 +32,15 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 # =====================================================
-# 通用分类标签自然排序
+# General natural sorting for categorical labels
 # -----------------------------------------------------
-# 解决：
+# Solves:
 # embryo_1, embryo_10, embryo_11, embryo_2
 #
-# 排成：
+# Sorts as:
 # embryo_1, embryo_2, embryo_3, ..., embryo_10
 #
-# 同样适用于：
+# Also applies to:
 # cluster_1 / cluster_10
 # batch2 / batch10
 # group_3_day_2 / group_3_day_12
@@ -60,49 +60,58 @@ def violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制基因在不同细胞分组中的表达 violin 图。
+    """Plot violin plots of gene expression across different cell groups.
 
-    该函数从 ``var`` 解析基因名，从 ``X_HyS_data`` 的 ``use_data`` 字段读取表达值，
-    并按 ``obs[groupby]`` 分组绘制普通 violin 图。每个基因单独成图，横轴为分组，
-    纵轴为表达值，适合查看 marker gene 在不同 cluster 或细胞类型中的表达分布。
+    This function resolves gene names from ``var``, reads expression values from the ``use_data`` field in ``X_HyS_data``,
+    and groups by ``obs[groupby]`` to draw standard violin plots. Each gene is plotted separately; the x-axis shows groups,
+    and the y-axis shows expression values.
+    This is suitable for checking the expression distribution of marker genes across different clusters or cell types.
 
-    该函数只绘制基因表达，不绘制 ``obs`` 指标。
+    This function only plots gene expression and does not plot ``obs`` metrics.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs``、``var`` 和
-        ``X_HyS_data`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
+
     genes
-        需要展示的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
+        Gene name or list of gene names to display. They must exist in ``var.atlas_gene_name``.
+
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
+        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+
     use_data
-        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
-        或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``,
+        or ``"data_scale"``.
+
     sample_n_per_group
-        每个分组最多抽样用于绘图的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
+
     groups
-        需要展示的分组列表。为 ``None`` 时使用满足条件的全部分组。
+        List of groups to display. If ``None``, all groups that satisfy the conditions are used.
+
     where
-        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
+        Additional SQL filtering condition. If ``None``, no additional condition is added.
+
     order
-        分组展示顺序。为 ``None`` 时使用自然排序。
+        Display order of groups. If ``None``, natural sorting is used.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片。
+        Path to save the figure. If ``None``, the figure is only displayed.
 
     Returns
     -------
     None
-        函数直接绘图，不返回 figure。
+        The function draws the plot directly and does not return a figure.
 
     Examples
     --------
-    绘制单个基因在 cluster 中的表达分布::
+    Plot the expression distribution of a single gene across clusters::
 
         sap.pl.violin(atlas, genes="MS4A1", groupby="kmeans")
 
-    同时绘制多个 marker gene::
+    Plot multiple marker genes at the same time::
 
         sap.pl.violin(
             atlas,
@@ -113,27 +122,27 @@ def violin(
 
     conn = atlas.connection
 
-    # 参数标准化
+    # Normalize parameters
     if isinstance(genes, str):
         genes = [genes]
     genes = [str(g) for g in genes]
 
     if len(genes) == 0:
-        raise ValueError("genes 不能为空")
+        raise ValueError("genes cannot be empty")
 
-    # 检查列
+    # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
     x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
     if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
+        raise ValueError(f"Column does not exist in obs: {groupby}")
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-        raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
+        raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
     if use_data not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -145,12 +154,12 @@ def violin(
     """).fetchdf()
 
     if len(gene_map_df) == 0:
-        raise ValueError("var 中找不到这些基因")
+        raise ValueError("These genes cannot be found in var")
 
     gene_map = dict(zip(gene_map_df["atlas_gene_name"], gene_map_df["atlas_gene_id"]))
     missing_genes = [g for g in genes if g not in gene_map]
     if missing_genes:
-        raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+        raise ValueError(f"These genes cannot be found in var: {missing_genes}")
 
     gene_map_df["atlas_gene_name"] = pd.Categorical(
         gene_map_df["atlas_gene_name"],
@@ -159,7 +168,7 @@ def violin(
     )
     gene_map_df = gene_map_df.sort_values("atlas_gene_name").reset_index(drop=True)
 
-    # 准备 group 抽样细胞
+    # Prepare sampled cells by group
     where_clauses = [f"{groupby} IS NOT NULL"]
     if where is not None and str(where).strip() != "":
         where_clauses.append(f"({where})")
@@ -170,7 +179,7 @@ def violin(
 
     where_sql = " AND ".join(where_clauses)
 
-    # group 列表
+    # Group list
     group_df = conn.execute(f"""
         SELECT
             CAST({groupby} AS TEXT) AS group_label,
@@ -182,24 +191,24 @@ def violin(
     """).fetchdf()
 
     if len(group_df) == 0:
-        raise ValueError("没有可用 group")
+        raise ValueError("No available group")
 
-    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    # Sort numeric groups by numeric value to avoid 0,1,10,11,2
     def _group_sort_key(x: Any):
-        """生成 violin 分组标签的排序键。
+        """Generate the sorting key for violin group labels.
 
-        能转换为整数或浮点数的分组按数值排序，其他标签按字符串排序，避免
-        ``"10"`` 排在 ``"2"`` 前面。
+        Groups that can be converted to integers or floats are sorted numerically, while other labels are sorted as strings, avoiding
+        ``"10"`` appearing before ``"2"``.
 
         Parameters
         ----------
         x
-            单个分组标签。
+            A single group label.
 
         Returns
         -------
         tuple
-            可传给 ``sorted(..., key=...)`` 的排序键。
+            Sorting key that can be passed to ``sorted(..., key=...)``.
         """
         try:
             return (0, int(x))
@@ -221,13 +230,13 @@ def violin(
         wanted = [str(x) for x in order]
         group_df = group_df[group_df["group_label"].isin(wanted)].copy()
         if len(group_df) == 0:
-            raise ValueError("order 过滤后没有可用 group")
+            raise ValueError("No available group after filtering by order")
         group_df["order_idx"] = group_df["group_label"].map({g: i for i, g in enumerate(wanted)})
         group_df = group_df.sort_values("order_idx").drop(columns="order_idx").reset_index(drop=True)
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
-    # 每个 group 单独抽样，再 union
+    # Sample each group separately, then union
     sampled_parts = []
     for g in group_labels:
         if sample_n_per_group is None:
@@ -255,13 +264,13 @@ def violin(
     cells_df = pd.concat(sampled_parts, ignore_index=True)
 
     if len(cells_df) == 0:
-        raise ValueError("抽样后没有细胞")
+        raise ValueError("No cells after sampling")
 
-    # 注册临时表
+    # Register temporary tables
     conn.register("_violin_cells_tmp", cells_df)
     conn.register("_violin_genes_tmp", gene_map_df[["atlas_gene_id", "atlas_gene_name"]])
 
-    # 取表达长表（补隐式 0）
+    # Fetch the long expression table (fill implicit zeros)
     plot_df = conn.execute(f"""
         SELECT
             c.group_label,
@@ -278,13 +287,13 @@ def violin(
     conn.unregister("_violin_genes_tmp")
 
     if len(plot_df) == 0:
-        raise ValueError("plot_df 为空，无法作图")
+        raise ValueError("plot_df is empty; cannot plot")
 
     plot_df["gene"] = pd.Categorical(plot_df["gene"], categories=genes, ordered=True)
     plot_df["group_label"] = pd.Categorical(plot_df["group_label"], categories=group_labels, ordered=True)
     plot_df = plot_df.sort_values(["gene", "group_label"]).reset_index(drop=True)
 
-    # 作图
+    # Plot
     n_panels = len(genes)
     fig, axes = plt.subplots(
         1, n_panels,
@@ -389,42 +398,53 @@ def stacked_violin(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制多个 marker genes 的 stacked violin 图。
+    """Plot a stacked violin plot for multiple marker genes.
 
-    该函数从 ``X_HyS_data`` 读取多个基因的表达值，并按 ``obs[groupby]`` 分组绘制
-    stacked violin：每个格子对应一个 ``group × gene`` 组合，violin 形状展示表达分布，
-    颜色深浅表示该组合的中位表达量。
+    This function reads expression values for multiple genes from ``X_HyS_data`` and groups by ``obs[groupby]`` to draw
+    a stacked violin plot: each cell corresponds to a ``group × gene`` combination, the violin shape shows the expression distribution,
+    and color intensity represents the median expression level of that combination.
 
-    该图适合比较多个 marker genes 在不同 cluster、细胞类型或样本分组中的表达模式。
+    This plot is suitable for comparing expression patterns of multiple marker genes across different clusters, cell types, or sample groups.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs``、``var`` 和
-        ``X_HyS_data`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
+
     genes
-        需要展示的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
+        Gene name or list of gene names to display. They must exist in ``var.atlas_gene_name``.
+
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
+        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+
     use_data
-        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
-        或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``,
+        or ``"data_scale"``.
+
     sample_n_per_group
-        每个分组最多抽样用于绘图的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
+
     groups
-        需要展示的分组列表。为 ``None`` 时使用满足条件的全部分组。
+        List of groups to display. If ``None``, all groups that satisfy the conditions are used.
+
     where
-        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
+        Additional SQL filtering condition. If ``None``, no additional condition is added.
+
     order
-        分组展示顺序。为 ``None`` 时使用自然排序。
+        Display order of groups. If ``None``, natural sorting is used.
+
     color_vmin
-        颜色映射的最小表达值。为 ``None`` 时使用当前数据的最小中位表达量。
+        Minimum expression value for color mapping. If ``None``, the minimum median expression in the current data is used.
+
     color_vmax
-        颜色映射的最大表达值。为 ``None`` 时使用当前数据的最大中位表达量。
+        Maximum expression value for color mapping. If ``None``, the maximum median expression in the current data is used.
+
     font_size
-        绘图字体大小。
+        Plot font size.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片。
+        Path to save the figure. If ``None``, the figure is only displayed.
 
     Returns
     -------
@@ -432,7 +452,7 @@ def stacked_violin(
 
     Examples
     --------
-    绘制多个 marker genes 的 stacked violin::
+    Plot a stacked violin plot for multiple marker genes::
 
         sap.pl.stacked_violin(
             atlas,
@@ -440,7 +460,7 @@ def stacked_violin(
             groupby="kmeans",
         )
 
-    按自动注释细胞类型展示，并保存图片::
+    Display by automatically annotated cell types and save the figure::
 
         sap.pl.stacked_violin(
             atlas,
@@ -448,6 +468,7 @@ def stacked_violin(
             groupby="cell_type_auto",
             save_path=r"F:\\figures\\stacked_violin.png",
         )"""
+
     conn = atlas.connection
 
     if isinstance(genes, str):
@@ -455,21 +476,21 @@ def stacked_violin(
     genes = [str(g) for g in genes]
 
     if len(genes) == 0:
-        raise ValueError("genes 不能为空")
+        raise ValueError("genes cannot be empty")
 
-    # 检查列
+    # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
     x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
     if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
+        raise ValueError(f"Column does not exist in obs: {groupby}")
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-        raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
+        raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
     if use_data not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -481,12 +502,12 @@ def stacked_violin(
     """).fetchdf()
 
     if len(gene_map_df) == 0:
-        raise ValueError("var 中找不到这些基因")
+        raise ValueError("These genes cannot be found in var")
 
     gene_map = dict(zip(gene_map_df["atlas_gene_name"], gene_map_df["atlas_gene_id"]))
     missing_genes = [g for g in genes if g not in gene_map]
     if missing_genes:
-        raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+        raise ValueError(f"These genes cannot be found in var: {missing_genes}")
 
     gene_map_df["atlas_gene_name"] = pd.Categorical(
         gene_map_df["atlas_gene_name"],
@@ -506,7 +527,7 @@ def stacked_violin(
 
     where_sql = " AND ".join(where_clauses)
 
-    # group 列表
+    # Group list
     group_df = conn.execute(f"""
         SELECT
             CAST({groupby} AS TEXT) AS group_label,
@@ -518,24 +539,24 @@ def stacked_violin(
     """).fetchdf()
 
     if len(group_df) == 0:
-        raise ValueError("没有可用 group")
+        raise ValueError("No available group")
 
-    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    # Sort numeric groups by numeric value to avoid 0,1,10,11,2
     def _group_sort_key(x: Any):
-        """生成 stacked violin 分组标签的排序键。
+        """Generate the sorting key for stacked violin group labels.
 
-        能转换为整数或浮点数的分组按数值排序，其他标签按字符串排序，避免
-        ``"10"`` 排在 ``"2"`` 前面。
+        Groups that can be converted to integers or floats are sorted numerically, while other labels are sorted as strings, avoiding
+        ``"10"`` appearing before ``"2"``.
 
         Parameters
         ----------
         x
-            单个分组标签。
+            A single group label.
 
         Returns
         -------
         tuple
-            可传给 ``sorted(..., key=...)`` 的排序键。
+            Sorting key that can be passed to ``sorted(..., key=...)``.
         """
         try:
             return (0, int(x))
@@ -557,13 +578,13 @@ def stacked_violin(
         wanted = [str(x) for x in order]
         group_df = group_df[group_df["group_label"].isin(wanted)].copy()
         if len(group_df) == 0:
-            raise ValueError("order 过滤后没有可用 group")
+            raise ValueError("No available group after filtering by order")
         group_df["order_idx"] = group_df["group_label"].map({g: i for i, g in enumerate(wanted)})
         group_df = group_df.sort_values("order_idx").drop(columns="order_idx").reset_index(drop=True)
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
-    # 每个 group 抽样细胞
+    # Sample cells for each group
     sampled_parts = []
     for g in group_labels:
         if sample_n_per_group is None:
@@ -590,13 +611,13 @@ def stacked_violin(
 
     cells_df = pd.concat(sampled_parts, ignore_index=True)
     if len(cells_df) == 0:
-        raise ValueError("抽样后没有细胞")
+        raise ValueError("No cells after sampling")
 
-    # 注册临时表
+    # Register temporary tables
     conn.register("_sv_cells_tmp", cells_df)
     conn.register("_sv_genes_tmp", gene_map_df[["atlas_gene_id", "atlas_gene_name"]])
 
-    # 取表达长表（补隐式 0）
+    # Fetch the long expression table (fill implicit zeros)
     expr_df = conn.execute(f"""
         SELECT
             c.group_label,
@@ -613,12 +634,12 @@ def stacked_violin(
     conn.unregister("_sv_genes_tmp")
 
     if len(expr_df) == 0:
-        raise ValueError("expr_df 为空，无法作图")
+        raise ValueError("expr_df is empty; cannot plot")
 
     expr_df["gene"] = pd.Categorical(expr_df["gene"], categories=genes, ordered=True)
     expr_df["group_label"] = pd.Categorical(expr_df["group_label"], categories=group_labels, ordered=True)
 
-    # 中位数统计（用于着色）
+    # Median statistics (used for coloring)
     median_df = (
         expr_df
         .groupby(["group_label", "gene"], observed=True)["expr"]
@@ -626,7 +647,7 @@ def stacked_violin(
         .reset_index(name="median_expr")
     )
 
-    # 布局
+    # Layout
     n_genes = len(genes)
     n_groups = len(group_labels)
 
@@ -656,7 +677,7 @@ def stacked_violin(
     ax.set_facecolor("white")
     ax_right.set_facecolor("white")
 
-    # 颜色映射
+    # Color mapping
     if color_vmin is None:
         color_vmin = float(median_df["median_expr"].min())
     if color_vmax is None:
@@ -690,7 +711,7 @@ def stacked_violin(
         vmin = float(np.min(vals))
         vmax = float(np.max(vals))
 
-        # 全 0 / 常数分布：画一个细竖线
+        # All-zero / constant distribution: draw a thin vertical line
         if vmax - vmin < 1e-12:
             ax.plot(
                 [x0, x0],
@@ -701,7 +722,7 @@ def stacked_violin(
             )
             continue
 
-        # KDE 估计
+        # KDE estimation
         try:
             kde = gaussian_kde(vals)
             ys = np.linspace(vmin, vmax, 120)
@@ -733,7 +754,7 @@ def stacked_violin(
             zorder=2
         )
 
-        # 中位数横线
+        # Median horizontal line
         med_y = y0 + ((med_val - vmin) / (vmax - vmin) - 0.5) * (2 * cell_half_height)
         ax.plot(
             [x0 - cell_half_width * 0.45, x0 + cell_half_width * 0.45],
@@ -743,11 +764,11 @@ def stacked_violin(
             zorder=3
         )
 
-    # 主图美化
+    # Main plot styling
     ax.set_xticks(np.arange(n_genes))
     ax.set_xticklabels(genes, rotation=90, fontsize=font_size)
 
-    # y tick 也按 scanpy 风格从上到下显示
+    # Display y ticks from top to bottom in scanpy style
     y_tick_positions = [group_to_y[g] for g in group_labels]
     ax.set_yticks(y_tick_positions)
     ax.set_yticklabels(group_labels, fontsize=font_size)
@@ -755,7 +776,7 @@ def stacked_violin(
     ax.set_xlim(-0.55, n_genes - 0.45)
     ax.set_ylim(-0.5, n_groups - 0.5)
 
-    # 行分隔线
+    # Row separator lines
     for j in range(n_groups):
         ax.axhline(j + 0.5, color="#d0d0d0", linewidth=1.0, zorder=0)
 
@@ -766,7 +787,7 @@ def stacked_violin(
         spine.set_linewidth(1.0)
         spine.set_color("black")
 
-    # 右侧色条说明
+    # Right-side colorbar description
     ax_cbar_box = ax_right.inset_axes([0.08, 0.08, 0.84, 0.22])
     ax_cbar_box.axis("off")
     ax_cbar_box.set_xlim(0, 1)
@@ -790,7 +811,7 @@ def stacked_violin(
     )
     cb.ax.tick_params(labelsize=font_size, length=4, width=1.0)
 
-    # 边距
+    # Margins
     fig.subplots_adjust(
         left=left_margin,
         right=0.98,
@@ -805,29 +826,29 @@ def stacked_violin(
 
 
 def _natural_sort_key(value: Any):
-    """生成分类标签的自然排序键。
+    """Generate a natural sorting key for categorical labels.
 
-    该内部 helper 用于让分组标签按更符合阅读习惯的顺序排列，避免 ``cluster_10``
-    排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式的标签会被放到最后。
+    This internal helper orders group labels in a more readable way, avoiding ``cluster_10``
+    appearing before ``cluster_2``. Missing-value-like labels such as empty strings, ``NA``, and ``nan`` are placed at the end.
 
     Parameters
     ----------
     value
-        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+        Categorical label to sort. It can be a string, a number, or an object convertible to a string.
 
     Returns
     -------
     tuple
-        可传给 ``sorted(..., key=...)`` 的排序键。
+        Sorting key that can be passed to ``sorted(..., key=...)``.
 
     Examples
     --------
-    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    ``embryo_1 < embryo_2 < embryo_10`` and ``cluster_1 < cluster_2 < cluster_11``.
     """
 
     s = str(value).strip()
 
-    # 缺失值标签放最后
+    # Put missing-value labels at the end
     if s.casefold() in _MISSING_CATEGORY_LABELS:
         return (1, ())
 
@@ -847,62 +868,62 @@ def _natural_sort_key(value: Any):
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:
-    """对分类标签去重并执行自然排序。
+    """Deduplicate categorical labels and perform natural sorting.
 
-    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供 violin
-    和 stacked violin 的分组显示顺序使用。
+    This internal helper first converts labels to strings and then sorts them by ``_natural_sort_key`` for use by violin
+    and stacked violin group display order.
 
     Parameters
     ----------
     labels
-        分类标签序列。
+        Sequence of categorical labels.
 
     Returns
     -------
     list[str]
-        去重后的自然排序标签列表。
+        Deduplicated list of naturally sorted labels.
     """
 
     labels = [str(x) for x in list(labels)]
 
-    # 去重，同时保留原始列表中的唯一标签
+    # Deduplicate while preserving unique labels from the original list
     labels = list(dict.fromkeys(labels))
 
     return sorted(labels, key=_natural_sort_key)
 
 
 def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """为离散分类标签构建颜色映射。
+    """Build a color mapping for discrete categorical labels.
 
-    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
-    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+    This internal helper takes colors from one or more Matplotlib discrete palettes according to the order of ``labels``.
+    When the number of categories exceeds the default color pool, ``hsv`` is used to add more colors so every category has a corresponding color.
 
     Parameters
     ----------
     labels
-        已排序的分类标签列表。
+        Sorted list of categorical labels.
 
     palette
-        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
-        ``DEFAULT_DISCRETE_PALETTES``。
+        Matplotlib colormap name, sequence of colormap names, or ``None``. If ``None``,
+        ``DEFAULT_DISCRETE_PALETTES`` is used.
 
     Returns
     -------
     dict
-        ``{label: color}`` 形式的字典，可直接用于 Matplotlib 绘图。
+        Dictionary in the form of ``{label: color}``, which can be used directly for Matplotlib plotting.
     """
 
     labels = list(labels)
 
-    #  默认使用大颜色池
+    # Use the large color pool by default
     if palette is None:
         palette_names = DEFAULT_DISCRETE_PALETTES
 
-    # 兼容原来的 palette="tab20" 写法
+    # Compatible with the original palette="tab20" usage
     elif isinstance(palette, str):
         palette_names = (palette,)
 
-    # 支持 palette=["tab20", "tab20b", ...]
+    # Support palette=["tab20", "tab20b", ...]
     else:
         palette_names = tuple(palette)
 
@@ -911,11 +932,11 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     for cmap_name in palette_names:
         cmap_obj = plt.get_cmap(cmap_name)
 
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        # ListedColormap, such as tab20 / Set3, usually has .colors
         if hasattr(cmap_obj, "colors"):
             palette_colors.extend(list(cmap_obj.colors))
 
-        # 兜底：如果是连续 colormap，就均匀取色
+        # Fallback: if it is a continuous colormap, sample colors evenly
         else:
             n = getattr(cmap_obj, "N", 256)
             palette_colors.extend([
@@ -923,7 +944,7 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
                 for i in range(n)
             ])
 
-    # 如果类别数超过颜色池，继续用 hsv 补足
+    # If the number of categories exceeds the color pool, use hsv to add more colors
     if len(palette_colors) < len(labels):
         extra_n = len(labels) - len(palette_colors)
         hsv = plt.get_cmap("hsv")
@@ -936,4 +957,3 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
         lab: palette_colors[i]
         for i, lab in enumerate(labels)
     }
-

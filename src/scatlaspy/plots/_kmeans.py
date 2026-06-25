@@ -13,29 +13,39 @@ def kmeans_cluster_size(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 K-means 或其他分组列的细胞数量分布。
+    """Plot the cell count distribution of K-means or another grouping column.
 
-    该函数从 ``obs`` 表读取 ``use_obs_col`` 指定的分组列，统计每个分组包含的细胞数，
-    并用柱状图展示分组规模。默认按百分比显示，也可以切换为原始细胞数。
+    This function reads the grouping column specified by ``use_obs_col`` from the
+    ``obs`` table, counts the number of cells in each group, and displays the group
+    sizes as a bar plot. By default, values are shown as percentages, but they can
+    also be shown as raw cell counts.
 
-    该图常用于检查聚类结果是否过度不均衡、是否存在很小的 cluster，或确认不同
-    聚类参数下的分组规模是否符合预期。虽然默认列名是 ``"kmeans"``，但也可以用于
-    ``leiden``、``cell_type`` 等任意 ``obs`` 分组列，只要该列能转换为整数标签。
+    This plot is commonly used to check whether clustering results are overly
+    imbalanced, whether very small clusters exist, or whether the group sizes under
+    different clustering parameters meet expectations. Although the default column
+    name is ``"kmeans"``, it can also be used for any ``obs`` grouping column such
+    as ``leiden`` or ``cell_type``, as long as the column can be converted to integer
+    labels.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且数据库中包含 ``obs`` 表。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        database must contain the ``obs`` table.
     use_obs_col
-        ``obs`` 中用于统计分组大小的列名。默认读取 ``"kmeans"``。
+        Column name in ``obs`` used to count group sizes. By default, ``"kmeans"``
+        is read.
     figsize
-        Matplotlib 图像大小。默认 ``(7, 4)``。
+        Matplotlib figure size. Defaults to ``(7, 4)``.
     show_percent
-        是否把 y 轴显示为细胞百分比。为 ``False`` 时显示每个分组的原始细胞数量。
+        Whether to display the y-axis as the percentage of cells. If ``False``, the
+        raw number of cells in each group is displayed.
     title
-        图标题。为 ``None`` 时自动使用 ``"{use_obs_col} cluster distribution"``。
+        Figure title. If ``None``, ``"{use_obs_col} cluster distribution"`` is used
+        automatically.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
@@ -43,12 +53,12 @@ def kmeans_cluster_size(
 
     Examples
     --------
-    绘制默认 K-means 聚类大小::
+    Plot the default K-means cluster sizes::
 
         sap.tl.kmeans(atlas, n_clusters=20)
         sap.pl.kmeans_cluster_size(atlas)
 
-    绘制自定义聚类列并显示百分比::
+    Plot a custom clustering column and display percentages::
 
         sap.pl.kmeans_cluster_size(
             atlas,
@@ -60,15 +70,15 @@ def kmeans_cluster_size(
     start = datetime.now()
     conn = atlas.connection
 
-    # 检查 obs 中是否存在 kmeans 列
+    # Check whether the kmeans column exists in obs
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     if use_obs_col not in obs_cols:
         raise ValueError(
-            f"obs 中不存在列: {use_obs_col}\n"
-            f"请先运行 sap.tl.kmeans(atlas, use_obs_col='{use_obs_col}')"
+            f"The column does not exist in obs: {use_obs_col}\n"
+            f"Please run sap.tl.kmeans(atlas, use_obs_col='{use_obs_col}') first"
         )
 
-    # 统计 cluster 数量
+    # Count clusters
     df = conn.execute(f"""
         SELECT
             {use_obs_col} AS cluster,
@@ -81,14 +91,14 @@ def kmeans_cluster_size(
 
     if len(df) == 0:
         raise ValueError(
-            f"obs.{use_obs_col} 中没有可用聚类结果。\n"
-            f"请先运行 sap.tl.kmeans(atlas)"
+            f"No available clustering results found in obs.{use_obs_col}.\n"
+            f"Please run sap.tl.kmeans(atlas) first"
         )
 
     df["cluster"] = df["cluster"].astype(int).astype(str)
     df["pct"] = df["n_cells"] / df["n_cells"].sum() * 100
 
-    # 画图
+    # Plot
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 

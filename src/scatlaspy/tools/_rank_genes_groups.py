@@ -26,88 +26,117 @@ def rank_genes_groups(
         inplace: bool = True,
         return_df: bool = True,
 ):
-    """按细胞分组计算 marker gene 排名。
+    """Rank marker genes by cell groups.
 
-    该函数按 ``obs`` 表中 ``groupby`` 指定的列对细胞分组，对每个目标分组与
-    参考组执行差异表达统计，并生成 marker gene 排名结果。
+    This function groups cells according to the column specified by ``groupby``
+    in the ``obs`` table, performs differential expression statistics between
+    each target group and the reference group, and generates marker gene ranking
+    results.
 
-    函数会先在 SQL 中聚合每个 ``group × gene`` 的表达总和、平方和和非零
-    表达记录数量，再在 pandas/numpy 中计算 Welch t-test、log fold change、
-    表达比例和多重检验校正后的 p 值。结果可写入数据库表，也可以作为
-    ``pandas.DataFrame`` 返回。
+    The function first aggregates the expression sum, squared sum, and nonzero
+    expression record count for each ``group × gene`` in SQL. It then calculates
+    Welch's t-test, log fold change, expression percentages, and multiple-testing
+    adjusted p-values in pandas/numpy. The results can be written to a database
+    table or returned as a ``pandas.DataFrame``.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-        ``obs``、``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain at least the ``obs``, ``var``, and
+        ``X_HyS_data`` tables.
 
-        ``obs`` 表需要包含 ``atlas_cell_id`` 和 ``groupby`` 指定的分组列；
-        ``var`` 表需要包含 ``atlas_gene_id`` 和 ``atlas_gene_name``；
-        ``X_HyS_data`` 表需要包含 ``atlas_cell_id``、``atlas_gene_id`` 以及
-        由 ``use_data`` 指定的表达字段。
+        The ``obs`` table must contain ``atlas_cell_id`` and the grouping column
+        specified by ``groupby``; the ``var`` table must contain
+        ``atlas_gene_id`` and ``atlas_gene_name``; the ``X_HyS_data`` table must
+        contain ``atlas_cell_id``, ``atlas_gene_id``, and the expression field
+        specified by ``use_data``.
+
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
-    use_data
-        从 ``X_HyS_data`` 表中读取的表达字段名。默认值为 ``"data_log1p"``。
-        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
-        和 ``"data_scale"``。
-    groups
-        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
-    reference
-        差异分析参考组。默认值为 ``"rest"``，表示每个目标分组与其他所有
-        非该分组细胞比较。
+        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or
+        ``"cell_type"``.
 
-        也可以传入某个具体分组名或分组 ID，此时每个目标分组会与该参考分组
-        比较，且参考分组本身不会作为目标分组输出。
+    use_data
+        Expression field name read from the ``X_HyS_data`` table. The default
+        value is ``"data_log1p"``. Common values include ``"data_count"``,
+        ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
+
+    groups
+        List of groups to calculate, display, or retain. When set to ``None``,
+        all groups are used.
+
+    reference
+        Reference group for differential analysis. The default value is
+        ``"rest"``, meaning that each target group is compared against all cells
+        outside that group.
+
+        A specific group name or group ID can also be passed. In that case, each
+        target group is compared with the specified reference group, and the
+        reference group itself is not output as a target group.
+
     n_genes
-        每个分组保留或展示的基因数量。为 ``None`` 时保留全部可用基因。
+        Number of genes to retain or display for each group. When set to
+        ``None``, all available genes are retained.
+
     mask_var
-        用于限制参与分析基因范围的 ``var`` 布尔列名。例如传入
-        ``"highly_variable_genes"`` 时，只分析该列为 ``TRUE`` 的基因。
-        为 ``None`` 时使用 ``var`` 表中的全部基因。
+        Boolean column name in ``var`` used to restrict the gene set included in
+        the analysis. For example, passing ``"highly_variable_genes"`` analyzes
+        only genes where this column is ``TRUE``. When set to ``None``, all genes
+        in the ``var`` table are used.
+
     corr_method
-        多重检验校正方法。支持 ``"benjamini-hochberg"`` 和 ``"bonferroni"``。
+        Multiple-testing correction method. Supports ``"benjamini-hochberg"``
+        and ``"bonferroni"``.
+
     rankby_abs
-        是否按 t 统计量绝对值排序。默认 ``False``，表示优先保留在目标分组中
-        相对参考组更高表达的基因。
+        Whether to sort by the absolute value of the t statistic. The default is
+        ``False``, meaning that genes relatively more highly expressed in the
+        target group than in the reference group are prioritized.
+
     add_table
-        写入数据库的结果表名。
+        Name of the result table written to the database.
+
     input_is_log
-        输入表达字段是否已经做过对数变换。默认 ``True``。
-        当为 ``True`` 时，计算 log fold change 前会对均值执行 ``expm1`` 近似还原；
-        当为 ``False`` 时直接基于原始均值计算。
+        Whether the input expression field has already been log-transformed. The
+        default is ``True``. When ``True``, the mean is approximately restored
+        using ``expm1`` before calculating log fold change; when ``False``, the
+        raw mean is used directly.
+
     lfc_eps
-        计算 log fold change 时加入的极小值，用于避免除零。
+        Small value added when calculating log fold change to avoid division by zero.
+
     inplace
-        是否把结果写回 Atlas 数据库。
+        Whether to write the results back to the Atlas database.
+
     return_df
-        是否返回结果 DataFrame。
+        Whether to return the result DataFrame.
 
     Returns
     -------
-    pandas.DataFrame 或 None
-        当 ``return_df=True`` 时返回差异基因结果 DataFrame。
-        当 ``return_df=False`` 时返回 ``None``。
-        如果 ``inplace=True``，结果还会写入 ``add_table`` 指定的数据库表。
+    pandas.DataFrame or None
+        When ``return_df=True``, returns the differential gene result DataFrame.
+        When ``return_df=False``, returns ``None``. If ``inplace=True``, the
+        results are also written to the database table specified by
+        ``add_table``.
 
     Notes
     -----
-    输出结果包含 ``group``、``reference``、``rank``、``atlas_gene_id``、
-    ``names``、``scores``、``logfoldchanges``、``pvals``、``pvals_adj``、
-    ``mean_in``、``mean_ref``、``pct_nz_in``、``pct_nz_ref``、``n_in``、
-    ``n_ref`` 和 ``method`` 等字段。
+    The output results contain fields such as ``group``, ``reference``, ``rank``,
+    ``atlas_gene_id``, ``names``, ``scores``, ``logfoldchanges``, ``pvals``,
+    ``pvals_adj``, ``mean_in``, ``mean_ref``, ``pct_nz_in``, ``pct_nz_ref``,
+    ``n_in``, ``n_ref``, and ``method``.
 
-    该实现基于稀疏表聚合统计量，不会构造完整 dense 矩阵；未显式存储的表达值
-    按 0 参与均值和方差计算。
+    This implementation is based on sparse-table aggregated statistics and does
+    not construct a full dense matrix. Expression values that are not explicitly
+    stored are treated as 0 when calculating means and variances.
 
     Examples
     --------
-    基于 K-means cluster 计算 marker genes::
+    Calculate marker genes based on K-means clusters::
 
         result = sap.tl.rank_genes_groups(atlas, groupby="kmeans")
 
-    只计算指定 cluster，并保留每组前 100 个基因::
+    Calculate only specified clusters and retain the top 100 genes per group::
 
         result = sap.tl.rank_genes_groups(
             atlas,
@@ -140,26 +169,26 @@ def rank_genes_groups(
 
     try:
         # -------------------------------------------------
-        # 0. 基础检查
+        # 0. Basic checks
         # -------------------------------------------------
         obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
         var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
         x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
         if groupby not in obs_cols:
-            raise ValueError(f"obs 中不存在列: {groupby}")
+            raise ValueError(f"Column does not exist in obs: {groupby}")
 
         if use_data not in x_cols:
-            raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+            raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
         if mask_var is not None and mask_var not in var_cols:
-            raise ValueError(f"var 中不存在列: {mask_var}")
+            raise ValueError(f"Column does not exist in var: {mask_var}")
 
         if corr_method not in {"benjamini-hochberg", "bonferroni"}:
-            raise ValueError("corr_method 只支持 'benjamini-hochberg' 或 'bonferroni'")
+            raise ValueError("corr_method only supports 'benjamini-hochberg' or 'bonferroni'")
 
         # -------------------------------------------------
-        # 1. 候选基因集合
+        # 1. Candidate gene set
         # -------------------------------------------------
         for t in temp_tables:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
@@ -169,9 +198,9 @@ def rank_genes_groups(
         else:
             var_where = f"COALESCE({_q(mask_var)}, FALSE)=TRUE"
 
-        # 保留 atlas_gene_name
-        # 如果你的 var 里有 gene_name，并且想优先显示 gene symbol，
-        # 可以把 atlas_gene_name 换成 COALESCE(gene_name, atlas_gene_name)
+        # Keep atlas_gene_name
+        # If your var contains gene_name and you want to prioritize displaying gene symbols,
+        # you can replace atlas_gene_name with COALESCE(gene_name, atlas_gene_name)
         if "gene_name" in var_cols:
             gene_name_expr = "COALESCE(gene_name, atlas_gene_name)"
         else:
@@ -192,10 +221,10 @@ def rank_genes_groups(
         """).fetchone()[0]
 
         if gene_count == 0:
-            raise ValueError("候选基因集合为空，请检查 mask_var 设置")
+            raise ValueError("The candidate gene set is empty. Please check the mask_var setting")
 
         # -------------------------------------------------
-        # 2. group 信息
+        # 2. Group information
         # -------------------------------------------------
         group_df = conn.execute(f"""
             SELECT
@@ -208,29 +237,32 @@ def rank_genes_groups(
         """).fetchdf()
 
         if len(group_df) == 0:
-            raise ValueError(f"obs.{groupby} 中没有可用分组")
+            raise ValueError(f"No available groups in obs.{groupby}")
 
         all_groups = group_df["group_name"].astype(str).tolist()
 
         def _group_sort_key(x: Any):
-            """生成分组或标签的自然排序键。
+            """Generate a natural sorting key for groups or labels.
 
-            该内部 helper 用于让分组名排序更接近单细胞分析中的自然顺序。
-            如果分组名可以转为整数或浮点数，则按数值排序；否则按字符串排序。
+            This internal helper is used to make group-name sorting closer to the
+            natural order commonly used in single-cell analysis. If a group name
+            can be converted to an integer or a float, it is sorted numerically;
+            otherwise, it is sorted as a string.
 
             Parameters
             ----------
             x
-                需要排序的分组名或标签。
+                Group name or label to sort.
 
             Returns
             -------
             sort_key
-                可用于 ``sorted(..., key=...)`` 的排序键。
+                Sorting key that can be used by ``sorted(..., key=...)``.
 
             Notes
             -----
-            该函数只影响结果中分组的处理顺序，不改变数据库中的原始分组值。
+            This function only affects the processing order of groups in the
+            results. It does not change the original group values in the database.
             """
             try:
                 return (0, int(x))
@@ -249,24 +281,24 @@ def rank_genes_groups(
             group_list = [g for g in all_groups if str(g) in wanted]
 
         if len(group_list) == 0:
-            raise ValueError("groups 过滤后没有可用 group")
+            raise ValueError("No available groups remain after filtering by groups")
 
         if reference != "rest":
             reference = str(reference)
 
             if reference not in set(all_groups):
                 raise ValueError(
-                    f"reference={reference!r} 不在 obs.{groupby} 中，"
-                    f"可用 groups={all_groups}"
+                    f"reference={reference!r} is not in obs.{groupby}; "
+                    f"available groups={all_groups}"
                 )
 
             group_list = [g for g in group_list if str(g) != str(reference)]
 
             if len(group_list) == 0:
-                raise ValueError("去掉 reference 后 groups 为空")
+                raise ValueError("groups is empty after removing the reference group")
 
         # -------------------------------------------------
-        # 3. 一次性聚合 group × gene 统计
+        # 3. Aggregate group × gene statistics in one pass
         # -------------------------------------------------
         conn.execute(f"""
             CREATE TEMP TABLE _rgg_group_stats AS
@@ -297,7 +329,7 @@ def rank_genes_groups(
         """)
 
         # -------------------------------------------------
-        # 4. reference='rest' 时，预先计算所有 group 总和
+        # 4. When reference='rest', precompute the total sums across all groups
         # -------------------------------------------------
         if reference == "rest":
             total_cells = int(group_df["n_cells"].sum())
@@ -319,7 +351,7 @@ def rank_genes_groups(
             total_cells = None
 
         # -------------------------------------------------
-        # 5. 逐 group 计算 rank_genes_groups 结果
+        # 5. Calculate rank_genes_groups results group by group
         # -------------------------------------------------
         result_list = []
 
@@ -453,7 +485,7 @@ def rank_genes_groups(
                 df["pvals_adj"] = _p_adjust_bonferroni(df["pvals"].to_numpy())
 
             # -------------------------------------------------
-            # 排名
+            # Ranking
             # -------------------------------------------------
             if rankby_abs:
                 df = df.sort_values(
@@ -522,7 +554,7 @@ def rank_genes_groups(
             result_df = pd.concat(result_list, axis=0, ignore_index=True)
 
         # -------------------------------------------------
-        # 6. 写入数据库表
+        # 6. Write to database table
         # -------------------------------------------------
         if inplace:
             conn.execute(f"DROP TABLE IF EXISTS {_q(add_table)}")
@@ -537,7 +569,7 @@ def rank_genes_groups(
             conn.unregister("_rgg_result_py")
 
 
-        ("rank_genes_groups 完成, 耗时: {:.2f} 秒".format((datetime.now() - start).total_seconds()))
+        ("rank_genes_groups completed, elapsed time: {:.2f} seconds".format((datetime.now() - start).total_seconds()))
 
         if return_df:
             return result_df
@@ -546,7 +578,7 @@ def rank_genes_groups(
 
     finally:
         # -------------------------------------------------
-        # 7. 轻量清理：只清临时表，不关闭连接
+        # 7. Lightweight cleanup: only clean temporary tables, do not close the connection
         # -------------------------------------------------
         for t in temp_tables:
             try:
@@ -563,55 +595,60 @@ def rank_genes_groups(
 
 
 def _q(name: str) -> str:
-    """为 SQL 标识符添加安全引用。
+    """Add safe quoting to a SQL identifier.
 
-    该内部 helper 用于在差异基因分析中安全引用动态传入的 DuckDB 表名或
-    字段名，例如 ``groupby``、``use_data``、``mask_var`` 和 ``add_table``。
-    函数会转义名称中已有的双引号，并在外层添加双引号，避免字段名包含
-    特殊字符或关键字时 SQL 解析失败。
+    This internal helper is used in differential gene analysis to safely quote
+    dynamically passed DuckDB table names or field names, such as ``groupby``,
+    ``use_data``, ``mask_var``, and ``add_table``. The function escapes existing
+    double quotes in the name and adds double quotes around it, avoiding SQL
+    parsing failures when field names contain special characters or keywords.
 
     Parameters
     ----------
     name
-        需要引用的 SQL 标识符。
+        SQL identifier to quote.
 
     Returns
     -------
     quoted_name
-        加双引号后的 SQL 标识符。
+        SQL identifier enclosed in double quotes.
 
     Notes
     -----
-    该函数只用于 SQL 标识符，不用于普通字符串值。字符串值应通过 DuckDB
-    参数绑定传入。
+    This function is only used for SQL identifiers, not for ordinary string
+    values. String values should be passed through DuckDB parameter binding.
     """
     return '"' + str(name).replace('"', '""') + '"'
 
 
 def _p_adjust_bh(pvals: np.ndarray) -> np.ndarray:
-    """使用 Benjamini-Hochberg 方法校正多重检验 p 值。
+    """Adjust multiple-testing p-values using the Benjamini-Hochberg method.
 
-    该内部函数用于 ``rank_genes_groups`` 的 ``corr_method="benjamini-hochberg"``
-    分支。它对每个分组内所有基因的原始 p 值执行 FDR 校正，并保持输入数组
-    的原始顺序。
+    This internal function is used for the ``corr_method="benjamini-hochberg"``
+    branch of ``rank_genes_groups``. It performs FDR correction on the raw
+    p-values of all genes within each group and preserves the original order of
+    the input array.
 
-    ``NaN`` 或无穷值会被视为无效 p 值，输出中对应位置保持为 ``NaN``；
-    只有有限 p 值会参与排序和校正。
+    ``NaN`` or infinite values are treated as invalid p-values, and the
+    corresponding positions in the output remain ``NaN``. Only finite p-values
+    participate in sorting and correction.
 
     Parameters
     ----------
     pvals
-        待校正的原始 p 值数组。
+        Array of raw p-values to adjust.
 
     Returns
     -------
     numpy.ndarray
-        与 ``pvals`` 等长的校正后 p 值数组。有限输入会被限制在 ``[0, 1]``
-        范围内，无效输入对应 ``NaN``。
+        Adjusted p-value array with the same length as ``pvals``. Finite inputs
+        are clipped to the ``[0, 1]`` range, and invalid inputs correspond to
+        ``NaN``.
 
     Notes
     -----
-    这是内部 helper；用户通常通过 ``rank_genes_groups`` 间接使用。
+    This is an internal helper; users usually use it indirectly through
+    ``rank_genes_groups``.
     """
     pvals = np.asarray(pvals, dtype=np.float64)
 
@@ -639,25 +676,28 @@ def _p_adjust_bh(pvals: np.ndarray) -> np.ndarray:
 
 
 def _p_adjust_bonferroni(pvals: np.ndarray) -> np.ndarray:
-    """使用 Bonferroni 方法校正多重检验 p 值。
+    """Adjust multiple-testing p-values using the Bonferroni method.
 
-    该内部函数用于 ``rank_genes_groups`` 的 ``corr_method="bonferroni"``
-    分支。它将每个有限 p 值乘以参与校正的有限 p 值数量，并把结果限制在
-    ``[0, 1]`` 范围内。
+    This internal function is used for the ``corr_method="bonferroni"`` branch
+    of ``rank_genes_groups``. It multiplies each finite p-value by the number of
+    finite p-values participating in the correction and clips the result to the
+    ``[0, 1]`` range.
 
     Parameters
     ----------
     pvals
-        待校正的原始 p 值数组。
+        Array of raw p-values to adjust.
 
     Returns
     -------
     numpy.ndarray
-        与 ``pvals`` 等长的校正后 p 值数组。无效输入对应 ``NaN``。
+        Adjusted p-value array with the same length as ``pvals``. Invalid inputs
+        correspond to ``NaN``.
 
     Notes
     -----
-    这是内部 helper；用户通常通过 ``rank_genes_groups`` 间接使用。
+    This is an internal helper; users usually use it indirectly through
+    ``rank_genes_groups``.
     """
     pvals = np.asarray(pvals, dtype=np.float64)
 
@@ -672,35 +712,38 @@ def _p_adjust_bonferroni(pvals: np.ndarray) -> np.ndarray:
 
 
 def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """根据汇总统计量计算检验结果。
+    """Calculate test results from summary statistics.
 
-    该内部函数接收 ``rank_genes_groups`` 从 DuckDB 聚合得到的 group 内外统计量，
-    并在 pandas/numpy 中计算 Welch t-test 所需的均值、样本方差、t 统计量和
-    双侧 p 值。
+    This internal function receives the within-group and reference-group summary
+    statistics aggregated from DuckDB by ``rank_genes_groups``, and calculates
+    the mean, sample variance, t statistic, and two-sided p-value required for
+    Welch's t-test in pandas/numpy.
 
-    输入中的 ``sum_in``、``sumsq_in``、``sum_ref`` 和 ``sumsq_ref`` 来自稀疏
-    表中显式表达记录的聚合；``n_in`` 和 ``n_ref`` 则是对应分组的总细胞数。
-    因此未出现在 ``X_HyS_data`` 中的稀疏 0 值会通过总细胞数隐式参与均值和
-    方差计算。
+    The input ``sum_in``, ``sumsq_in``, ``sum_ref``, and ``sumsq_ref`` come from
+    aggregating explicitly expressed records in the sparse table; ``n_in`` and
+    ``n_ref`` are the total numbers of cells in the corresponding groups.
+    Therefore, sparse 0 values that do not appear in ``X_HyS_data`` implicitly
+    participate in mean and variance calculations through the total cell count.
 
     Parameters
     ----------
     df
-        包含每个基因的汇总统计量 DataFrame。至少需要包含：
-        ``n_in``、``n_ref``、``sum_in``、``sum_ref``、``sumsq_in`` 和
-        ``sumsq_ref``。
+        DataFrame containing summary statistics for each gene. It must contain at
+        least: ``n_in``, ``n_ref``, ``sum_in``, ``sum_ref``, ``sumsq_in``, and
+        ``sumsq_ref``.
 
     Returns
     -------
     pandas.DataFrame
-        在原 DataFrame 上新增并返回以下列：
-        ``mean_in``、``mean_ref``、``var_in``、``var_ref``、``scores`` 和
-        ``pvals``。
+        Returns the original DataFrame with the following columns added:
+        ``mean_in``, ``mean_ref``, ``var_in``, ``var_ref``, ``scores``, and
+        ``pvals``.
 
     Notes
     -----
-    当标准误为 0 或自由度异常时，p 值会被设置为 ``1.0``，表示该基因在当前
-    比较中不显著。
+    When the standard error is 0 or the degrees of freedom are abnormal, the
+    p-value is set to ``1.0``, indicating that the gene is not significant in the
+    current comparison.
     """
 
     n_in = df["n_in"].to_numpy(dtype=np.float64)
@@ -731,8 +774,8 @@ def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     # -------------------------------------------------
     # 2. sample variance
-    #    CSR 中未出现的值按 0 处理；
-    #    sum / sumsq 是非零项聚合，但 n_in / n_ref 是总细胞数。
+    #    Values that do not appear in CSR are treated as 0;
+    #    sum / sumsq are aggregated from nonzero entries, but n_in / n_ref are the total cell counts.
     # -------------------------------------------------
     var_in = np.zeros_like(mean_in, dtype=np.float64)
     var_ref = np.zeros_like(mean_ref, dtype=np.float64)
@@ -808,7 +851,7 @@ def _compute_ttest_from_summary(df: pd.DataFrame) -> pd.DataFrame:
 
     pvals = 2.0 * stats.t.sf(np.abs(scores), dof)
 
-    # se=0 或 dof 异常时，设为不显著
+    # When se=0 or dof is abnormal, set it to not significant
     pvals[~np.isfinite(pvals)] = 1.0
 
     df["mean_in"] = mean_in

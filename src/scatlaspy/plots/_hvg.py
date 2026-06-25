@@ -11,11 +11,11 @@ def highly_variable_genes(
         atlas: Atlas,
         flavor: Literal["seurat", "cv", "var"] = "seurat",
 
-        # 通用参数：两个底层函数都支持
+        # General parameters: supported by both underlying functions
         hvg_key: str = "highly_variable_genes",
         sample_other: int | None = 20000,
 
-        # cv / var 版本参数：只传给 highly_variable_genes_plot()
+        # Parameters for the cv / var versions: only passed to highly_variable_genes_plot()
         mean_key: str = "hvg_mean",
         var_key: str = "hvg_var",
         std_key: str = "hvg_std",
@@ -28,48 +28,68 @@ def highly_variable_genes(
 
         save_path: PathLike[str] | str | None = None,
 ):
-    """绘制高变基因筛选结果诊断图。
+    """Plot diagnostic figures for highly variable gene selection results.
 
-    该函数是 HVG 绘图的公开入口，会根据 ``flavor`` 调用对应的底层绘图逻辑：
-    ``"seurat"`` 读取 ``means``、``dispersions`` 和 ``dispersions_norm``；
-    ``"cv"`` 或 ``"var"`` 读取 ``hvg_mean``、``hvg_var``、``hvg_std`` 和``hvg_score``。
-    所有风格都会根据 ``hvg_key`` 高亮已经标记为高变的基因。
+    This function is the public entry point for HVG plotting. It calls the corresponding
+    underlying plotting logic according to ``flavor``:
+    ``"seurat"`` reads ``means``, ``dispersions``, and ``dispersions_norm``;
+    ``"cv"`` or ``"var"`` reads ``hvg_mean``, ``hvg_var``, ``hvg_std``, and ``hvg_score``.
+    All styles highlight genes already marked as highly variable according to ``hvg_key``.
 
-    该图类似 Scanpy 的 ``sc.pl.highly_variable_genes``，主要用于确认高变基因筛选
-    结果是否合理，而不是重新计算高变基因。
+    This plot is similar to Scanpy ``sc.pl.highly_variable_genes`` and is mainly used
+    to check whether the highly variable gene selection results are reasonable, rather
+    than recalculating highly variable genes.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中已经包含对应
-        ``flavor`` 所需的 HVG 统计列。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        ``var`` table must already contain the HVG statistic columns required by
+        the corresponding ``flavor``.
+
     flavor
-        绘图风格。``"seurat"`` 使用 Seurat 风格 dispersion 结果；
-        ``"cv"`` 和 ``"var"`` 使用均值、方差、标准差和高变得分结果。
+        Plotting style. ``"seurat"`` uses Seurat-style dispersion results;
+        ``"cv"`` and ``"var"`` use mean, variance, standard deviation, and highly
+        variable gene score results.
+
     hvg_key
-        ``var`` 中标记高变基因的列名。
+        Column name in ``var`` that marks highly variable genes.
+
     sample_other
-        从非高变基因中抽样展示的数量。为 ``None`` 时绘制全部非高变基因。
+        Number of non-highly-variable genes to sample for display.
+        If ``None``, all non-highly-variable genes are plotted.
+
     mean_key
-        ``var`` 中保存均值的列名。
+        Column name in ``var`` storing the mean.
+
     var_key
-        ``var`` 中保存方差的列名。
+        Column name in ``var`` storing the variance.
+
     std_key
-        ``var`` 中保存标准差的列名。
+        Column name in ``var`` storing the standard deviation.
+
     score_key
-        ``var`` 中保存高变基因评分的列名。
+        Column name in ``var`` storing the highly variable gene score.
+
     figsize
-        CV/方差风格图的 Matplotlib 图像大小；Seurat 风格使用底层函数固定尺寸。
+        Matplotlib figure size for the CV/variance-style plot; the Seurat-style plot
+        uses the fixed size in the underlying function.
+
     point_size_hvg
-        高变基因散点大小。
+        Scatter point size for highly variable genes.
+
     point_size_other
-        非高变基因散点大小。
+        Scatter point size for non-highly-variable genes.
+
     alpha_hvg
-        高变基因散点透明度。
+        Scatter point transparency for highly variable genes.
+
     alpha_other
-        非高变基因散点透明度。
+        Scatter point transparency for non-highly-variable genes.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Returns
     -------
@@ -77,12 +97,12 @@ def highly_variable_genes(
 
     Examples
     --------
-    绘制默认高变基因结果::
+    Plot the default highly variable gene results::
 
         sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
         sap.pl.highly_variable_genes(atlas)
 
-    绘制 CV 风格结果::
+    Plot CV-style results::
 
         sap.pl.highly_variable_genes(
             atlas,
@@ -90,7 +110,7 @@ def highly_variable_genes(
             hvg_key="highly_variable_genes",
         )
 
-    保存 Seurat 风格图::
+    Save a Seurat-style plot::
 
         sap.pl.highly_variable_genes(
             atlas,
@@ -129,12 +149,12 @@ def highly_variable_genes(
 
     else:
         raise ValueError(
-            f"不支持的 flavor: {flavor}. "
-            "可选值为: 'seurat', 'cv', 'var'"
+            f"Unsupported flavor: {flavor}. "
+            "Available values are: 'seurat', 'cv', 'var'"
         )
 
 
-# HVG： cv / var 版本
+# HVG: cv / var version
 def _highly_variable_genes_plot(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
@@ -151,64 +171,72 @@ def _highly_variable_genes_plot(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 cv/var风格的高变基因筛选诊断图。
+    """Plot a cv/var-style diagnostic figure for highly variable gene selection.
 
-    该内部绘图函数从 ``var`` 表读取每个基因的均值、方差、标准差、高变得分和
-    HVG 标记，并绘制两张诊断散点图：左图展示归一化后的高变得分与平均表达的
-    关系，右图展示原始方差与平均表达的关系。高变基因会被单独高亮显示。
+    This internal plotting function reads each gene's mean, variance, standard deviation,
+    highly variable gene score, and HVG marker from the ``var`` table, and draws two
+    diagnostic scatter plots: the left panel shows the relationship between the
+    normalized highly variable gene score and average expression, while the right panel
+    shows the relationship between raw variance and average expression. Highly variable
+    genes are highlighted separately.
 
-    该图用于检查 CV 或方差风格的 HVG 选择是否合理，例如高变基因是否集中在
-    期望的表达区间、非高变基因背景是否过密，以及 ``score_key`` 是否能有效区分
-    高变和非高变基因。
+    This plot is used to check whether CV- or variance-style HVG selection is reasonable,
+    for example whether highly variable genes are concentrated in the expected expression
+    range, whether the non-highly-variable gene background is too dense, and whether
+    ``score_key`` can effectively distinguish highly variable genes from other genes.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中包含 HVG 统计列。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        ``var`` table must contain HVG statistic columns.
 
     hvg_key
-        ``var`` 中表示高变基因的布尔列名。
+        Boolean column name in ``var`` indicating highly variable genes.
 
     mean_key
-        ``var`` 中保存基因均值的列名。
+        Column name in ``var`` storing gene means.
 
     var_key
-        ``var`` 中保存基因方差的列名。
+        Column name in ``var`` storing gene variances.
 
     std_key
-        ``var`` 中保存基因标准差的列名。
+        Column name in ``var`` storing gene standard deviations.
 
     score_key
-        ``var`` 中保存得分的列名。
+        Column name in ``var`` storing scores.
 
     sample_other
-        从非高变基因中抽样用于绘图的数量。为 ``None`` 时绘制全部非高变基因。
+        Number of non-highly-variable genes to sample for plotting.
+        If ``None``, all non-highly-variable genes are plotted.
 
     figsize
-        Matplotlib 图像大小。为 ``None`` 时使用 Matplotlib 默认尺寸。
+        Matplotlib figure size. If ``None``, the Matplotlib default size is used.
 
     point_size_hvg
-        高变基因点大小。
+        Point size for highly variable genes.
 
     point_size_other
-        非高变基因点大小。
+        Point size for non-highly-variable genes.
 
     alpha_hvg
-        高变基因点透明度。
+        Point transparency for highly variable genes.
 
     alpha_other
-        非高变基因点透明度。
+        Point transparency for non-highly-variable genes.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not saved.
 
     Notes
     -----
-    绘图前需要先运行会写入 ``hvg_mean``、``hvg_var``、``hvg_std``、``hvg_score`` 和
-    ``hvg_key`` 的高变基因计算流程。该函数只负责读取结果并绘图，不会重新计算 HVG。
+    Before plotting, you need to run a highly variable gene calculation workflow that
+    writes ``hvg_mean``, ``hvg_var``, ``hvg_std``, ``hvg_score``, and ``hvg_key``.
+    This function only reads the results and plots them; it does not recalculate HVGs.
 
     Examples
     --------
-    绘制 CV/方差风格 HVG 结果::
+    Plot CV/variance-style HVG results::
 
         sap.pl.highly_variable_genes(atlas, flavor="cv")
     """
@@ -216,18 +244,18 @@ def _highly_variable_genes_plot(
     start = datetime.now()
     conn = atlas.connection
 
-    # 检查 var 中列是否存在
+    # Check whether columns exist in var
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
 
     needed = [hvg_key, mean_key, var_key, std_key, score_key, "atlas_gene_name"]
     missing = [c for c in needed if c not in var_cols]
     if missing:
         raise ValueError(
-            f"var 中不存在这些列: {missing}\n"
-            f"请先运行修改后的 sap.pp.highly_variable_genes(atlas)"
+            f"These columns do not exist in var: {missing}\n"
+            f"Please run the modified sap.pp.highly_variable_genes(atlas) first"
         )
 
-    # 直接从 var 读取 gene-level 结果
+    # Read gene-level results directly from var
     df = conn.execute(f"""
         SELECT
             atlas_gene_id,
@@ -243,7 +271,7 @@ def _highly_variable_genes_plot(
 
     df["var_norm_display"] = df["score_expr"]
 
-    # 非 HVG 可选抽样
+    # Optional sampling of non-HVG genes
     if sample_other is not None:
         df_hvg = df[df["is_hvg"]].copy()
         df_other = df[~df["is_hvg"]].copy()
@@ -260,7 +288,7 @@ def _highly_variable_genes_plot(
 
     fig, axes = plt.subplots(1, 2, figsize=figsize, facecolor="white")
 
-    # ---------- 左图 ----------
+    # ---------- Left panel ----------
     ax = axes[0]
 
     if len(plot_other) > 0:
@@ -306,7 +334,7 @@ def _highly_variable_genes_plot(
     ax.spines["bottom"].set_linewidth(1.0)
     ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
 
-    # ---------- 右图 ----------
+    # ---------- Right panel ----------
     ax = axes[1]
 
     if len(plot_other) > 0:
@@ -346,7 +374,7 @@ def _highly_variable_genes_plot(
 
     plt.show()
 
-# HVG： seurat 版本
+# HVG: seurat version
 def _highly_variable_genes_plot_seurat(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
@@ -354,44 +382,51 @@ def _highly_variable_genes_plot_seurat(
         save_path: PathLike[str] | str | None = None,
 ):
 
-    """绘制 Seurat 风格的高变基因筛选诊断图。
+    """Plot a Seurat-style diagnostic figure for highly variable gene selection.
 
-    该内部绘图函数从 ``var`` 表读取 Seurat 风格 HVG 结果，包括 ``means``、
-    ``dispersions``、``dispersions_norm`` 和 ``hvg_key``。函数会绘制两张散点图：
-    左图展示 normalized dispersion 与平均表达的关系，
-    右图展示原始 dispersion与平均表达的关系，并高亮 ``hvg_key`` 标记的高变基因。
+    This internal plotting function reads Seurat-style HVG results from the ``var``
+    table, including ``means``, ``dispersions``, ``dispersions_norm``, and ``hvg_key``.
+    The function draws two scatter plots: the left panel shows the relationship between
+    normalized dispersion and average expression, and the right panel shows the
+    relationship between raw dispersion and average expression, with highly variable
+    genes marked by ``hvg_key`` highlighted.
 
-    该图适合检查 Seurat 风格分箱归一化后的 dispersion 是否合理，以及最终选出的
-    高变基因是否分布在预期的表达范围内。
+    This plot is suitable for checking whether the Seurat-style binned normalized
+    dispersion is reasonable and whether the finally selected highly variable genes
+    are distributed within the expected expression range.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中包含 Seurat 风格
-        HVG 统计列。
+        Atlas object. It must already be connected to a DuckDB database, and the
+        ``var`` table must contain Seurat-style HVG statistic columns.
 
     hvg_key
-        ``var`` 中表示高变基因的布尔列名。
+        Boolean column name in ``var`` indicating highly variable genes.
 
     sample_other
-        从非高变基因中抽样用于绘图的数量。为 ``None`` 时绘制全部非高变基因。
+        Number of non-highly-variable genes to sample for plotting.
+        If ``None``, all non-highly-variable genes are plotted.
 
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不写入文件。
+        Path for saving the figure. If ``None``, the figure is only displayed and
+        not written to a file.
 
     Returns
     -------
     None
-        函数直接绘图，并在 ``save_path`` 不为 ``None`` 时保存图片。
+        The function directly plots the figure and saves it when ``save_path`` is not
+        ``None``.
 
     Notes
     -----
-    绘图前需要先运行 Seurat 风格的高变基因计算流程，确保 ``var`` 表中已经存在
-    ``means``、``dispersions`` 和 ``dispersions_norm``。
+    Before plotting, you need to run the Seurat-style highly variable gene calculation
+    workflow and ensure that ``means``, ``dispersions``, and ``dispersions_norm``
+    already exist in the ``var`` table.
 
     Examples
     --------
-    绘制默认 Seurat 风格 HVG 结果::
+    Plot the default Seurat-style HVG results::
 
         sap.pl.highly_variable_genes(atlas, flavor="seurat")
     """
@@ -401,28 +436,30 @@ def _highly_variable_genes_plot_seurat(
     conn = atlas.connection
 
     if conn is None:
-        raise ValueError("atlas.connection 为空，请先连接数据库")
+        raise ValueError("atlas.connection is None. Please connect to the database first")
 
-    # DuckDB 字段安全引用
+    # Safe quoting for DuckDB fields
     def _q(name: str) -> str:
-        """为 DuckDB SQL 标识符添加双引号引用。
+        """Add double-quote quoting for DuckDB SQL identifiers.
 
-        该内部 helper 用于安全拼接 ``var`` 表列名，避免列名中包含特殊字符或与 SQL
-        关键字冲突。函数只处理标识符引用，不处理 SQL 值的转义。
+        This internal helper is used to safely concatenate column names in the ``var``
+        table, avoiding SQL parsing issues when column names contain special characters
+        or conflict with SQL keywords. The function only handles identifier quoting,
+        not SQL value escaping.
 
         Parameters
         ----------
         name
-            需要作为 SQL 标识符使用的列名。
+            Column name to use as a SQL identifier.
 
         Returns
         -------
         str
-            已加双引号并转义内部双引号的 SQL 标识符。
+            SQL identifier with double quotes added and internal double quotes escaped.
         """
         return '"' + name.replace('"', '""') + '"'
 
-    # 检查 var 中列是否存在
+    # Check whether columns exist in var
     var_cols = [
         r[0]
         for r in conn.execute("""
@@ -445,11 +482,11 @@ def _highly_variable_genes_plot_seurat(
 
     if missing:
         raise ValueError(
-            f"var 中不存在这些列: {missing}\n"
-            f"请先运行 highly_variable_genes_seurat(atlas)"
+            f"These columns do not exist in var: {missing}\n"
+            f"Please run highly_variable_genes_seurat(atlas) first"
         )
 
-    # 读取 var 中已经保存好的 HVG 结果
+    # Read the HVG results already saved in var
     df = conn.execute(f"""
         SELECT
             atlas_gene_id,
@@ -462,7 +499,7 @@ def _highly_variable_genes_plot_seurat(
         ORDER BY atlas_gene_id
     """).fetchdf()
 
-    # 清理 nan / inf
+    # Clean nan / inf
     for col in ["means", "dispersions", "dispersions_norm"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
         df[col] = df[col].replace([np.inf, -np.inf], np.nan)
@@ -473,10 +510,10 @@ def _highly_variable_genes_plot_seurat(
 
     if len(df) == 0:
         raise ValueError(
-            "var.means 全为空，无法绘图。请先运行 highly_variable_genes_seurat(atlas)。"
+            "var.means is entirely empty, unable to plot. Please run highly_variable_genes_seurat(atlas) first."
         )
 
-    # 非 HVG 可选抽样
+    # Optional sampling of non-HVG genes
     if sample_other is not None:
         df_hvg = df[df["is_hvg"]].copy()
         df_other = df[~df["is_hvg"]].copy()
@@ -498,7 +535,7 @@ def _highly_variable_genes_plot_seurat(
     plot_hvg = plot_df[plot_df["is_hvg"]].copy()
     plot_other = plot_df[~plot_df["is_hvg"]].copy()
 
-    # 画图
+    # Plot
     fig, axes = plt.subplots(
         1,
         2,
@@ -506,7 +543,7 @@ def _highly_variable_genes_plot_seurat(
         facecolor="white",
     )
 
-    # 左图：normalized dispersions
+    # Left panel: normalized dispersions
     ax = axes[0]
 
     other_norm = plot_other[plot_other["dispersions_norm"].notna()]
@@ -550,7 +587,7 @@ def _highly_variable_genes_plot_seurat(
     ax.spines["right"].set_visible(False)
     ax.tick_params(axis="both", labelsize=11)
 
-    # 右图：raw dispersions
+    # Right panel: raw dispersions
     ax = axes[1]
 
     other_disp = plot_other[plot_other["dispersions"].notna()]

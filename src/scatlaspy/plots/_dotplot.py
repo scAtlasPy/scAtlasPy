@@ -10,12 +10,12 @@ from typing import Any
 
 
 # =====================================================
-# 统一离散分类颜色池
+# Unified discrete categorical color palette pool
 # -----------------------------------------------------
-# 用于 obs 分类变量上色，例如：
-# kmeans / cell_type / batch / organ 等
+# Used for coloring obs categorical variables, such as:
+# kmeans / cell_type / batch / organ, etc.
 #
-# 这些 palette 拼起来大约有 100 个离散颜色：
+# These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
 # + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
 # =====================================================
@@ -31,15 +31,15 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 # =====================================================
-# 通用分类标签自然排序
+# General natural sorting for categorical labels
 # -----------------------------------------------------
-# 解决：
+# Solves:
 # embryo_1, embryo_10, embryo_11, embryo_2
 #
-# 排成：
+# Sorted as:
 # embryo_1, embryo_2, embryo_3, ..., embryo_10
 #
-# 同样适用于：
+# Also works for:
 # cluster_1 / cluster_10
 # batch2 / batch10
 # group_3_day_2 / group_3_day_12
@@ -64,46 +64,58 @@ def dotplot(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制基因在不同细胞分组中的 dotplot。
+    """Plot a dotplot of gene expression across different cell groups.
 
-    该函数从 ``X_HyS_data`` 读取指定基因在各 ``obs[groupby]`` 分组中的表达，计算每个
-    ``group × gene`` 组合的平均表达和表达细胞比例，并绘制类似 Scanpy
-    ``sc.pl.dotplot`` 的点图：点的颜色表示平均表达，点的大小表示表达细胞比例。
+    This function reads the expression of specified genes in each ``obs[groupby]``
+    group from ``X_HyS_data``, calculates the average expression and the percentage
+    of expressing cells for each ``group × gene`` combination, and plots a dotplot
+    similar to Scanpy ``sc.pl.dotplot``: dot color represents average expression,
+    and dot size represents the percentage of expressing cells.
 
-    该图适合快速比较多个 marker genes 在不同 cluster、细胞类型或样本分组中的表达模式。
+    This plot is suitable for quickly comparing the expression patterns of multiple
+    marker genes across different clusters, cell types, or sample groups.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs``、``var`` 和``X_HyS_data`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain
+        the ``obs``, ``var``, and ``X_HyS_data`` tables.
     genes
-        需要展示的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
+        Gene name or list of gene names to display. They must exist in
+        ``var.atlas_gene_name``.
     groupby
-        ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
+        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``,
+        or ``"cell_type"``.
     use_data
-        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
-        或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``,
+        ``"data_count"``, or ``"data_scale"``.
     sample_cells_per_group
-        每个分组最多抽样用于绘图的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells sampled from each group for plotting.
+        If ``None``, all cells are used.
     groups
-        需要展示的分组列表。为 ``None`` 时使用满足条件的全部分组。
+        List of groups to display. If ``None``, all groups satisfying the conditions
+        are used.
     where
-        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
+        Additional SQL filtering condition. If ``None``, no additional condition is added.
     order
-        分组展示顺序。为 ``None`` 时使用自然排序。
+        Display order of groups. If ``None``, natural sorting is used.
     expression_cutoff
-        判断“该细胞表达该基因”的阈值。表达值大于该阈值的细胞会计入表达比例。
+        Threshold for determining whether a cell expresses a gene. Cells with expression
+        values greater than this threshold are counted toward the expression percentage.
     standard_scale
-        是否对平均表达颜色值做标准化。当前支持 ``"var"``，表示在每个基因内部把平均表达
-        缩放到 0 到 1；为 ``None`` 时直接使用原始平均表达。
+        Whether to standardize the average expression color values. Currently supports
+        ``"var"``, which scales average expression to 0 to 1 within each gene.
+        If ``None``, the raw average expression is used directly.
     colorbar_vmin
-        颜色条下限。为 ``None`` 时根据当前颜色值自动估计。
+        Lower limit of the colorbar. If ``None``, it is automatically estimated from
+        the current color values.
     colorbar_vmax
-        颜色条上限。为 ``None`` 时根据当前颜色值自动估计。
+        Upper limit of the colorbar. If ``None``, it is automatically estimated from
+        the current color values.
     font_size
-        绘图字体大小。
+        Font size for plotting.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片。
+        Path for saving the figure. If ``None``, the figure is only displayed.
 
     Returns
     -------
@@ -111,7 +123,7 @@ def dotplot(
 
     Examples
     --------
-    查看经典 marker genes 在 K-means cluster 中的表达::
+    View the expression of classic marker genes across K-means clusters::
 
         sap.pl.dotplot(
             atlas,
@@ -119,7 +131,7 @@ def dotplot(
             groupby="kmeans",
         )
 
-    只展示指定 cluster，并保存图片::
+    Display only specified clusters and save the figure::
 
         sap.pl.dotplot(
             atlas,
@@ -131,26 +143,26 @@ def dotplot(
 
     conn = atlas.connection
 
-    # 参数标准化
+    # Normalize parameters
     if isinstance(genes, str):
         genes = [genes]
     genes = [str(g) for g in genes]
     if len(genes) == 0:
-        raise ValueError("genes 不能为空")
+        raise ValueError("genes cannot be empty")
 
-    # 检查列
+    # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
     x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
     if groupby not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {groupby}")
+        raise ValueError(f"Column does not exist in obs: {groupby}")
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-        raise ValueError("var 中不存在 atlas_gene_id / atlas_gene_name")
+        raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
     if use_data not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -162,12 +174,12 @@ def dotplot(
     """).fetchdf()
 
     if len(gene_map_df) == 0:
-        raise ValueError("var 中找不到这些基因")
+        raise ValueError("These genes were not found in var")
 
     gene_map = dict(zip(gene_map_df["atlas_gene_name"], gene_map_df["atlas_gene_id"]))
     missing_genes = [g for g in genes if g not in gene_map]
     if missing_genes:
-        raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+        raise ValueError(f"These genes were not found in var: {missing_genes}")
 
     gene_map_df["atlas_gene_name"] = pd.Categorical(
         gene_map_df["atlas_gene_name"],
@@ -176,7 +188,7 @@ def dotplot(
     )
     gene_map_df = gene_map_df.sort_values("atlas_gene_name").reset_index(drop=True)
 
-    # 构造 where
+    # Build where clause
     where_clauses = [f"{groupby} IS NOT NULL"]
 
     if where is not None and str(where).strip() != "":
@@ -188,7 +200,7 @@ def dotplot(
 
     where_sql = " AND ".join(where_clauses)
 
-    # group 列表
+    # Group list
     group_df = conn.execute(f"""
         SELECT
             CAST({groupby} AS TEXT) AS group_label,
@@ -200,24 +212,25 @@ def dotplot(
     """).fetchdf()
 
     if len(group_df) == 0:
-        raise ValueError("没有可用 group")
+        raise ValueError("No available group")
 
-    # 数字型 group 按数值排序，避免 0,1,10,11,2
+    # Sort numeric groups by numeric value to avoid 0,1,10,11,2
     def _group_sort_key(x: Any):
-        """生成 dotplot 分组标签的排序键。
+        """Generate a sorting key for dotplot group labels.
 
-        能转换为整数或浮点数的分组按数值排序，其他标签按字符串排序，避免
-        ``"10"`` 排在 ``"2"`` 前面。
+        Groups that can be converted to integers or floats are sorted numerically;
+        other labels are sorted as strings, avoiding cases where ``"10"`` appears
+        before ``"2"``.
 
         Parameters
         ----------
         x
-            单个分组标签。
+            A single group label.
 
         Returns
         -------
         tuple
-            可传给 ``sorted(..., key=...)`` 的排序键。
+            Sorting key that can be passed to ``sorted(..., key=...)``.
         """
         try:
             return (0, int(x))
@@ -239,13 +252,13 @@ def dotplot(
         wanted = [str(x) for x in order]
         group_df = group_df[group_df["group_label"].isin(wanted)].copy()
         if len(group_df) == 0:
-            raise ValueError("order 过滤后没有可用 group")
+            raise ValueError("No available group after filtering by order")
         group_df["order_idx"] = group_df["group_label"].map({g: i for i, g in enumerate(wanted)})
         group_df = group_df.sort_values("order_idx").drop(columns="order_idx").reset_index(drop=True)
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
-    # 每个 group 抽样细胞
+    # Sample cells from each group
     sampled_parts = []
     for g in group_labels:
         if sample_cells_per_group is None:
@@ -272,13 +285,13 @@ def dotplot(
 
     cells_df = pd.concat(sampled_parts, ignore_index=True)
     if len(cells_df) == 0:
-        raise ValueError("抽样后没有细胞")
+        raise ValueError("No cells remain after sampling")
 
-    # 注册临时表
+    # Register temporary tables
     conn.register("_dotplot_cells_tmp", cells_df)
     conn.register("_dotplot_genes_tmp", gene_map_df[["atlas_gene_id", "atlas_gene_name"]])
 
-    # 取表达长表（补隐式 0）
+    # Fetch expression long table and fill implicit zeros
     expr_df = conn.execute(f"""
         SELECT
             c.group_label,
@@ -295,12 +308,12 @@ def dotplot(
     conn.unregister("_dotplot_genes_tmp")
 
     if len(expr_df) == 0:
-        raise ValueError("expr_df 为空，无法作图")
+        raise ValueError("expr_df is empty, unable to plot")
 
     expr_df["gene"] = pd.Categorical(expr_df["gene"], categories=genes, ordered=True)
     expr_df["group_label"] = pd.Categorical(expr_df["group_label"], categories=group_labels, ordered=True)
 
-    # 聚合统计
+    # Aggregate statistics
     stat_df = (
         expr_df
         .groupby(["group_label", "gene"], observed=True)
@@ -332,11 +345,11 @@ def dotplot(
     fig_w = main_w + right_w
     fig_h = main_h + 1.0
 
-    # 左边距：控制不要太空，也不要截断
+    # Left margin: keep it neither too empty nor clipped
     max_y_len = max(len(str(x)) for x in group_labels) if len(group_labels) > 0 else 10
     left_margin = min(0.24, max(0.09, 0.035 + 0.0085 * max_y_len))
 
-    # 底部边距：gene 名显示完整
+    # Bottom margin: ensure gene names are fully displayed
     max_gene_len = max(len(str(x)) for x in genes) if len(genes) > 0 else 10
     bottom_margin = min(0.28, max(0.18, 0.06 + 0.009 * max_gene_len))
 
@@ -354,7 +367,7 @@ def dotplot(
     ax_right.set_facecolor("white")
     ax_right.axis("off")
 
-    # 主图
+    # Main plot
     gene_to_x = {g: i for i, g in enumerate(genes)}
     group_to_y = {g: i for i, g in enumerate(group_labels)}
 
@@ -386,7 +399,7 @@ def dotplot(
         s=sizes,
         c=colors,
         cmap="Reds",
-        norm=norm,  # 修改：主图和 colorbar 使用同一个颜色范围
+        norm=norm,  # Modified: the main plot and colorbar use the same color range
         edgecolors="#777777",
         linewidths=0.25
     )
@@ -403,7 +416,7 @@ def dotplot(
     ax.tick_params(axis="x", pad=2)
     ax.grid(False)
 
-    # 黑色外框
+    # Black outer border
     for spine in ax.spines.values():
         spine.set_visible(True)
         spine.set_linewidth(1.0)
@@ -457,7 +470,7 @@ def dotplot(
             transform=ax_size.transAxes
         )
 
-    # 右侧下部：Mean expression legend（拉开）
+    # Lower right: Mean expression legend with increased spacing
     ax_cbar_box = ax_right.inset_axes([0.06, 0.12, 0.88, 0.18])
     ax_cbar_box.set_xlim(0, 1)
     ax_cbar_box.set_ylim(0, 1)
@@ -481,7 +494,7 @@ def dotplot(
     )
     cb.ax.tick_params(labelsize=font_size, length=4, width=1.0)
 
-    # 边距
+    # Margins
     fig.subplots_adjust(
         left=left_margin,
         right=0.98,
@@ -496,30 +509,33 @@ def dotplot(
 
 
 def _natural_sort_key(value: Any):
-    """生成分类标签的自然排序键。
+    """Generate a natural sorting key for categorical labels.
 
-    该内部 helper 用于让 dotplot 的分组标签按更符合阅读习惯的顺序排列，避免
-    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
-    的标签会被放到最后。
+    This internal helper is used to arrange dotplot group labels in a more readable
+    order, avoiding cases where ``cluster_10`` appears before ``cluster_2``.
+    Labels that look like missing values, such as empty strings, ``NA``, and ``nan``,
+    are placed at the end.
 
     Parameters
     ----------
     value
-        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+        Categorical label to sort. It can be a string, number, or any object that
+        can be converted to a string.
 
     Returns
     -------
     tuple
-        可传给 ``sorted(..., key=...)`` 的排序键。
+        Sorting key that can be passed to ``sorted(..., key=...)``.
 
     Examples
     --------
-    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    ``embryo_1 < embryo_2 < embryo_10`` and
+    ``cluster_1 < cluster_2 < cluster_11``.
     """
 
     s = str(value).strip()
 
-    # 缺失值标签放最后
+    # Put missing-value labels at the end
     if s.casefold() in _MISSING_CATEGORY_LABELS:
         return (1, ())
 
@@ -539,62 +555,65 @@ def _natural_sort_key(value: Any):
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:
-    """对分类标签去重并执行自然排序。
+    """Deduplicate categorical labels and perform natural sorting.
 
-    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供 dotplot
-    的分组显示顺序使用。
+    This internal helper first converts labels to strings and then sorts them using
+    ``_natural_sort_key``. It is used for the group display order in dotplot.
 
     Parameters
     ----------
     labels
-        分类标签序列。
+        Sequence of categorical labels.
 
     Returns
     -------
     list[str]
-        去重后的自然排序标签列表。
+        Deduplicated list of naturally sorted labels.
     """
 
     labels = [str(x) for x in list(labels)]
 
-    # 去重，同时保留原始列表中的唯一标签
+    # Deduplicate while preserving unique labels from the original list
     labels = list(dict.fromkeys(labels))
 
     return sorted(labels, key=_natural_sort_key)
 
 
 def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """为离散分类标签构建颜色映射。
+    """Build a color mapping for discrete categorical labels.
 
-    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
-    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+    This internal helper takes colors from one or more Matplotlib discrete palettes
+    according to the order of ``labels``. When the number of categories exceeds the
+    default color pool, ``hsv`` is used to provide additional colors, ensuring that
+    every category has a corresponding color.
 
     Parameters
     ----------
     labels
-        已排序的分类标签列表。
+        Sorted list of categorical labels.
 
     palette
-        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
-        ``DEFAULT_DISCRETE_PALETTES``。
+        Matplotlib colormap name, sequence of colormap names, or ``None``.
+        If ``None``, ``DEFAULT_DISCRETE_PALETTES`` is used.
 
     Returns
     -------
     dict
-        ``{label: color}`` 形式的字典，可直接用于 Matplotlib 绘图。
+        Dictionary in the form ``{label: color}``, which can be used directly for
+        Matplotlib plotting.
     """
 
     labels = list(labels)
 
-    #  默认使用大颜色池
+    # Use the large color pool by default
     if palette is None:
         palette_names = DEFAULT_DISCRETE_PALETTES
 
-    # 兼容原来的 palette="tab20" 写法
+    # Compatible with the original palette="tab20" usage
     elif isinstance(palette, str):
         palette_names = (palette,)
 
-    # 支持 palette=["tab20", "tab20b", ...]
+    # Support palette=["tab20", "tab20b", ...]
     else:
         palette_names = tuple(palette)
 
@@ -603,11 +622,11 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     for cmap_name in palette_names:
         cmap_obj = plt.get_cmap(cmap_name)
 
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        # ListedColormap, such as tab20 / Set3, usually has .colors
         if hasattr(cmap_obj, "colors"):
             palette_colors.extend(list(cmap_obj.colors))
 
-        # 兜底：如果是连续 colormap，就均匀取色
+        # Fallback: if it is a continuous colormap, sample colors evenly
         else:
             n = getattr(cmap_obj, "N", 256)
             palette_colors.extend([
@@ -615,7 +634,7 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
                 for i in range(n)
             ])
 
-    # 如果类别数超过颜色池，继续用 hsv 补足
+    # If the number of categories exceeds the color pool, continue filling with hsv
     if len(palette_colors) < len(labels):
         extra_n = len(labels) - len(palette_colors)
         hsv = plt.get_cmap("hsv")

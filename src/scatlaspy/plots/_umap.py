@@ -13,12 +13,12 @@ logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
 # =====================================================
-# 统一离散分类颜色池
+# Unified discrete categorical color palette pool
 # -----------------------------------------------------
-# 用于 obs 分类变量上色，例如：
-# kmeans / cell_type / batch / organ 等
+# Used for coloring obs categorical variables, such as:
+# kmeans / cell_type / batch / organ, etc.
 #
-# 这些 palette 拼起来大约有 100 个离散颜色：
+# These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
 # + Set3(12) + Paired(12) + Accent(8) + Dark2(8)
 # =====================================================
@@ -34,15 +34,15 @@ DEFAULT_DISCRETE_PALETTES = (
 
 
 # =====================================================
-# 通用分类标签自然排序
+# General natural sorting for categorical labels
 # -----------------------------------------------------
-# 解决：
+# Solves:
 # embryo_1, embryo_10, embryo_11, embryo_2
 #
-# 排成：
+# Sorted as:
 # embryo_1, embryo_2, embryo_3, ..., embryo_10
 #
-# 同样适用于：
+# Also works for:
 # cluster_1 / cluster_10
 # batch2 / batch10
 # group_3_day_2 / group_3_day_12
@@ -57,10 +57,10 @@ def umap(
         sample_n: int | None = None,
         where: str | None = None,
 
-        # gene feature 参数
+        # gene feature parameters
         use_data: str = "data_log1p",
 
-        # 图形参数
+        # Plotting parameters
         figsize: tuple[float, float] | None = (22, 8),
         point_size: float = 5,
         alpha: float = 0.85,
@@ -72,56 +72,71 @@ def umap(
         ncols: int = 3,
         frameon: bool = True,
 
-        # 大数据 / 输出参数
+        # Large-data / output parameters
         plot_batch_size: int = 200000,
         save_path: PathLike[str] | str | None = None,
 ):
 
-    """绘制细胞 UMAP embedding。
+    """Plot cell UMAP embeddings.
 
-    该函数从 ``obsm_X_umap`` 表读取 UMAP 坐标，并根据 ``color`` 绘制一个或多个 UMAP面板。
-    ``color`` 可以是 ``obs`` 表字段，也可以是 ``var.atlas_gene_name`` 中的基因名；
-    当传入列表且同时包含 obs 字段和基因名时，会自动走混合多面板绘图逻辑。
+    This function reads UMAP coordinates from the ``obsm_X_umap`` table and draws one or more UMAP panels according to ``color``.
+    ``color`` can be a field in the ``obs`` table or a gene name in ``var.atlas_gene_name``;
+    when a list contains both obs fields and gene names, the mixed multi-panel plotting logic is used automatically.
 
-    该图类似 Scanpy 的 ``sc.pl.umap``，常用于查看聚类、细胞类型注释、QC 指标或
-    marker gene 表达在 UMAP 空间中的分布。
+    This plot is similar to Scanpy ``sc.pl.umap`` and is commonly used to inspect clustering, cell type annotations, QC metrics, or
+    the distribution of marker gene expression in UMAP space.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 UMAP，生成``obsm_X_umap`` 表。
+        Atlas object. It must already be connected to a DuckDB database, and UMAP must have been run to generate the ``obsm_X_umap`` table.
+
     color
-        用于给散点上色的名称或名称列表。每个元素可以是 ``obs`` 表列名，也可以是
-        基因名。单个 ``obs`` 列会走 obs 绘图；单个或多个基因名会走 gene feature 绘图；
-        混合列表会走多面板混合绘图。
+        Name or list of names used to color scatter points. Each element can be an ``obs`` table column name or
+        a gene name. A single ``obs`` column uses obs plotting; one or more gene names use gene feature plotting;
+        a mixed list uses multi-panel mixed plotting.
+
     sample_n
-        绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
+        Maximum number of cells sampled for plotting. If ``None``, all cells are used.
+
     where
-        额外 SQL 过滤条件，用于限制参与绘图的细胞。为 ``None`` 时不添加额外条件。
+        Additional SQL filtering condition used to restrict cells participating in plotting.
+        If ``None``, no additional condition is added.
+
     use_data
-        当 ``color`` 包含基因名时，从 ``X_HyS_data`` 读取的表达值字段，例如
-        ``"data_log1p"``、``"data_count"`` 或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data`` when ``color`` contains gene names, such as
+        ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
+
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        Figure size. If ``None``, the function default size is used.
+
     point_size
-        散点大小。
+        Scatter point size.
+
     alpha
-        图形元素透明度。
+        Transparency of graphical elements.
+
     cmap
-        连续变量使用的 Matplotlib colormap 名称。
+        Matplotlib colormap name used for continuous variables.
+
     palette
-        离散变量使用的颜色列表或调色板。
+        Color list or palette used for discrete variables.
+
     legend_loc
-        离散分类图例位置。``"right_margin"`` 会把图例放到右侧留白处；
-        ``"on_data"`` 会把分类标签标在 UMAP 点云上。
+        Legend location for discrete categories. ``"right_margin"`` places the legend in the right-side margin;
+        ``"on_data"`` places category labels on the UMAP point cloud.
+
     ncols
-        多面板绘图时每行的子图数量。
+        Number of subplots per row for multi-panel plotting.
+
     frameon
-        是否显示坐标轴边框。
+        Whether to show the axis frame.
+
     plot_batch_size
-        大数据绘图时每批从 DuckDB 读取的细胞数量。主要用于离散 obs streaming 绘图。
+        Number of cells read from DuckDB per batch during large-data plotting. Mainly used for discrete obs streaming plots.
+
     save_path
-        图片保存路径。为 ``None`` 时只显示图片。
+        Path for saving the figure. If ``None``, the figure is only displayed.
 
     Returns
     -------
@@ -129,12 +144,12 @@ def umap(
 
     Examples
     --------
-    按 K-means cluster 绘制 UMAP::
+    Plot UMAP colored by K-means clusters::
 
         sap.tl.umap(atlas)
         sap.pl.umap(atlas, color="kmeans")
 
-    按 marker gene 表达绘制，并保存图片::
+    Plot by marker gene expression and save the figure::
 
         sap.pl.umap(
             atlas,
@@ -143,7 +158,7 @@ def umap(
             save_path=r"F:\\figures\\umap_MS4A1.png",
         )
 
-    同时绘制 obs 分组和基因表达::
+    Plot obs grouping and gene expression at the same time::
 
         sap.pl.umap(
             atlas,
@@ -153,19 +168,19 @@ def umap(
 
     conn = atlas.connection
 
-    # 参数标准化
+    # Normalize parameters
     if isinstance(color, str):
         color_list = [color]
     else:
         color_list = list(color)
 
     if len(color_list) == 0:
-        raise ValueError("color 不能为空")
+        raise ValueError("color cannot be empty")
 
     if where is not None and str(where).strip() != "":
         logger.info(f"[UMAP] where = {where}")
 
-    # 检查 obsm_X_umap 是否存在
+    # Check whether obsm_X_umap exists
     tables = conn.execute("""
         SELECT table_name
         FROM information_schema.tables
@@ -174,11 +189,11 @@ def umap(
 
     if len(tables) == 0:
         raise ValueError(
-            "数据库中不存在 obsm_X_umap。\n"
-            "请先运行 sap.tl.umap(atlas)"
+            "obsm_X_umap does not exist in the database.\n"
+            "Please run sap.tl.umap(atlas) first"
         )
 
-    # 获取 obs 列和 gene 名
+    # Get obs columns and gene names
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     gene_df = conn.execute("""
@@ -188,7 +203,7 @@ def umap(
 
     gene_set = set(gene_df["atlas_gene_name"].astype(str).tolist())
 
-    # 判断 color 类型
+    # Determine color type
     obs_colors = []
     gene_colors = []
 
@@ -203,11 +218,11 @@ def umap(
 
         else:
             raise ValueError(
-                f"color='{c}' 既不是 obs 列，也不是 gene 名。\n"
-                f"请确认 obs 或 var 中存在该字段。"
+                f"color='{c}' is neither an obs column nor a gene name.\n"
+                f"Please confirm that this field exists in obs or var."
             )
 
-    # 单个 obs 分类图
+    # Single obs categorical plot
     if len(color_list) == 1 and len(obs_colors) == 1:
         _plot_umap_obs(
             atlas=atlas,
@@ -226,7 +241,7 @@ def umap(
         )
         return None
 
-    # 纯 gene feature 图
+    # Pure gene feature plot
     if len(obs_colors) == 0 and len(gene_colors) > 0:
         _plot_umap_features(
             atlas=atlas,
@@ -243,7 +258,7 @@ def umap(
         )
         return None
 
-    # 混合模式
+    # Mixed mode
     _plot_umap_mixed(
         atlas=atlas,
         obs_colors=obs_colors,
@@ -264,7 +279,7 @@ def umap(
 
 
 
-# umap() ─ 如果 color 是 obs 列 → plot_umap_obs()
+# umap() ─ if color is an obs column → plot_umap_obs()
 def _plot_umap_obs(
         atlas: Atlas,
         color: str = "kmeans",
@@ -284,74 +299,75 @@ def _plot_umap_obs(
         return_df: bool = False,
 ):
 
-    """按单个 ``obs`` 字段绘制 UMAP。
+    """Plot UMAP by a single ``obs`` field.
 
-    该内部函数从 ``obsm_X_umap`` 读取 UMAP 坐标，并从 ``obs`` 读取 ``color`` 指定的
-    细胞级字段进行上色。数值型字段会使用连续 colormap；字符串、布尔值或分类字段会
-    使用离散颜色和图例。
+    This internal function reads UMAP coordinates from ``obsm_X_umap`` and reads the
+    cell-level field specified by ``color`` from ``obs`` for coloring.
+    Numeric fields use a continuous colormap; string, boolean, or categorical fields use
+    discrete colors and a legend.
 
-    当离散分类的细胞数量较大且不需要返回 DataFrame 时，函数会转给
-    ``_draw_umap_obs_streaming`` 分批读取绘图，减少一次性加载的数据量。
+    When the cell count for discrete categories is large and no DataFrame needs to be returned, this function delegates to
+    ``_draw_umap_obs_streaming`` to read and plot data in batches, reducing the amount of data loaded at once.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs`` 和 ``obsm_X_umap`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain the ``obs`` and ``obsm_X_umap`` tables.
 
     color
-        用于上色的 ``obs`` 列名。
+        ``obs`` column name used for coloring.
 
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+        Number of cells to sample; if ``None``, all available cells are usually used.
 
     groups
-        当 ``color`` 是离散字段时，需要保留的分类标签列表。为 ``None`` 时使用全部分类。
+        List of category labels to keep when ``color`` is a discrete field. If ``None``, all categories are used.
 
     where
-        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+        Optional SQL filtering condition used to restrict cells participating in calculation or plotting.
 
     legend_loc
-        图例位置。
+        Legend location.
 
     title
-        图标题。
+        Figure title.
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib figure size.
 
     point_size
-        散点大小。
+        Scatter point size.
 
     alpha
-        绘图透明度。
+        Plotting transparency.
 
     cmap
-        连续变量使用的 colormap。
+        Colormap used for continuous variables.
 
     palette
-        离散分类变量使用的颜色方案。
+        Color scheme used for discrete categorical variables.
 
     frameon
-        是否显示图框。
+        Whether to show the plot frame.
 
     save_path
-        图像或结果保存路径。
+        Path for saving the figure or result.
 
     plot_batch_size
-        绘图时分批读取数据库的细胞数量。
+        Number of cells read from the database per plotting batch.
 
     return_df
-        是否返回用于绘图的 DataFrame。主要用于调试或外部复用绘图数据。
+        Whether to return the DataFrame used for plotting. This is mainly used for debugging or external reuse of plotting data.
 
     Returns
     -------
     pandas.DataFrame | None
-        ``return_df=True`` 时返回已读取的绘图数据；否则直接绘图并返回 ``None``。
+        Returns the loaded plotting data when ``return_df=True``; otherwise directly plots and returns ``None``.
     """
 
     conn = atlas.connection
 
-    # 检查表和列
+    # Check tables and columns
     tables = conn.execute("""
         SELECT table_name
         FROM information_schema.tables
@@ -359,21 +375,21 @@ def _plot_umap_obs(
     """).fetchdf()["table_name"].tolist()
 
     if "obsm_X_umap" not in tables:
-        raise ValueError("数据库中不存在 obsm_X_umap，请先运行 sap.tl.umap(atlas)")
+        raise ValueError("obsm_X_umap does not exist in the database. Please run sap.tl.umap(atlas) first")
     if "obs" not in tables:
-        raise ValueError("数据库中不存在 obs")
+        raise ValueError("obs does not exist in the database")
 
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     umap_cols = [r[1] for r in conn.execute("PRAGMA table_info(obsm_X_umap)").fetchall()]
 
     if color not in obs_cols:
-        raise ValueError(f"obs 中不存在列: {color}")
+        raise ValueError(f"The column does not exist in obs: {color}")
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
-        raise ValueError("obsm_X_umap 需要包含 atlas_cell_id / umap1 / umap2")
+        raise ValueError("obsm_X_umap needs to contain atlas_cell_id / umap1 / umap2")
 
-    # 构造过滤条件
+    # Build filtering conditions
     where_clauses = [f"o.{color} IS NOT NULL"]
 
     if where is not None and str(where).strip() != "":
@@ -385,7 +401,7 @@ def _plot_umap_obs(
 
     where_sql = " AND ".join(where_clauses)
 
-    # 取数据（可抽样）
+    # Fetch data, optionally with sampling
     if sample_n is None:
         query = f"""
             SELECT
@@ -417,7 +433,7 @@ def _plot_umap_obs(
             ORDER BY atlas_cell_id
         """
 
-    # sample_n=None 时，走全量 streaming 绘图，避免一次性 fetchdf 爆内存
+    # When sample_n=None, use full streaming plotting to avoid loading all data with fetchdf at once and exhausting memory
     if sample_n is None:
         return _draw_umap_obs_streaming(
             atlas=atlas,
@@ -434,19 +450,19 @@ def _plot_umap_obs(
             plot_batch_size=plot_batch_size
         )
 
-    # sample_n 不是 None 时，仍然走原来的抽样绘图
+    # When sample_n is not None, still use the original sampled plotting path
     plot_df = conn.execute(query).fetchdf()
 
     if len(plot_df) == 0:
-        raise ValueError("筛选后没有可绘制的细胞")
+        raise ValueError("No cells are available for plotting after filtering")
 
-    # 默认使用自然排序
+    # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
     unique_labels = _sort_categories_natural(
         plot_df["color_label"].astype(str).unique().tolist()
     )
 
-    # 使用统一大离散颜色池
+    # Use the unified large discrete color pool
     label_to_color = _build_discrete_color_map(
         labels=unique_labels,
         palette=palette,
@@ -468,7 +484,7 @@ def _plot_umap_obs(
             rasterized=True,
         )
 
-    # 标题
+    # Title
     if title is None:
         title = color
     ax.set_title(title, fontsize=18, weight="normal", pad=10)
@@ -476,7 +492,7 @@ def _plot_umap_obs(
     ax.set_xlabel("UMAP1", fontsize=16)
     ax.set_ylabel("UMAP2", fontsize=16)
 
-    # 图例 / on-data 标签
+    # Legend / on-data labels
     if legend_loc == "right_margin":
 
         n_cat = len(unique_labels)
@@ -515,7 +531,7 @@ def _plot_umap_obs(
             handlelength=0.8,
         )
 
-        # 强制放大 legend 圆点，和 PCA 一致
+        # Force-enlarge legend dots to match PCA
         for h in leg.legend_handles:
             if hasattr(h, "set_sizes"):
                 h.set_sizes([100])
@@ -535,7 +551,7 @@ def _plot_umap_obs(
             })
         center_df = pd.DataFrame(center_rows)
 
-        # 修改：对 on_data 标签位置做简单避让，避免文字挤在一起
+        # Modified: apply simple collision avoidance to on_data label positions to prevent text crowding
         center_df = _spread_on_data_label_positions(center_df)
         for _, row in center_df.iterrows():
             ax.text(
@@ -550,9 +566,9 @@ def _plot_umap_obs(
                 zorder=10,
             )
     else:
-        raise ValueError("legend_loc 只能是 'right_margin' 或 'on_data'")
+        raise ValueError("legend_loc only supports 'right_margin' or 'on_data'")
 
-    # 样式
+    # Style
     ax.grid(False)
     if not frameon:
         ax.spines["top"].set_visible(False)
@@ -587,7 +603,7 @@ def _plot_umap_obs(
     return None
 
 
-# umap() ─ 如果 color 是 obs 列 → plot_umap_obs()
+# umap() ─ if color is an obs column → plot_umap_obs()
 #          sample_n == None → _draw_umap_obs_streaming()
 def _draw_umap_obs_streaming(
         atlas: Atlas,
@@ -604,59 +620,60 @@ def _draw_umap_obs_streaming(
         plot_batch_size: int = 200000
 ):
 
-    """分批绘制离散 ``obs`` 分类变量的 UMAP。
+    """Plot UMAP for a discrete ``obs`` categorical variable in batches.
 
-    该内部函数用于大数据场景下的离散分类 UMAP 绘图。它会先读取所有分类标签以固定
-    颜色映射，再按 ``plot_batch_size`` 从 DuckDB 分批读取 UMAP 坐标和分类标签，
-    逐批 scatter 到同一个坐标轴上，避免一次性把全部细胞加载到内存。
+    This internal function is used for discrete categorical UMAP plotting in large-data scenarios.
+    It first reads all category labels to fix the color mapping,
+    then reads UMAP coordinates and category labels from DuckDB in batches according to ``plot_batch_size``,
+    and scatters them batch by batch onto the same axes, avoiding loading all cells into memory at once.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs`` 和 ``obsm_X_umap`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain the ``obs`` and ``obsm_X_umap`` tables.
 
     color
-        用于上色的离散 ``obs`` 列名。
+        Discrete ``obs`` column name used for coloring.
 
     where_sql
-        已经拼接好的 SQL ``WHERE`` 条件，不包含 ``WHERE`` 关键字。
+        Pre-composed SQL ``WHERE`` condition, excluding the ``WHERE`` keyword.
 
     legend_loc
-        图例位置。
+        Legend location.
 
     title
-        图标题。
+        Figure title.
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib figure size.
 
     point_size
-        散点大小。
+        Scatter point size.
 
     alpha
-        绘图透明度。
+        Plotting transparency.
 
     palette
-        离散分类变量使用的颜色方案。
+        Color scheme used for discrete categorical variables.
 
     frameon
-        是否显示图框。
+        Whether to show the plot frame.
 
     save_path
-        图片保存路径。为 ``None`` 时只显示图片。
+        Path for saving the figure. If ``None``, the figure is only displayed.
 
     plot_batch_size
-        绘图时分批读取数据库的细胞数量。
+        Number of cells read from the database per plotting batch.
 
     Returns
     -------
     None
-        函数直接绘图，不返回绘图数据。
+        The function directly plots the figure and does not return plotting data.
     """
 
     conn = atlas.connection
 
-    # 先取全部类别，用于固定颜色
+    # First fetch all categories to fix the colors
     label_df = conn.execute(f"""
         SELECT DISTINCT CAST(o.{color} AS TEXT) AS color_label
         FROM obsm_X_umap u
@@ -667,26 +684,26 @@ def _draw_umap_obs_streaming(
     """).fetchdf()
 
     if len(label_df) == 0:
-        raise ValueError("筛选后没有可绘制的细胞")
+        raise ValueError("No cells are available for plotting after filtering")
 
-    # 默认使用自然排序
+    # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
-    # 不要直接使用 SQL 的字符串排序结果
+    # Do not directly use SQL string sorting results
     unique_labels = _sort_categories_natural(
         label_df["color_label"].astype(str).tolist()
     )
 
-    # 使用统一大离散颜色池
+    # Use the unified large discrete color pool
     label_to_color = _build_discrete_color_map(
         labels=unique_labels,
         palette=palette,
     )
 
-    # 建图
+    # Create figure
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     ax.set_facecolor("white")
 
-    # 分批读取 + 分批画图
+    # Read in batches + plot in batches
     last_cell_id = -1
     total_drawn = 0
 
@@ -729,7 +746,7 @@ def _draw_umap_obs_streaming(
                 rasterized=True
             )
 
-    # 标题
+    # Title
     if title is None:
         title = color
 
@@ -737,7 +754,7 @@ def _draw_umap_obs_streaming(
     ax.set_xlabel("UMAP1", fontsize=12)
     ax.set_ylabel("UMAP2", fontsize=12)
 
-    # 图例
+    # Legend
     if legend_loc == "right_margin":
         n_cat = len(unique_labels)
         max_label_len = max([len(str(c)) for c in unique_labels], default=0)
@@ -801,7 +818,7 @@ def _draw_umap_obs_streaming(
             WHERE {where_sql}
             GROUP BY CAST(o.{color} AS TEXT)
         """).fetchdf()
-        # 修改：对 on_data 标签位置做简单避让，避免文字挤在一起
+        # Modified: apply simple collision avoidance to on_data label positions to prevent text crowding
         center_df = _spread_on_data_label_positions(center_df)
         for _, row in center_df.iterrows():
             ax.text(
@@ -817,7 +834,7 @@ def _draw_umap_obs_streaming(
             )
 
     else:
-        raise ValueError("legend_loc 只能是 'right_margin' 或 'on_data'")
+        raise ValueError("legend_loc only supports 'right_margin' or 'on_data'")
 
     ax.grid(False)
 
@@ -863,7 +880,7 @@ def _draw_umap_obs_streaming(
 
 
 
-# umap() ─ 如果 color 是 gene 名 → plot_umap_features()
+# umap() ─ if color is a gene name → plot_umap_features()
 def _plot_umap_features(
         atlas: Atlas,
         genes: str | list[str],
@@ -878,48 +895,49 @@ def _plot_umap_features(
         save_path: PathLike[str] | str | None = None,
 ):
 
-    """按基因表达量绘制 UMAP feature plot。
+    """Plot UMAP feature plots by gene expression.
 
-    该内部函数从 ``var`` 表解析基因名，从 ``X_HyS_data`` 的 ``use_data`` 字段读取表达值，
-    并与 ``obsm_X_umap`` 坐标合并后绘制一个或多个 gene feature UMAP 面板。
-    未检测到的稀疏表达会补为 0；当 ``use_data="data_scale"`` 时，会根据该字段的分布
-    选择更合适的 0 填充值。
+    This internal function resolves gene names from the ``var`` table, reads expression values from the ``use_data`` field in ``X_HyS_data``,
+    merges them with ``obsm_X_umap`` coordinates, and then plots one or more gene feature UMAP panels.
+    Undetected sparse expression values are filled with 0; when ``use_data="data_scale"``,
+    a more appropriate zero-fill value is selected according to the distribution of that field
+    for filling implicit zeros.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obsm_X_umap``、``obs``、
-        ``var`` 和 ``X_HyS_data`` 表。
+        Atlas object. It must already be connected to a DuckDB database and contain ``obsm_X_umap``, ``obs``,
+        ``var``, and ``X_HyS_data`` tables.
 
     genes
-        需要绘制的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
+        Gene name or list of gene names to plot; they must exist in ``var.atlas_gene_name``.
 
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+        Number of cells to sample; if ``None``, all available cells are usually used.
 
     where
-        可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
+        Optional SQL filtering condition used to restrict cells participating in calculation or plotting.
 
     use_data
-        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
-        或 ``"data_scale"``。
+        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``
+        or ``"data_scale"``.
 
     ncols
-        多面板绘图时每行的子图数量。
+        Number of subplots per row for multi-panel plotting.
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib figure size.
 
     point_size
-        散点大小。
+        Scatter point size.
 
     alpha
-        绘图透明度。
+        Plotting transparency.
 
     cmap
-        基因表达连续值使用的 Matplotlib colormap。
+        Matplotlib colormap used for continuous gene expression values.
     save_path
-        图片保存路径。为 ``None`` 时只显示图片，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and not saved.
 
     Returns
     -------
@@ -927,7 +945,8 @@ def _plot_umap_features(
 
     Notes
     -----
-    该函数是 ``sap.pl.umap`` 的内部实现路径；用户通常通过 ``sap.pl.umap`` 并传入基因名调用。
+    This function is an internal implementation path of ``sap.pl.umap``;
+    users usually call it through ``sap.pl.umap`` by passing gene names.
     """
 
     start = datetime.now()
@@ -937,12 +956,12 @@ def _plot_umap_features(
         genes = [genes]
 
     if len(genes) == 0:
-        raise ValueError("genes 不能为空")
+        raise ValueError("genes cannot be empty")
 
     if where is not None and str(where).strip() != "":
         logger.info(f"[UMAP features] where = {where}")
 
-    # 检查表和列
+    # Check tables and columns
     tables = conn.execute("""
         SELECT table_name
         FROM information_schema.tables
@@ -950,13 +969,13 @@ def _plot_umap_features(
     """).fetchdf()["table_name"].tolist()
 
     if "obsm_X_umap" not in tables:
-        raise ValueError("数据库中不存在 obsm_X_umap，请先运行 sap.tl.umap(atlas)")
+        raise ValueError("obsm_X_umap does not exist in the database. Please run sap.tl.umap(atlas) first")
     if "obs" not in tables:
-        raise ValueError("数据库中不存在 obs")
+        raise ValueError("obs does not exist in the database")
     if "var" not in tables:
-        raise ValueError("数据库中不存在 var")
+        raise ValueError("var does not exist in the database")
     if "X_HyS_data" not in tables:
-        raise ValueError("数据库中不存在 X_HyS_data")
+        raise ValueError("X_HyS_data does not exist in the database")
 
     umap_cols = [r[1] for r in conn.execute("PRAGMA table_info(obsm_X_umap)").fetchall()]
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
@@ -964,21 +983,21 @@ def _plot_umap_features(
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
 
     if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
-        raise ValueError("obsm_X_umap 需要包含 atlas_cell_id / umap1 / umap2")
+        raise ValueError("obsm_X_umap needs to contain atlas_cell_id / umap1 / umap2")
 
     if "atlas_cell_id" not in obs_cols:
-        raise ValueError("obs 中不存在 atlas_cell_id")
+        raise ValueError("atlas_cell_id does not exist in obs")
 
     if "atlas_cell_id" not in x_cols or "atlas_gene_id" not in x_cols:
-        raise ValueError("X_HyS_data 需要包含 atlas_cell_id / atlas_gene_id")
+        raise ValueError("X_HyS_data needs to contain atlas_cell_id / atlas_gene_id")
 
     if use_data not in x_cols:
-        raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
 
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-        raise ValueError("var 需要包含 atlas_gene_id / atlas_gene_name")
+        raise ValueError("var needs to contain atlas_gene_id / atlas_gene_name")
 
-    # SQL 先过滤，再抽样 UMAP 细胞
+    # Filter with SQL first, then sample UMAP cells
     where_sql = ""
 
     if where is not None and str(where).strip() != "":
@@ -1016,16 +1035,16 @@ def _plot_umap_features(
     umap_df = conn.execute(umap_query).fetchdf()
 
     if len(umap_df) == 0:
-        raise ValueError("筛选 / 抽样后没有可绘制的细胞")
+        raise ValueError("No cells are available for plotting after filtering / sampling")
 
-    # 查询 gene_id
+    # Query gene_id
     gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
 
     if use_data == "data_scale":
         if "zero_scale_transform" not in var_cols:
             raise ValueError(
-                "var 中不存在 zero_scale_transform。\n"
-                "请先运行 scale 流程写入 zero_scale_transform。"
+                "zero_scale_transform does not exist in var.\n"
+                "Please run the scale workflow first to write zero_scale_transform."
             )
 
         gene_map_df = conn.execute(f"""
@@ -1047,7 +1066,7 @@ def _plot_umap_features(
         """).fetchdf()
 
     if len(gene_map_df) == 0:
-        raise ValueError("var 中找不到这些基因")
+        raise ValueError("These genes were not found in var")
 
     if use_data == "data_scale":
         gene_map = {
@@ -1065,12 +1084,12 @@ def _plot_umap_features(
 
     missing_genes = [g for g in genes if g not in gene_map]
     if missing_genes:
-        raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+        raise ValueError(f"These genes were not found in var: {missing_genes}")
 
-    # 注册抽样细胞临时表
+    # Register temporary table of sampled cells
     conn.register("_umap_cells_tmp", umap_df[["atlas_cell_id"]])
 
-    # 逐个 gene 取表达
+    # Fetch expression gene by gene
     plot_data = {}
 
     for gene in genes:
@@ -1109,14 +1128,14 @@ def _plot_umap_features(
         else:
             df["expr"] = df["expr"].fillna(0.0)
 
-        # 高表达点后画，避免被低表达点盖住
+        # Draw high-expression points later to avoid being covered by low-expression points
         df = df.sort_values("expr", ascending=True).reset_index(drop=True)
 
         plot_data[gene] = df
 
     conn.unregister("_umap_cells_tmp")
 
-    # 自动布局
+    # Automatic layout
     n = len(genes)
     nrows = math.ceil(n / ncols)
 
@@ -1139,7 +1158,7 @@ def _plot_umap_features(
 
     axes_flat = [ax for row in axes for ax in row]
 
-    # 作图
+    # Plot
     for ax, gene in zip(axes_flat, genes):
         df = plot_data[gene]
 
@@ -1170,7 +1189,7 @@ def _plot_umap_features(
         ax.spines["bottom"].set_linewidth(1.0)
         ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
 
-    # 多余子图隐藏
+    # Hide extra subplots
     for ax in axes_flat[len(genes):]:
         ax.set_visible(False)
 
@@ -1183,7 +1202,7 @@ def _plot_umap_features(
     return None
 
 
-# umap() ─ 混合模式：obs 分类变量 + gene feature 变量画在同一个 Figure
+# umap() ─ mixed mode: obs categorical variables + gene feature variables in the same Figure
 def _plot_umap_mixed(
         atlas: Atlas,
         obs_colors: list[str],
@@ -1200,74 +1219,74 @@ def _plot_umap_mixed(
         frameon: bool = True,
         save_path: PathLike[str] | str | None = None,
 ):
-    """绘制混合类型的 UMAP 多面板图。
+    """Plot a mixed-type multi-panel UMAP figure.
 
-    该内部函数用于支持 ``sap.pl.umap`` 中同时传入 ``obs`` 分类变量和
-    gene feature 变量的情况，例如 ``color=["kmeans", "CD14", "NKG7"]``。
-    函数会把不同类型的着色变量统一绘制到同一个 Figure 中，每个变量对应
-    一个独立子图，从而实现类似 Scanpy ``sc.pl.umap`` 的多面板显示效果。
+    This internal function supports cases where ``obs`` categorical variables and
+    gene feature variables are passed to ``sap.pl.umap`` at the same time, such as ``color=["kmeans", "CD14", "NKG7"]``.
+    The function draws different types of coloring variables into the same Figure, with each variable corresponding to
+    an independent subplot, thereby achieving a multi-panel display effect similar to Scanpy ``sc.pl.umap``.
 
-    具体来说，``obs_colors`` 中的变量会按照离散分类变量绘制，
-    使用统一的离散颜色池和图例；``gene_colors`` 中的变量会按照连续表达量
-    绘制，使用 ``use_data`` 指定的表达字段和连续 colormap，并为每个 gene
-    feature 子图添加 colorbar。
+    Specifically, variables in ``obs_colors`` are plotted as discrete categorical variables,
+    using the unified discrete color pool and legends; variables in ``gene_colors`` are plotted as continuous expression values
+    using the expression field specified by ``use_data`` and a continuous colormap, and a colorbar is added for each gene
+    feature subplot.
 
-    该函数不会把分类标签和基因表达值叠加在同一个坐标轴中，而是将它们
-    画在同一个 Figure 的不同 panel 中。这样可以避免离散颜色和连续颜色
-    映射互相冲突，同时保持与 Scanpy 多变量 UMAP 可视化相近的展示方式。
+    This function does not overlay category labels and gene expression values on the same axes; instead, it places them
+    in different panels of the same Figure. This avoids conflicts between discrete and continuous color
+    mappings while maintaining a display style similar to Scanpy multi-variable UMAP visualization.
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经计算过 UMAP，并且数据库中包含
-        ``obsm_X_umap``、``obs``、``var`` 和 ``X_HyS_data`` 等表。
+        Atlas object. Usually, UMAP should have already been computed, and the database should contain
+        tables such as ``obsm_X_umap``, ``obs``, ``var``, and ``X_HyS_data``.
 
     obs_colors
-        需要绘制的 ``obs`` 列名列表，例如 ``["kmeans"]``、
-        ``["cell_type"]`` 或 ``["batch", "kmeans"]``。
-        这些变量会被当作离散分类变量绘制。
+        List of ``obs`` column names to plot, such as ``["kmeans"]``,
+        ``["cell_type"]``, or ``["batch", "kmeans"]``.
+        These variables are plotted as discrete categorical variables.
 
     gene_colors
-        需要绘制的基因名称列表，例如 ``["CD14", "NKG7"]``。
-        这些变量会被当作连续 gene feature 绘制。
+        List of gene names to plot, such as ``["CD14", "NKG7"]``.
+        These variables are plotted as continuous gene features.
 
     sample_n
-        绘图时抽样的细胞数量。为 ``None`` 时使用全部细胞。
-        对于大数据集，建议设置为一个合适的整数，例如 ``50000``，
-        以避免一次性读取过多 UMAP 坐标和表达值导致内存压力过大。
+        Number of cells sampled for plotting. If ``None``, all cells are used.
+        For large datasets, it is recommended to set an appropriate integer, such as ``50000``,
+        to avoid memory pressure from reading too many UMAP coordinates and expression values at once.
 
     where
-        可选 SQL 过滤条件，用于限制参与绘图的细胞。
-        例如 ``where="batch = 'sample1'"``。
+        Optional SQL filtering condition used to restrict cells participating in plotting.
+        For example, ``where="batch = 'sample1'"``.
 
     use_data
-        gene feature 绘图时读取的 ``X_HyS_data`` 表达字段。
-        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
-        和 ``"data_scale"``。
+        Expression field read from ``X_HyS_data`` during gene feature plotting.
+        Common values include ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``
+        and ``"data_scale"``.
 
     ncols
-        多面板图中每行显示的子图数量。
+        Number of subplots displayed per row in a multi-panel figure.
 
     figsize
-        图像大小。为 ``None`` 时根据子图数量自动设置。
+        Figure size. If ``None``, it is automatically set according to the number of subplots.
 
     point_size
-        散点大小。
+        Scatter point size.
 
     alpha
-        散点透明度。
+        Scatter point transparency.
 
     cmap
-        gene feature 连续表达值使用的 colormap。
+        Colormap used for continuous gene feature expression values.
 
     palette
-        ``obs`` 离散分类变量使用的颜色方案。
+        ``obs`` Color scheme used for discrete categorical variables.
 
     frameon
-        是否显示坐标轴边框。
+        Whether to show the axis frame.
 
     save_path
-        图片保存路径。为 ``None`` 时只显示图像，不保存。
+        Path for saving the figure. If ``None``, the figure is only displayed and not saved.
 
     Returns
     -------
@@ -1275,14 +1294,14 @@ def _plot_umap_mixed(
 
     Notes
     -----
-    该函数主要用于 ``obs`` 分类变量和 gene feature 混合绘图场景。
-    如果只绘制单个 ``obs`` 分类变量，仍然使用 ``_plot_umap_obs``；
-    如果只绘制 gene feature 列表，仍然使用 ``_plot_umap_features``。
-    因此，新增该函数不会改变原有单类型 UMAP 绘图的行为。
+    This function is mainly used for mixed plotting scenarios involving ``obs`` categorical variables and gene features.
+    If only a single ``obs`` categorical variable is plotted, ``_plot_umap_obs`` is still used;
+    if only a gene feature list is plotted, ``_plot_umap_features`` is still used.
+    Therefore, adding this function does not change the behavior of the existing single-type UMAP plotting paths.
 
     Examples
     --------
-    将聚类标签和 marker gene 表达绘制在同一个 Figure 中::
+    Plot clustering labels and marker gene expression in the same Figure::
 
         sap.pl.umap(
             atlas,
@@ -1291,7 +1310,7 @@ def _plot_umap_mixed(
             sample_n=50000,
         )
 
-    绘制多个 obs 分类变量和多个基因表达::
+    Plot multiple obs categorical variables and multiple gene expressions::
 
         sap.pl.umap(
             atlas,
@@ -1304,10 +1323,10 @@ def _plot_umap_mixed(
     conn = atlas.connection
 
     if len(obs_colors) == 0 and len(gene_colors) == 0:
-        raise ValueError("obs_colors 和 gene_colors 不能同时为空")
+        raise ValueError("obs_colors and gene_colors cannot both be empty")
 
     # -----------------------------------------------------
-    # 1. 检查基础表
+    # 1. Check basic tables
     # -----------------------------------------------------
     tables = conn.execute("""
         SELECT table_name
@@ -1316,13 +1335,13 @@ def _plot_umap_mixed(
     """).fetchdf()["table_name"].tolist()
 
     if "obsm_X_umap" not in tables:
-        raise ValueError("数据库中不存在 obsm_X_umap，请先运行 sap.tl.umap(atlas)")
+        raise ValueError("obsm_X_umap does not exist in the database. Please run sap.tl.umap(atlas) first")
     if "obs" not in tables:
-        raise ValueError("数据库中不存在 obs")
+        raise ValueError("obs does not exist in the database")
     if "var" not in tables:
-        raise ValueError("数据库中不存在 var")
+        raise ValueError("var does not exist in the database")
     if "X_HyS_data" not in tables and len(gene_colors) > 0:
-        raise ValueError("数据库中不存在 X_HyS_data")
+        raise ValueError("X_HyS_data does not exist in the database")
 
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
@@ -1330,17 +1349,17 @@ def _plot_umap_mixed(
 
     for obs_col in obs_colors:
         if obs_col not in obs_cols:
-            raise ValueError(f"obs 中不存在列: {obs_col}")
+            raise ValueError(f"The column does not exist in obs: {obs_col}")
 
     if len(gene_colors) > 0:
         if use_data not in x_cols:
-            raise ValueError(f"X_HyS_data 中不存在字段: {use_data}")
+            raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
 
         if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
-            raise ValueError("var 需要包含 atlas_gene_id / atlas_gene_name")
+            raise ValueError("var needs to contain atlas_gene_id / atlas_gene_name")
 
     # -----------------------------------------------------
-    # 2. 读取 UMAP + obs 数据
+    # 2. Read UMAP + obs data
     # -----------------------------------------------------
     obs_select = ""
 
@@ -1389,10 +1408,10 @@ def _plot_umap_mixed(
     umap_df = conn.execute(umap_query).fetchdf()
 
     if len(umap_df) == 0:
-        raise ValueError("筛选 / 抽样后没有可绘制的细胞")
+        raise ValueError("No cells are available for plotting after filtering / sampling")
 
     # -----------------------------------------------------
-    # 3. 读取 gene expression
+    # 3. Read gene expression
     # -----------------------------------------------------
     gene_expr_data = {}
 
@@ -1403,8 +1422,8 @@ def _plot_umap_mixed(
         if use_data == "data_scale":
             if "zero_scale_transform" not in var_cols:
                 raise ValueError(
-                    "var 中不存在 zero_scale_transform。\n"
-                    "请先运行 scale 流程写入 zero_scale_transform。"
+                    "zero_scale_transform does not exist in var.\n"
+                    "Please run the scale workflow first to write zero_scale_transform."
                 )
 
             gene_map_df = conn.execute(f"""
@@ -1441,7 +1460,7 @@ def _plot_umap_mixed(
         missing_genes = [g for g in gene_colors if g not in gene_map]
 
         if missing_genes:
-            raise ValueError(f"var 中找不到这些基因: {missing_genes}")
+            raise ValueError(f"These genes were not found in var: {missing_genes}")
 
         conn.register("_umap_cells_tmp", umap_df[["atlas_cell_id"]])
 
@@ -1485,7 +1504,7 @@ def _plot_umap_mixed(
             else:
                 df["expr"] = df["expr"].fillna(0.0)
 
-            # 高表达点后画，避免被低表达点盖住
+            # Draw high-expression points later to avoid being covered by low-expression points
             df = df.sort_values("expr", ascending=True).reset_index(drop=True)
 
             gene_expr_data[gene] = df
@@ -1493,13 +1512,13 @@ def _plot_umap_mixed(
         conn.unregister("_umap_cells_tmp")
 
     # -----------------------------------------------------
-    # 4. 创建多 panel Figure
+    # 4. Create multi-panel Figure
     # -----------------------------------------------------
     panel_names = obs_colors + gene_colors
     n_panels = len(panel_names)
 
     if n_panels == 0:
-        raise ValueError("没有可绘制的 panel")
+        raise ValueError("There is no panel available for plotting")
 
     ncols_eff = min(int(ncols), n_panels)
     nrows_eff = math.ceil(n_panels / ncols_eff)
@@ -1524,7 +1543,7 @@ def _plot_umap_mixed(
     axes_flat = [ax for row in axes for ax in row]
 
     # -----------------------------------------------------
-    # 5. 画 obs 分类变量
+    # 5. Plot obs categorical variables
     # -----------------------------------------------------
     ax_id = 0
 
@@ -1589,7 +1608,7 @@ def _plot_umap_mixed(
         )
 
     # -----------------------------------------------------
-    # 6. 画 gene feature
+    # 6. Plot gene features
     # -----------------------------------------------------
     for gene in gene_colors:
         ax = axes_flat[ax_id]
@@ -1614,7 +1633,7 @@ def _plot_umap_mixed(
         ax.set_title(gene, fontsize=18, weight="normal", pad=10)
 
     # -----------------------------------------------------
-    # 7. 统一样式
+    # 7. Apply unified style
     # -----------------------------------------------------
     for ax in axes_flat[:n_panels]:
 
@@ -1636,7 +1655,7 @@ def _plot_umap_mixed(
             ax.spines["bottom"].set_linewidth(1.0)
             ax.tick_params(axis="both", labelsize=10, width=1.0, length=4)
 
-    # 多余子图隐藏
+    # Hide extra subplots
     for ax in axes_flat[n_panels:]:
         ax.set_visible(False)
 
@@ -1651,30 +1670,30 @@ def _plot_umap_mixed(
 
 
 def _natural_sort_key(value: Any):
-    """生成分类标签的自然排序键。
+    """Generate a natural sorting key for categorical labels.
 
-    该内部 helper 用于让 UMAP 图例中的离散分类按更符合阅读习惯的顺序排列，避免
-    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
-    的标签会被放到最后。
+    This internal helper is used to arrange discrete categories in UMAP legends in a more readable order, avoiding cases where
+    ``cluster_10`` appears before ``cluster_2``. Labels that look like missing values, such as empty strings, ``NA``, and ``nan``,
+    are placed at the end.
 
     Parameters
     ----------
     value
-        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+        Categorical label to sort. It can be a string, number, or any object that can be converted to a string.
 
     Returns
     -------
     tuple
-        可传给 ``sorted(..., key=...)`` 的排序键。
+        Sorting key that can be passed to ``sorted(..., key=...)``.
 
     Examples
     --------
-    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    ``embryo_1 < embryo_2 < embryo_10`` and ``cluster_1 < cluster_2 < cluster_11``.
     """
 
     s = str(value).strip()
 
-    # 缺失值标签放最后
+    # Put missing-value labels at the end
     if s.casefold() in _MISSING_CATEGORY_LABELS:
         return (1, ())
 
@@ -1694,62 +1713,62 @@ def _natural_sort_key(value: Any):
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:
-    """对分类标签去重并执行自然排序。
+    """Deduplicate categorical labels and perform natural sorting.
 
-    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供离散
-    UMAP 图例和分组绘图顺序使用。
+    This internal helper first converts labels to strings and then sorts them using ``_natural_sort_key`` for use in discrete
+    UMAP legends and grouped plotting order.
 
     Parameters
     ----------
     labels
-        分类标签序列。
+        Sequence of categorical labels.
 
     Returns
     -------
     list[str]
-        去重后的自然排序标签列表。
+        Deduplicated list of naturally sorted labels.
     """
 
     labels = [str(x) for x in list(labels)]
 
-    # 去重，同时保留原始列表中的唯一标签
+    # Deduplicate while preserving unique labels from the original list
     labels = list(dict.fromkeys(labels))
 
     return sorted(labels, key=_natural_sort_key)
 
 
 def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """为离散分类标签构建颜色映射。
+    """Build a color mapping for discrete categorical labels.
 
-    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
-    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+    This internal helper takes colors from one or more Matplotlib discrete palettes according to the order of ``labels``.
+    When the number of categories exceeds the default color pool, ``hsv`` is used to provide additional colors, ensuring that every category has a corresponding color.
 
     Parameters
     ----------
     labels
-        已排序的分类标签列表。
+        Sorted list of categorical labels.
 
     palette
-        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
-        ``DEFAULT_DISCRETE_PALETTES``。
+        Matplotlib colormap name, sequence of colormap names, or ``None``. If ``None``,
+        ``DEFAULT_DISCRETE_PALETTES`` is used.
 
     Returns
     -------
     dict
-        ``{label: color}`` 形式的字典，可直接用于 Matplotlib scatter 和 legend。
+        Dictionary in the form ``{label: color}``, which can be directly used for Matplotlib scatter and legend.
     """
 
     labels = list(labels)
 
-    #  默认使用大颜色池
+    # Use the large color pool by default
     if palette is None:
         palette_names = DEFAULT_DISCRETE_PALETTES
 
-    # 兼容原来的 palette="tab20" 写法
+    # Compatible with the original palette="tab20" usage
     elif isinstance(palette, str):
         palette_names = (palette,)
 
-    # 支持 palette=["tab20", "tab20b", ...]
+    # Support palette=["tab20", "tab20b", ...]
     else:
         palette_names = tuple(palette)
 
@@ -1758,11 +1777,11 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
     for cmap_name in palette_names:
         cmap_obj = plt.get_cmap(cmap_name)
 
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        # ListedColormap, such as tab20 / Set3, usually has .colors
         if hasattr(cmap_obj, "colors"):
             palette_colors.extend(list(cmap_obj.colors))
 
-        # 兜底：如果是连续 colormap，就均匀取色
+        # Fallback: if it is a continuous colormap, sample colors evenly
         else:
             n = getattr(cmap_obj, "N", 256)
             palette_colors.extend([
@@ -1770,7 +1789,7 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
                 for i in range(n)
             ])
 
-    # 如果类别数超过颜色池，继续用 hsv 补足
+    # If the number of categories exceeds the color pool, continue filling with hsv
     if len(palette_colors) < len(labels):
         extra_n = len(labels) - len(palette_colors)
         hsv = plt.get_cmap("hsv")
@@ -1794,32 +1813,39 @@ def _spread_on_data_label_positions(
         step_frac: float = 0.018,
         max_iter: int = 200,
 ) -> pd.DataFrame:
-    """对 UMAP 图上直接显示的分类标签做简单避让。
+    """Apply simple collision avoidance to category labels displayed directly on a UMAP plot.
 
-    该内部 helper 根据每个分类在 UMAP 空间中的中心点，迭代微调标签坐标，减少多个
-    类别文字挤在一起的情况。它只调整文字标签的位置，不改变任何细胞点坐标。
+    This internal helper iteratively adjusts label coordinates based on the center point of each category in UMAP space,
+    reducing cases where multiple category labels crowd together.
+    It only adjusts text label positions and does not change any cell point coordinates.
 
     Parameters
     ----------
     center_df
-        包含每个分类中心点坐标的 DataFrame。
+        DataFrame containing the center-point coordinates of each category.
+
     x_col
-        中心点 x 坐标列名。
+        Column name for the center-point x coordinate.
+
     y_col
-        中心点 y 坐标列名。
+        Column name for the center-point y coordinate.
+
     min_dx_frac
-        标签之间允许的最小水平距离，占当前 UMAP x 轴跨度的比例。
+        Minimum allowed horizontal distance between labels, expressed as a fraction of the current UMAP x-axis span.
+
     min_dy_frac
-        标签之间允许的最小垂直距离，占当前 UMAP y 轴跨度的比例。
+        Minimum allowed vertical distance between labels, expressed as a fraction of the current UMAP y-axis span.
+
     step_frac
-        每次避让移动的步长，占坐标跨度的比例。
+        Movement step for each collision-avoidance update, expressed as a fraction of the coordinate span.
+
     max_iter
-        最大迭代次数。
+        Maximum number of iterations.
 
     Returns
     -------
     pandas.DataFrame
-        在输入 DataFrame 基础上新增 ``label_x`` 和 ``label_y`` 两列。
+        Input DataFrame with two added columns, ``label_x`` and ``label_y``.
     """
 
     center_df = center_df.copy()
@@ -1855,13 +1881,13 @@ def _spread_on_data_label_positions(
 
                 if abs(dx) < min_dx and abs(dy) < min_dy:
 
-                    # 如果两个标签几乎完全重合，给一个固定方向
+                    # If two labels almost completely overlap, assign a fixed direction
                     if abs(dx) < 1e-12 and abs(dy) < 1e-12:
                         direction = 1 if (i + j) % 2 == 0 else -1
                         dx = direction * 1e-6
                         dy = direction * 1e-6
 
-                    # 水平方向和垂直方向都稍微推开
+                    # Push them slightly apart in both the horizontal and vertical directions
                     sx = step_x if dx >= 0 else -step_x
                     sy = step_y if dy >= 0 else -step_y
 

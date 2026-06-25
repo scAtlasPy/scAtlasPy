@@ -19,7 +19,7 @@ from ..io import (
     write_h5ad as _io_write_h5ad,
 )
 
-# 配置日志
+# Configure logging.
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
@@ -27,40 +27,34 @@ logger.addHandler(logging.NullHandler())
 def set_verbosity(
         level: Literal["silence", "error", "warning", "info", "debug"] | None = "silence",
 ) -> None:
-    """设置 scAtlasPy 的日志输出级别。
-
-    该函数调整包内使用的 ``Atlas`` logger，统一控制导入、预处理、
-    工具函数和绘图流程中的日志详细程度。它不会主动修改第三方库的日志级别。
+    """Set the scAtlasPy logging verbosity.
+    This function configures the package-level ``Atlas`` logger used by import, preprocessing, tools, and plotting workflows.
+    It only controls scAtlasPy logging and does not change log levels for third-party libraries.
 
     Parameters
     ----------
     level
-        日志级别字符串。可选值包括 ``"silence"``、``"error"``、``"warning"``、``"info"`` 和 ``"debug"``。
-
-        默认值为 ``"silence"``，表示关闭 ``Atlas`` logger，不输出 scAtlasPy自身日志。
-
-        传入 ``None`` 时也会关闭 ``Atlas`` logger，用于兼容旧版本写法。
+        Logging verbosity. Supported values are ``"silence"``, ``"error"``, ``"warning"``, ``"info"``, ``"debug"``, and ``None``.
+        The default value, ``"silence"``, disables the ``Atlas`` logger so scAtlasPy does not emit its own log messages.
+        Passing ``None`` also disables the logger for compatibility with older calling code.
 
     Returns
     -------
     None
-        该函数直接修改 ``Atlas`` logger 的输出级别，不返回对象。
+        The logger configuration is updated in place and no object is returned.
 
     Examples
     --------
-    默认关闭 scAtlasPy 自身日志::
+    Disable scAtlasPy logging::
 
         sap.set_verbosity()
-
-    显式关闭 scAtlasPy 自身日志::
-
         sap.set_verbosity("silence")
 
-    只显示警告和错误信息::
+    Show warnings and errors::
 
         sap.set_verbosity("warning")
 
-    调试导入或预处理流程::
+    Enable detailed logs while debugging an import or preprocessing workflow::
 
         sap.set_verbosity("debug")
         atlas = sap.Atlas(r"F:\\data\\pbmc")
@@ -85,7 +79,7 @@ def set_verbosity(
         return
 
     if level not in level_map:
-        raise ValueError("level 只支持: silence, error, warning, info, debug, None")
+        raise ValueError("level must be one of: silence, error, warning, info, debug, None")
 
     atlas_logger.disabled = False
     atlas_logger.setLevel(level_map[level])
@@ -109,86 +103,85 @@ def set_verbosity(
     atlas_logger.propagate = False
 
 class Atlas:
-    """Atlas 数据库对象。
+    """Atlas database object.
 
-    Atlas 对象管理一个持久化的 DuckDB-backed ``.sasql`` 数据库，保存数据库路径、活动连接，
-    并提供创建、打开、查询、检查、读取和调用 IO 函数的便捷方法。
+    An ``Atlas`` instance manages a persistent DuckDB-backed ``.sasql`` database.
+    It stores the database path and active connection, and provides convenient methods for creating,
+    opening, querying, inspecting, reading, and delegating IO operations.
 
     Attributes
     ----------
     file_path
-        当前 ``.sasql`` 数据库文件路径。
+        Path to the current ``.sasql`` database file.
     connection
-        当前 DuckDB 连接对象。
+        Active DuckDB connection object.
 
     Examples
     --------
-    创建或连接一个 Atlas 数据库::
+    Create or connect to an Atlas database::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
+    atlas = sap.Atlas(r"F:\\data\\pbmc")
 
-    使用对象式 API 导入 h5ad 文件::
+    Import an h5ad file through the object API::
 
         atlas = sap.Atlas(r"F:\\data\\pbmc")
         atlas.load_h5ad(r"F:\\data\\pbmc.h5ad")
 
-    查看数据库内容并关闭连接::
+    Inspect the database and close the connection::
 
         atlas.describe()
         atlas.head("obs", n=5)
-        atlas.close()"""
+        atlas.close()
+    """
 
     def __init__(
             self,
             file_name: PathLike[str] | str,
             db_memory_limit: str | int | None = None,
     ):
-        """初始化 Atlas 数据库对象。
+        """Initialize an Atlas database object.
 
-        构造函数会根据 ``file_name`` 推断 ``.sasql`` 数据库路径，
-        创建父目录，并建立 DuckDB 连接。如果数据库文件尚不存在，
-        会自动创建空数据库。
+        The constructor resolves the ``.sasql`` database path from ``file_name``,
+        creates the parent directory when needed, and opens a DuckDB connection.
+        If the database file does not exist yet, an empty database is created automatically.
 
         Parameters
         ----------
         file_name
-            Atlas 数据库文件路径或数据库名称。可以传入完整 ``.sasql`` 路径，
-            也可以传入不带后缀的路径；函数会自动补全 ``.sasql`` 后缀。
+            Atlas database file path or database name.
+            A full ``.sasql`` path can be provided directly;
+            if the suffix is omitted, ``.sasql`` is appended automatically.
 
         db_memory_limit
-            DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如``"4GB"``；
-            也可以传入整数，整数会按 GB 解释，例如 ``4`` 等价于 ``"4GB"``。
+            Memory limit used by DuckDB.
+            This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
+            for example ``4`` is equivalent to ``"4GB"``.
 
-            默认值为 ``None``。当为 ``None`` 时，会自动获取当前系统物理内存总量，
-            并向下取整为整数 GB 后设置为 DuckDB 的内存上限。
-            这意味着内存管理由DuckDB自身的引擎负责，而非施加明确的限制。
-            例如当前系统内存约为 31.8GB 时，会自动设置为 ``"31GB"``。
+            The default value is ``None``.
+            In that case, the current system physical memory is detected and rounded down to an integer number of GB,
+            then used as DuckDB's memory limit. For example, a system with about 31.8 GB of memory is configured as ``"31GB"``.
 
-            该参数只限制 DuckDB 查询和中间计算使用的内存，
-            不限制Python、NumPy 或 pandas 本身占用的内存。
+            This parameter only limits memory used by DuckDB queries and intermediate computation.
+            It does not limit memory allocated directly by Python, NumPy, or pandas.
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库。
+            The object is initialized in place.
 
         Examples
         --------
-        传入不带后缀的数据库路径::
-
+        Pass a database path without a suffix::
             atlas = sap.Atlas(r"F:\\data\\test_10W")
 
-        传入完整 ``.sasql`` 文件路径::
-
+        Pass a complete ``.sasql`` file path::
             atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
 
-        全局打开更详细日志::
-
+        Enable more detailed package logs::
             sap.set_verbosity("info")
             atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
 
-        限制 DuckDB 查询和中间计算最多使用 4GB 内存::
-
+        Limit DuckDB query and intermediate-computation memory to 4 GB::
             atlas = sap.Atlas(r"F:\\data\\test_10W", db_memory_limit="4GB")
         """
 
@@ -197,49 +190,50 @@ class Atlas:
         self.__mode: Literal["r+", "r"] = "r+"
         self.__db_memory_limit = self._resolve_db_memory_limit(db_memory_limit)
 
-        logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
+        logger.info(f"Initializing Atlas instance, file_name:{self.file_path}")
 
         if not os.path.exists(self.file_path):
-            logger.info(f"数据库文件不存在，开始创建新数据库: {self.file_path}")
+            logger.info(f"Database file does not exist; creating a new database: {self.file_path}")
             try:
                 self.__connection = self._create()
-                logger.info(f"数据库创建成功: {self.file_path}")
+                logger.info(f"Database created successfully: {self.file_path}")
             except Exception as e:
-                logger.error(f"数据库创建失败: {str(e)}")
+                logger.error(f"Database creation failed: {str(e)}")
                 raise
         else:
             self.__connection = self.connect("r+")
-            logger.info(f"数据库文件已存在: {self.file_path}，已创建连接")
+            logger.info(f"Database file already exists: {self.file_path}; connection created")
 
-        logger.info("Atlas 实例初始化完成")
+        logger.info("Atlas instance initialized")
 
 
     @staticmethod
     def _resolve_file_path(file_name: PathLike[str] | str) -> str:
-        """
-        解析 Atlas 数据库路径。
+        """Resolve the Atlas database file path.
 
-        支持：
+        The method accepts paths with or without the ``.sasql`` suffix and returns an absolute path.
+        The suffix is appended automatically when it is missing.
+
+        Supported examples::
+
             Atlas(r"F:\\data\\file_name\\sql_obs.sasql")
             Atlas(r"F:\\data\\file_name\\sql_obs")
             Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
             Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
-
-        如果没有 .sasql 后缀，会自动补上。
         """
 
         file_name = os.fspath(file_name)
 
         if not isinstance(file_name, str):
             raise TypeError(
-                "file_name 必须是 str 或 PathLike[str] 类型，"
-                f"但收到的是: {type(file_name)}"
+                "file_name must be str or PathLike[str], "
+                f"but received: {type(file_name)}"
             )
 
         file_name = file_name.strip()
 
         if file_name == "":
-            raise ValueError("file_name 不能为空")
+            raise ValueError("file_name cannot be empty")
 
         file_name = os.path.expanduser(file_name)
 
@@ -251,11 +245,10 @@ class Atlas:
 
     @staticmethod
     def _get_system_memory_gb_floor() -> int:
-        """获取当前系统物理内存总量，并向下取整为整数 GB。
+        """Return the system physical memory rounded down to integer GB.
 
-        该方法优先使用标准库实现，不额外依赖 psutil。
-        Windows 下使用 GlobalMemoryStatusEx；
-        Linux/macOS 下使用 os.sysconf。
+        The implementation prefers standard-library mechanisms and does not require ``psutil``.
+         It uses ``GlobalMemoryStatusEx`` on Windows and ``os.sysconf`` on Linux or macOS.
         """
 
         total_bytes: int | None = None
@@ -285,7 +278,7 @@ class Atlas:
             )
 
             if not success:
-                raise RuntimeError("无法获取当前 Windows 系统物理内存大小")
+                raise RuntimeError("Unable to get current Windows system physical memory size")
 
             total_bytes = int(memory_status.ullTotalPhys)
 
@@ -297,14 +290,14 @@ class Atlas:
                 total_bytes = int(page_size * physical_pages)
             except Exception as e:
                 raise RuntimeError(
-                    "无法获取当前系统物理内存大小，请显式传入 db_memory_limit，例如 '32GB'"
+                    "Unable to get current system physical memory size. Please pass db_memory_limit explicitly, for example '32GB'"
                 ) from e
 
         memory_gb = int(total_bytes // (1024 ** 3))
 
         if memory_gb <= 0:
             raise RuntimeError(
-                "获取到的系统物理内存小于 1GB，请显式传入 db_memory_limit"
+                "Detected system physical memory is less than 1GB. Please pass db_memory_limit explicitly"
             )
 
         return memory_gb
@@ -314,10 +307,11 @@ class Atlas:
     def _resolve_db_memory_limit(
             db_memory_limit: str | int | None,
     ) -> str | int:
-        """解析 DuckDB 内存限制参数。
+        """Resolve the DuckDB memory-limit argument.
 
-        当 ``db_memory_limit`` 为 ``None`` 时，自动获取当前系统物理内存总量，
-        并向下取整为整数 GB，例如 31.8GB 会解析为 ``"31GB"``。
+        When ``db_memory_limit`` is ``None``,
+        the current system physical memory is detected and rounded down to an integer number of GB.
+        For example, about 31.8 GB is resolved as ``"31GB"``.
         """
 
         if db_memory_limit is None:
@@ -329,97 +323,94 @@ class Atlas:
 
     @property
     def file_path(self) -> str:
-        """返回 Atlas 数据库文件路径。
+        """Return the Atlas database file path.
 
-        该属性返回当前 Atlas 对象指向的 ``.sasql`` 文件路径，可用于确认数据库实际保存位置。
+        This property returns the absolute path of the ``.sasql`` file associated with the current Atlas object.
 
         Returns
         -------
         str
-            当前 Atlas 对象对应的 ``.sasql`` 数据库绝对路径。
+            Absolute path to the current ``.sasql`` database file.
 
         Examples
         --------
-        查看当前数据库路径::
+        Inspect the current database path::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.file_path"""
+            atlas.file_path
+        """
         return self.__file_path
 
 
     @property
     def connection(self) -> Optional[duckdb.DuckDBPyConnection]:
-        """返回当前 DuckDB 连接。
+        """Return the current DuckDB connection.
 
-        该属性保存 Atlas 当前使用的 DuckDB 连接对象。通常不需要直接操作它，除非需要调用 DuckDB 的底层 API。
+        This property stores the active DuckDB connection used by the Atlas object.
+        Direct access is usually unnecessary unless low-level DuckDB APIs are needed.
 
         Returns
         -------
         duckdb.DuckDBPyConnection
-            当前 Atlas 数据库连接。
+            Active Atlas database connection.
 
         Examples
         --------
-        使用底层 DuckDB 连接执行查询::
+        Run a query through the underlying DuckDB connection::
 
             con = atlas.connection
-            con.sql("SELECT COUNT(*) FROM obs").fetchone()"""
+            con.sql("SELECT COUNT(*) FROM obs").fetchone()
+        """
         return self.__connection
 
 
     @connection.setter
     def connection(self, value: Optional[duckdb.DuckDBPyConnection]) -> None:
-        """设置当前 DuckDB 连接对象。
+        """Set the current DuckDB connection object.
 
-        该 setter 主要用于内部流程或高级用户手动替换 Atlas 当前连接。
-        一般情况下不建议直接修改 ``atlas.connection``，应优先使用
-        ``atlas.connect(...)`` 和 ``atlas.close()`` 管理连接。
+        This setter is mainly intended for internal workflows or advanced callers that need to replace the active Atlas connection manually.
+        In ordinary use, prefer ``atlas.connect(...)`` and ``atlas.close()``.
 
         Parameters
         ----------
         value
-            需要保存到当前 Atlas 对象中的 DuckDB 连接对象；也可以为 ``None``，
-            表示清空当前连接。
+            DuckDB connection object to store on the current Atlas instance, or ``None`` to clear the active connection.
 
         Returns
         -------
         None
-            该属性 setter 只更新内部连接引用，不返回对象。
+            The internal connection reference is updated in place.
         """
         self.__connection = value
 
     @property
     def db_memory_limit(self) -> str | int | None:
-        """返回当前 Atlas 对象设置的 DuckDB 内存上限。"""
+        """Return the DuckDB memory limit configured for the current Atlas object."""
 
         return self.__db_memory_limit
 
 
     def _apply_memory_limit(self) -> None:
-        """应用 DuckDB 内存限制。
+        """Apply the DuckDB memory limit to the active connection.
 
-        ``db_memory_limit`` 只限制 DuckDB 查询和中间计算可使用的内存，
-        不限制 Python、NumPy 或 pandas 本身占用的内存。
-        如果 ``db_memory_limit`` 是整数，则按 GB 解释，
-        例如 ``4`` 会被转换为``"4GB"``。
+        ``db_memory_limit`` only limits memory available to DuckDB queries and intermediate computation.
+        It does not limit memory allocated directly by Python, NumPy, or pandas.
+        If ``db_memory_limit`` is an integer, it is interpreted as GB, so ``4`` becomes ``"4GB"``.
 
         Returns
         -------
         None
-            该方法直接作用于当前 DuckDB 连接。
+            The setting is applied directly to the active DuckDB connection.
 
         Examples
         --------
-        初始化 Atlas 时限制 DuckDB 查询内存::
-
+        Limit DuckDB query memory when initializing Atlas::
             atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit="4GB")
 
-        使用整数设置 GB 单位的内存限制::
-
+        Use an integer value interpreted as GB::
             atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit=4)
 
-        连接已经存在的数据库时也会自动应用该限制::
-
+        The limit is also applied when connecting to an existing database::
             atlas = sap.Atlas(r"F:\\data\\pbmc.sasql", db_memory_limit="1024MB")
         """
 
@@ -443,285 +434,290 @@ class Atlas:
             f"SET memory_limit = '{memory_limit_sql}'"
         )
 
-        logger.info(f"DuckDB db_memory_limit 设置为: {db_memory_limit}")
+        logger.info(f"DuckDB db_memory_limit set to: {db_memory_limit}")
 
 
     def _create(self) -> duckdb.DuckDBPyConnection:
-        """创建 Atlas 数据库文件并返回连接。
+        """Create an Atlas database file and return its connection.
 
-        该方法在 ``self.file_path`` 指向的位置创建新的 ``.sasql`` 数据库文件。
-        连接创建完成后，会立即调用 ``self._apply_memory_limit()``，确保
-        初始化时传入的 ``db_memory_limit`` 对新连接生效。
+        The method creates a new ``.sasql`` database file at ``self.file_path``.
+        After the connection is created, ``self._apply_memory_limit()`` is called so the configured ``db_memory_limit``
+        takes effect on the new connection.
 
         Returns
         -------
         duckdb.DuckDBPyConnection
-            新创建的 DuckDB 连接对象。
+            Newly created DuckDB connection object.
         """
 
         db_dir = os.path.dirname(self.file_path)
 
-        logger.debug(f"开始创建数据库: {self.file_path}")
+        logger.debug(f"Start creating database: {self.file_path}")
 
         if os.path.exists(self.file_path):
-            raise RuntimeError(f"数据库已存在: {self.file_path}")
+            raise RuntimeError(f"Database already exists: {self.file_path}")
 
         try:
-            logger.debug(f"创建目录: {db_dir}")
+            logger.debug(f"Creating directory: {db_dir}")
             os.makedirs(db_dir, exist_ok=True)
 
-            logger.debug("连接 DuckDB 数据库")
+            logger.debug("Connecting to DuckDB database")
             con = duckdb.connect(database=self.file_path)
 
             self.__connection = con
             self._apply_memory_limit()
 
-            logger.debug(f"数据库已成功创建: {self.file_path}")
+            logger.debug(f"Database created successfully: {self.file_path}")
             return con
 
         except Exception as e:
-            logger.exception("创建数据库异常详情:")
-            raise RuntimeError(f"创建数据库失败: {str(e)}")
+            logger.exception("Database creation exception details:")
+            raise RuntimeError(f"Failed to create database: {str(e)}")
 
 
     def connect(self, mode: Literal["r+", "r"] = "r+") -> duckdb.DuckDBPyConnection:
-        """连接 Atlas 数据库。
+        """Connect to the Atlas database.
 
-        根据当前 ``file_path`` 建立 DuckDB 连接，并把连接对象保存到 ``atlas.connection``。已有连接会被复用或替换为新的连接。
-        如果初始化 Atlas 时设置了 ``db_memory_limit``，每次重新建立连接后都会自动应用该限制。
+        A DuckDB connection is created from the current ``file_path`` and stored on ``atlas.connection``.
+        Existing connections are closed before a new connection is opened.
+        If ``db_memory_limit`` was configured during initialization, it is applied after every new connection.
 
         Parameters
         ----------
         mode
-            数据库连接模式。``"r+"`` 表示可读写连接，``"r"`` 表示只读连接。
+            Database connection mode. ``"r+"`` opens a read-write connection, while ``"r"`` opens a read-only connection.
 
         Returns
         -------
         duckdb.DuckDBPyConnection
-            当前 Atlas 数据库连接。
+            Active Atlas database connection.
 
         Examples
         --------
-        以默认可读写模式连接数据库::
+        Connect with the default read-write mode::
 
             atlas.connect()
 
-        以只读模式打开数据库，适合检查已有结果::
+        Open the database in read-only mode to inspect existing results::
 
             atlas.connect(mode="r")
-            atlas.head("obs")"""
+            atlas.head("obs")
+        """
 
-        logger.info(f"请求数据库连接，模式: {mode}")
+        logger.info(f"Database connection requested, mode: {mode}")
 
-        if self.__connection is not None: # 如果已有连接，先关闭
-            logger.debug("已有数据库连接，先关闭现有连接")
+        if self.__connection is not None: # Close any existing connection first.
+            logger.debug("Existing database connection found; closing it first")
             self.close()
 
         try:
-            if mode == "r":  # 只读模式
-                logger.debug("只读模式连接")
-                # 检查文件是否存在
+            if mode == "r":  # Read-only mode.
+                logger.debug("Read-only connection mode")
+                # Check whether the file exists.
                 if not os.path.exists(self.file_path):
-                    logger.error(f"数据库文件不存在，无法以只读模式连接: {self.file_path}")
-                    raise FileNotFoundError(f"数据库文件不存在: {self.file_path}")
+                    logger.error(f"Database file does not exist; cannot connect in read-only mode: {self.file_path}")
+                    raise FileNotFoundError(f"Database file does not exist: {self.file_path}")
 
-                # 以只读模式连接
+                # Connect in read-only mode.
                 self.__connection = duckdb.connect(database=self.file_path, read_only=True)
-                logger.info(f"以只读模式连接数据库: {self.file_path}")
+                logger.info(f"Connected to database in read-only mode: {self.file_path}")
 
-            elif mode == "r+":  # 读写模式
-                logger.debug("读写模式连接")
+            elif mode == "r+":  # Read-write mode.
+                logger.debug("Read-write connection mode")
                 db_dir = os.path.dirname(self.file_path)
                 os.makedirs(db_dir, exist_ok=True)
 
-                # 无论文件是否存在，都会创建或连接
+                # Create or connect regardless of whether the file already exists.
                 self.__connection = duckdb.connect(database=self.file_path, read_only=False)
 
                 if os.path.exists(self.file_path):
-                    logger.info(f"以读写模式连接现有数据库: {self.file_path}")
+                    logger.info(f"Connected to existing database in read-write mode: {self.file_path}")
                 else:
-                    logger.info(f"创建并连接新数据库: {self.file_path}")
+                    logger.info(f"Created and connected to new database: {self.file_path}")
 
             else:
-                logger.error(f"不支持的连接模式: {mode}")
-                raise ValueError(f"不支持的连接模式: {mode}")
+                logger.error(f"Unsupported connection mode: {mode}")
+                raise ValueError(f"Unsupported connection mode: {mode}")
 
             self.__mode = mode
             self._apply_memory_limit()
-            logger.debug("数据库连接成功")
+            logger.debug("Database connection succeeded")
             return self.__connection
 
         except Exception as e:
-            logger.exception("连接数据库异常详情:")
-            raise RuntimeError(f"连接数据库失败: {str(e)}")
+            logger.exception("Database connection exception details:")
+            raise RuntimeError(f"Failed to connect to database: {str(e)}")
 
 
     def close(self):
-        """关闭当前数据库连接。
+        """Close the current database connection.
 
-        关闭 ``atlas.connection`` 并释放 DuckDB 连接资源。关闭后如需继续使用数据库，可再次调用 ``atlas.connect()``。
+        The method closes ``atlas.connection`` and releases DuckDB connection resources.
+        Call ``atlas.connect()`` again if the database needs to be used after closing.
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            The active connection is closed and cleared in place.
 
         Examples
         --------
-        完成分析后关闭连接::
+        Close the connection after analysis::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
             atlas.describe()
-            atlas.close()"""
+            atlas.close()
+        """
 
-        logger.info("关闭数据库连接")
+        logger.info("Closing database connection")
         try:
-            # 检查是否存在数据库连接
+            # Check whether a database connection exists.
             if self.__connection is not None:
-                # 关闭数据库连接
+                # Close the database connection.
                 self.__connection.close()
-                # 将连接对象设为None，避免重复关闭
+                # Clear the connection object to avoid closing it twice.
                 self.__connection = None
-                logger.info("数据库连接已关闭")
+                logger.info("Database connection closed")
             else:
-                logger.debug("没有活动的数据库连接需要关闭")
+                logger.debug("No active database connection to close")
 
         except Exception as e:
-            logger.exception("关闭数据库连接异常详情:")
-            raise RuntimeError(f"关闭数据库连接时出错: {str(e)}")
+            logger.exception("Database close exception details:")
+            raise RuntimeError(f"Error while closing database connection: {str(e)}")
 
 
     def execute_sql(self, sql: str) -> DuckDBPyConnection | None:
-        """执行一条 SQL 语句。
-
-        该方法适合执行建表、更新、删除临时表等 SQL 操作。若需要把查询结果直接转为 DataFrame，优先使用 ``atlas.query``。
+        """Execute one SQL statement.
+        This method is suitable for SQL operations such as creating tables,
+        updating columns, deleting temporary tables, or other statements that may not need to return a DataFrame.
+        Use ``atlas.query`` when a query result should be converted directly to a DataFrame.
 
         Parameters
         ----------
         sql
-            需要执行的 SQL 语句。适合用于建表、更新字段、删除临时表等不一定需要返回结果的操作。
+            SQL statement to execute. It can be used for table creation, field updates, temporary-table cleanup, and similar operations.
 
         Returns
         -------
-        duckdb.DuckDBPyConnection 或 None
-            DuckDB 执行结果对象；执行失败时会抛出异常。
+        duckdb.DuckDBPyConnection or None
+            DuckDB execution result for query-like statements. Non-query statements are committed and return ``None``.
 
         Examples
         --------
-        新增一个布尔过滤列::
-
+        Add a boolean filter column::
             atlas.execute_sql(
                 "ALTER TABLE obs ADD COLUMN IF NOT EXISTS filter_custom BOOLEAN"
             )
 
-        将已有列的空值填为 ``False``::
-
+        Fill missing values in an existing column::
             atlas.execute_sql(
                 "UPDATE obs SET filter_custom = FALSE WHERE filter_custom IS NULL"
-            )"""
+            )
+        """
 
-        # 检查是否有活动的数据库连接
+        # Check whether an active database connection exists.
         if self.__connection is None:
-            logger.debug("没有活动的数据库连接，自动创建读写连接")
-            # 如果没有连接，自动以读写模式连接
+            logger.debug("No active database connection; creating a read-write connection automatically")
+            # Automatically connect in read-write mode when no connection exists.
             self.connect("r+")
-        # 执行SQL语句
-        logger.debug("执行SQL语句")
+        # Execute the SQL statement.
+        logger.debug("Executing SQL statement")
         result = self.__connection.execute(sql)
 
-        # 如果是查询语句，返回结果
+        # Return the result for query statements.
         sql_upper = sql.strip().upper()
         if sql_upper.startswith(('SELECT', 'SHOW', 'DESCRIBE', 'EXPLAIN')):
-            logger.debug("SQL语句为查询类型，返回结果")
+            logger.debug("SQL statement is query-like; returning result")
             return result
         else:
-            # 对于非查询语句，提交事务
-            logger.debug("SQL语句为非查询类型，提交事务")
+            # Commit the transaction for non-query statements.
+            logger.debug("SQL statement is non-query; committing transaction")
             self.__connection.commit()
             return None
 
 
     def exists(self) -> bool:
-        """检查 Atlas 数据库文件是否存在。
+        """Check whether the Atlas database file exists.
+        This method only checks whether the file pointed to by ``atlas.file_path`` exists.
+        It does not validate the internal database schema.
 
-        该方法只检查 ``atlas.file_path`` 指向的文件是否存在，不验证数据库内部表结构是否完整。
-
+        Returns
         -------
         bool
-            如果 ``atlas.file_path`` 指向的数据库文件存在，则返回 ``True``；
-            否则返回 ``False``。
+            ``True`` if the database file exists, otherwise ``False``.
 
         Examples
         --------
-        判断数据库文件是否已经创建::
+        Check whether the database file has been created::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.exists()"""
+            atlas.exists()
+        """
 
         exists = os.path.exists(self.file_path)
-        logger.debug(f"检查数据库文件是否存在: {self.file_path} -> {exists}")
+        logger.debug(f"Checking database file existence: {self.file_path} -> {exists}")
         return exists
 
 
     def query(self, query: str):
-        """执行 SQL 查询并返回 DataFrame。
-
-        该方法通过当前 DuckDB 连接执行查询，并将结果转为 ``pandas.DataFrame``，适合交互式检查 ``obs``、``var`` 和结果表。
+        """Execute a SQL query and return a DataFrame.
+        The query is executed on the active DuckDB connection and converted to ``pandas.DataFrame``.
+        This is convenient for interactive inspection of ``obs``, ``var``, and result tables.
 
         Parameters
         ----------
         query
-            需要执行并返回结果的 SQL 查询语句。
+            SQL query to execute and return.
 
         Returns
         -------
         pandas.DataFrame
-            包含查询、统计或绘图所需数据的表格。
+            Table containing the query, summary, or plotting data.
 
         Examples
         --------
-        查看细胞数量::
-
+        Inspect the number of cells::
             atlas.query("SELECT COUNT(*) AS n_cells FROM obs")
 
-        按聚类统计细胞数::
-
+        Count cells by cluster::
             atlas.query(
                 "SELECT kmeans, COUNT(*) AS n_cells FROM obs GROUP BY kmeans ORDER BY kmeans"
-            )"""
+            )
+        """
 
-        logger.info("查询数据库，返回值类型为pandas")
+        logger.info("Querying database; return type is pandas")
 
         if self.__connection is None:
             self.connect("r+")
         result = self.connection.execute(query)
-        df = result.df() # 将查询结果转换为pandas DataFrame
+        df = result.df() # Convert the query result to a pandas DataFrame.
         return df
 
 
     def query_raw(self, query: str):
-        """执行 SQL 查询并返回 DuckDB 原始结果。
-
-        与 ``atlas.query`` 不同，该方法保留 DuckDB 的原始返回对象，适合继续调用 ``fetchone``、``fetchall`` 或 DuckDB 原生方法。
+        """Execute a SQL query and return the raw DuckDB result.
+        Unlike ``atlas.query``, this method keeps the original DuckDB result object,
+        making it suitable for subsequent calls such as ``fetchone``, ``fetchall``, or other DuckDB-native methods.
 
         Parameters
         ----------
         query
-            需要执行并返回结果的 SQL 查询语句。
+            SQL query to execute and return.
 
         Returns
         -------
-        duckdb.DuckDBPyConnection 或 None
-            DuckDB 执行结果对象；执行失败时会抛出异常。
+        duckdb.DuckDBPyConnection or None
+            DuckDB execution result object.
 
         Examples
         --------
-        读取单个统计值::
+        Read a single summary value::
 
             result = atlas.query_raw("SELECT COUNT(*) FROM obs")
-            n_cells = result.fetchone()[0]"""
+            n_cells = result.fetchone()[0]
+        """
 
-        logger.info("查询数据库，返回值类型为duckDB")
+        logger.info("Querying database; return type is DuckDB")
 
         if self.__connection is None:
             self.connect("r+")
@@ -731,37 +727,34 @@ class Atlas:
 
 
     def describe(self) -> str:
-        """汇总 Atlas 数据库中的表结构。
-
-        该方法扫描数据库表和部分关键字段，生成可读的数据库摘要，适合在导入数据或完成分析后检查当前 Atlas 对象包含哪些内容。
+        """Summarize the table structure in the Atlas database.
+        This method scans database tables and selected key fields to generate a readable database summary.
+        It is useful for checking what an Atlas object contains after importing data or completing analysis.
 
         Returns
         -------
         str
-            数据库或对象的文本摘要。
+            Summary of database path, memory limit, tables, cell count, and gene count.
 
         Examples
         --------
-        打印数据库摘要::
+        Print a database summary::
 
-            print(atlas.describe())
-
-        在 notebook 中直接查看摘要::
-
-            atlas.describe()"""
+            atlas.describe()
+        """
 
         if self.__connection is None:
             self.connect("r+")
 
         conn = self.__connection
 
-        # 1. 数据库路径
+        # 1. Database path.
         file_name = self.file_path
 
-        # 1.1 DuckDB 内存限制
+        # 1.1 DuckDB memory limit.
         db_memory_limit = self.db_memory_limit
 
-        # 2. 查询所有表
+        # 2. Query all tables.
         try:
             tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
         except Exception:
@@ -769,7 +762,7 @@ class Atlas:
 
         table_names = ", ".join(tables) if len(tables) > 0 else "None"
 
-        # 3. 查询 obs 细胞数
+        # 3. Query the number of cells in obs.
         if "obs" in tables:
             try:
                 n_cells = conn.execute("SELECT COUNT(*) FROM obs").fetchone()[0]
@@ -778,7 +771,7 @@ class Atlas:
         else:
             n_cells = None
 
-        # 4. 查询 var 基因数
+        # 4. Query the number of genes in var.
         if "var" in tables:
             try:
                 n_genes = conn.execute("SELECT COUNT(*) FROM var").fetchone()[0]
@@ -787,9 +780,9 @@ class Atlas:
         else:
             n_genes = None
 
-        # 5. 格式化输出
+        # 5. Format output.
         def fmt(x: Any):
-            """将计数值格式化为带千位分隔符的字符串。"""
+            """Format a count value with thousands separators."""
             return "NA" if x is None else f"{int(x):,}"
 
         text = (
@@ -805,50 +798,39 @@ class Atlas:
 
 
     def __repr__(self) -> str:
-        """返回 Atlas 对象的数据库摘要字符串。
-
-        该方法调用 ``self.describe()``，用于在交互式环境中显示
-        当前数据库路径、表数量、细胞数和基因数等信息。
-        """
+        """Return a database summary string for the Atlas object."""
         return self.describe()
 
 
     def __str__(self) -> str:
-        """返回 Atlas 对象的可读字符串摘要。
-
-        该方法调用 ``self.describe()``，使 ``print(atlas)`` 可以直接显示
-        当前数据库的基本信息。
-        """
+        """Return a readable summary string for the Atlas object."""
         return self.describe()
 
 
     def head(self, table_name: str, n: int = 5):
-        """打印数据库表的前几行。
+        """Print the first rows of a database table.
 
-        该方法查询指定表的前 ``n`` 行，并在控制台打印表名、列名和数据内容，
-        适合快速检查导入结果或分析结果。
+        This method checks whether the table exists, reads its columns,
+        queries the first ``n`` rows, prints the result, and also returns it as a DataFrame.
 
         Parameters
         ----------
         table_name
-            数据库表名。
+            Name of the table to preview.
         n
-            打印的记录数量。
+            Number of rows to return. The default is ``5``.
 
         Returns
         -------
         None
-            该方法只打印结果，不返回 DataFrame。
 
         Examples
         --------
-        查看 ``obs`` 前 5 行::
+        Preview the ``obs`` table::
+            atlas.head("obs", n=5)
 
-            atlas.head("obs")
-
-        查看差异基因结果前 10 行::
-
-            atlas.head("rank_genes_groups", n=10)
+        Preview the ``var`` table::
+            atlas.head("var")
         """
 
         if self.__connection is None:
@@ -856,19 +838,19 @@ class Atlas:
 
         conn = self.__connection
 
-        # 1. 检查表是否存在
+        # 1. Check whether the table exists.
         tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
 
         if table_name not in tables:
             raise ValueError(
-                f"数据库中不存在表: {table_name}\n"
-                f"当前可用表: {', '.join(tables) if len(tables) > 0 else 'None'}"
+                f"Table does not exist in database: {table_name}\n"
+                f"Available tables: {', '.join(tables) if len(tables) > 0 else 'None'}"
             )
 
-        # 2. 安全引用表名
+        # 2. Safely quote the table name.
         table_sql = '"' + table_name.replace('"', '""') + '"'
 
-        # 3. 获取字段名
+        # 3. Get field names.
         columns = [
             r[0]
             for r in conn.execute("""
@@ -879,14 +861,14 @@ class Atlas:
             """, [table_name]).fetchall()
         ]
 
-        # 4. 查询前 n 行
+        # 4. Query the first n rows.
         df = conn.execute(f"""
             SELECT *
             FROM {table_sql}
             LIMIT {int(n)}
         """).df()
 
-        # 5. 打印结果
+        # 5. Print the result.
         print(f"table   : {table_name}")
         print(f"columns : {', '.join(columns)}")
         print(f"rows    : first {int(n)}")
@@ -908,30 +890,32 @@ class Atlas:
             use_hvg: bool,
             use_data: str,
     ) -> None:
-        """保存当前 read index 构建参数。
+        """Save the current read index construction parameters.
 
-        该方法把本次 ``build_read_index`` 使用的细胞过滤条件、基因过滤条件、
-        是否使用 HVG 以及表达值列名保存到 ``atlas_read_index_meta`` 表中，
-        用于后续检查当前读取索引对应的数据范围和表达层。
+        This method saves the cell filtering condition, gene filtering condition,
+        whether HVG is used, and the expression value column name used by the current
+        ``build_read_index`` call into the ``atlas_read_index_meta`` table.
+        It is used later to check the data range and expression layer corresponding
+        to the current read index.
 
-        如果 ``atlas_read_index_meta`` 表不存在，则自动创建该表；
-        如果该表已经存在，则不会重复创建，并打印提示信息。
+        If the ``atlas_read_index_meta`` table does not exist, it will be created automatically.
+        If the table already exists, it will not be created again, and a message will be printed.
 
         Parameters
         ----------
         cell_condition
-            本次构建读取索引时使用的细胞过滤列名。
+            The cell filtering column name used when constructing the current read index.
         gene_condition
-            本次构建读取索引时使用的基因过滤列名。
+            The gene filtering column name used when constructing the current read index.
         use_hvg
-            是否叠加使用 ``highly_variable_genes`` 过滤。
+            Whether to additionally apply ``highly_variable_genes`` filtering.
         use_data
-            本次构建过滤表达矩阵时读取的表达值列名。
+            The expression value column name read when constructing the filtered expression matrix.
 
         Returns
         -------
         None
-            结果直接写入 ``atlas_read_index_meta`` 表。
+            The result is written directly into the ``atlas_read_index_meta`` table.
         """
 
         if self.__connection is None:
@@ -939,24 +923,26 @@ class Atlas:
 
         conn = self.__connection
 
-        # 先检查 atlas_read_index_meta 表是否已经存在
+        # First check whether the atlas_read_index_meta table already exists
         table_exists = conn.execute("""
-            SELECT COUNT(*)
-            FROM information_schema.tables
-            WHERE table_name = 'atlas_read_index_meta'
-        """).fetchone()[0]
+                SELECT COUNT(*)
+                FROM information_schema.tables
+                WHERE table_name = 'atlas_read_index_meta'
+            """).fetchone()[0]
 
-        # 不存在才新建；
-        # 存在则不重复建表，并打印提示
+        # Create the table only if it does not exist;
+        # if it already exists, do not recreate it and print a message
         if table_exists == 0:
             conn.execute("""
-                CREATE TABLE atlas_read_index_meta (
-                    key VARCHAR PRIMARY KEY,
-                    value VARCHAR
-                )
-            """)
+                    CREATE TABLE atlas_read_index_meta (
+                        key VARCHAR PRIMARY KEY,
+                        value VARCHAR
+                    )
+                """)
         else:
-            print("minibatch读取 表达矩阵所需的索引表 已经重新构建，依赖该表的PCA、K-means等操作，请重新运行！")
+            print(
+                "The index table required for minibatch expression matrix reading has been rebuilt. "
+                "Please rerun PCA, K-means, and other operations that depend on this table!")
 
         rows = [
             ("cell_condition", str(cell_condition)),
@@ -967,53 +953,60 @@ class Atlas:
 
         for key, value in rows:
             conn.execute("""
-                INSERT OR REPLACE INTO atlas_read_index_meta(key, value)
-                VALUES (?, ?)
-            """, [key, value])
+                    INSERT OR REPLACE INTO atlas_read_index_meta(key, value)
+                    VALUES (?, ?)
+                """, [key, value])
 
         conn.commit()
 
-
     def build_read_index(
             self,
-            cell_condition: str  = "filter_cells",
-            gene_condition: str  = "filter_genes",
+            cell_condition: str = "filter_cells",
+            gene_condition: str = "filter_genes",
             use_hvg: bool = True,
             use_data: str = "data_log1p",
     ):
-        """构建表达矩阵读取索引。
+        """Build the expression matrix read index.
 
-        该方法根据细胞过滤条件、基因过滤条件和高变基因标记，构建后续小批量读取表达矩阵所需的索引表。PCA、K-means 和部分绘图函数通常依赖该索引。
+        This method constructs the index tables required for subsequent minibatch
+        expression matrix reading based on the cell filtering condition, gene filtering
+        condition, and highly variable gene marker. PCA, K-means, and some plotting
+        functions usually depend on this index.
 
         Parameters
         ----------
         cell_condition
-            ``obs`` 表中用于筛选细胞的布尔列名。默认 ``"filter_cells"``。
-            为 ``None`` 时不进行细胞过滤。
+            Boolean column name in the ``obs`` table used for cell filtering.
+            Defaults to ``"filter_cells"``.
+            If ``None``, cell filtering is not applied.
         gene_condition
-            ``var`` 表中用于筛选基因的布尔列名。默认 ``"filter_genes"``。
-            为 ``None`` 时不进行基因过滤。
+            Boolean column name in the ``var`` table used for gene filtering.
+            Defaults to ``"filter_genes"``.
+            If ``None``, gene filtering is not applied.
         use_hvg
-            是否在 ``gene_condition`` 之外继续叠加 ``highly_variable_genes=TRUE``。
-            为 ``True`` 时，最终基因集合需要同时满足基因过滤条件和 HVG 条件。
+            Whether to additionally apply ``highly_variable_genes=TRUE`` on top of
+            ``gene_condition``.
+            If ``True``, the final gene set must satisfy both the gene filtering
+            condition and the HVG condition.
         use_data
-            从 ``X_HyS_data`` 表中读取的表达值列名。常用值包括
-            ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
+            Expression value column name read from the ``X_HyS_data`` table. Common
+            values include ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``,
+            and ``"data_scale"``.
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            The result is written directly into the Atlas database or the current figure window.
 
         Examples
         --------
-        使用默认过滤列构建索引::
+        Build an index using the default filtering columns::
 
             sap.pp.filter_cells(atlas, min_genes=200)
             sap.pp.filter_genes(atlas, min_cells=3)
             atlas.build_read_index(cell_condition="filter_cells", gene_condition="filter_genes")
 
-        只使用高变基因构建 PCA 输入索引::
+        Build a PCA input index using only highly variable genes::
 
             sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
             atlas.build_read_index(use_hvg=True)"""
@@ -1027,7 +1020,7 @@ class Atlas:
         )
         builder.run()
 
-        # 把本次读取索引用到的参数持久化到数据库
+        # Persist the parameters used by this read index into the database
         self._save_read_index_meta(
             cell_condition=cell_condition,
             gene_condition=gene_condition,
@@ -1035,33 +1028,34 @@ class Atlas:
             use_data=use_data,
         )
 
-
     def get_minibatch_csr(self, x_type: str = "CSR"):
-        """以稀疏 CSR 小批量读取表达矩阵。
+        """Read the expression matrix in sparse CSR minibatches.
 
-        该方法基于已经构建的读取索引，从数据库中按批返回稀疏矩阵，适合需要流式处理表达矩阵的算法。
+        This method returns sparse matrices batch by batch from the database based on
+        the already constructed read index. It is suitable for algorithms that need
+        streaming expression matrix processing.
 
         Parameters
         ----------
         x_type
-            返回的小批量矩阵格式。常用值为 ``"CSR"`` 或其他函数支持的稀疏矩阵格式。
+            The returned minibatch matrix format. Common values include ``"CSR"`` or
+            other sparse matrix formats supported by the underlying function.
 
         Yields
         -------
-        ``X_batch`` 为 ``float32`` csr 格式的稀疏矩阵格式；
+        ``X_batch`` is a sparse matrix in ``float32`` CSR format.
 
         Examples
         --------
-        遍历 CSR 小批量::
+        Iterate over CSR minibatches::
 
             for X_batch in atlas.get_minibatch_csr():
                 print(X_batch.shape)
                 break"""
 
-        fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type = x_type)
+        fetcher = MultiThreadedMinibatchFetcher(file_path=self.file_path, x_type=x_type)
         for X_batch in fetcher.run():
             yield X_batch
-
 
     def get_minibatch_dense(
             self,
@@ -1071,77 +1065,102 @@ class Atlas:
             buffer_batch_num: int = 5,
             get_obs_col: str | None = None,
     ):
-        """以 dense 小批量读取表达矩阵。
+        """Read the expression matrix in dense minibatches.
 
-        该方法基于 ``atlas.build_read_index(...)`` 生成的过滤后读取索引，
-        从 ``X_HyS_data_filtered`` / ``X_HyS_indptr_filtered`` 中按批恢复表达矩阵，
-        并把稀疏表达记录转换为 ``float32`` dense array。
-        它主要服务于``IncrementalPCA``、``MiniBatchKMeans``、流式训练和大数据分批推理等
-        需要 dense 输入的算法。
+        This method restores expression matrices batch by batch from
+        ``X_HyS_data_filtered`` / ``X_HyS_indptr_filtered`` based on the filtered
+        read index generated by ``atlas.build_read_index(...)``, and converts sparse
+        expression records into ``float32`` dense arrays.
+        It mainly supports algorithms that require dense input, such as
+        ``IncrementalPCA``, ``MiniBatchKMeans``, streaming training, and large-scale
+        batched inference.
 
-        返回值是一个生成器，会逐批 ``yield`` minibatch，而不是一次性把全部数据读入内存。
-        默认情况下，每次只返回一个 ``X_batch`` 矩阵；
-        当传入 ``get_obs_col`` 时，会额外返回当前 batch 每一行对应的 ``filter_cell_ids``，
-        并根据这些``filter_cell_ids`` 从 ``obs`` 表中取出指定列，例如 ``kmeans`` 标签。
+        The return value is a generator that ``yield``s minibatches one by one,
+        instead of loading all data into memory at once.
+        By default, each iteration returns only one ``X_batch`` matrix.
+        When ``get_obs_col`` is provided, the current batch's row-wise
+        ``filter_cell_ids`` are also returned, and the specified column from the
+        ``obs`` table, such as ``kmeans`` labels, is retrieved based on these
+        ``filter_cell_ids``.
 
         Parameters
         ----------
         pass_mode
-            小批量读取模式。可选值为 ``"single-pass"`` 或 ``"multi-pass"``。
+            Minibatch reading mode. Supported values are ``"single-pass"`` and
+            ``"multi-pass"``.
 
-            - ``"single-pass"``：按当前读取索引顺序遍历一次数据库，适合评估、
-              导出、预测或需要确定性顺序的流程。
-            - ``"multi-pass"``：每一轮重新创建读取器，并在 dense batch 层使用
-              ``ShuffleBuffer`` 做随机化输出，适合需要多轮随机小批量训练的算法。
-              该模式通常应配合 ``max_batches`` 使用，用于控制总训练批次数。
+            - ``"single-pass"``: Traverse the database once in the order of the
+              current read index. This is suitable for evaluation, export, prediction,
+              or workflows that require deterministic ordering.
+            - ``"multi-pass"``: Recreate the reader for each pass and use
+              ``ShuffleBuffer`` at the dense batch layer to produce randomized output.
+              This is suitable for algorithms that require multiple rounds of random
+              minibatch training. This mode should usually be used together with
+              ``max_batches`` to control the total number of training batches.
+
         batch_size
-            每个 minibatch 包含的细胞数量。较大值通常可以减少 Python 层循环次数、
-            提高吞吐，但会增加单批 dense 矩阵的内存占用。输出矩阵形状通常为
-            ``(当前批细胞数, 过滤后基因数)``；最后一个 batch 的细胞数可能小于``batch_size``。
-        max_batches
-            最多读取或输出的 minibatch 数量。为 ``None`` 时：
-            - 在 ``single-pass`` 模式下遍历当前读取索引中的全部 batch；
-            - 在 ``multi-pass`` 模式下不主动限制轮数，通常建议显式传入该参数。
-        buffer_batch_num
-            ``multi-pass`` 模式下 ``ShuffleBuffer`` 缓存的 batch 数量。
-            实际 shuffle buffer 的细胞容量约为 ``batch_size * buffer_batch_num``。
-            值越大，随机化范围越大，但 dense 缓冲区占用的内存也越高。
-            在 ``single-pass`` 模式下该参数会传到底层读取器，但不会改变顺序输出语义。
-        get_obs_col
-            需要随 minibatch 一起返回的 ``obs`` 表字段名，例如 ``"kmeans"``。
-            默认为 ``None``，不查询 ``obs`` 表字段，且每次只 ``yield X_batch``。
+            Number of cells contained in each minibatch. A larger value usually reduces
+            the number of Python-level loops and improves throughput, but increases
+            the memory usage of each dense batch. The output matrix shape is usually
+            ``(current batch cell count, filtered gene count)``; the last batch may
+            contain fewer cells than ``batch_size``.
 
-            当传入字段名时，例如 ``get_obs_col="kmeans"``，该方法会自动让底层
-            minibatch 读取器返回 ``filter_cell_ids``，再根据这些 ID 查询``obs.kmeans``，并返回字典：
+        max_batches
+            Maximum number of minibatches to read or output. If ``None``:
+            - in ``single-pass`` mode, all batches in the current read index are traversed;
+            - in ``multi-pass`` mode, the number of passes is not actively limited,
+              so it is usually recommended to pass this parameter explicitly.
+
+        buffer_batch_num
+            Number of batches cached by ``ShuffleBuffer`` in ``multi-pass`` mode.
+            The actual cell capacity of the shuffle buffer is approximately
+            ``batch_size * buffer_batch_num``.
+            A larger value increases the randomization range, but also increases
+            the memory usage of the dense buffer.
+            In ``single-pass`` mode, this parameter is still passed to the underlying
+            reader but does not change the ordered output semantics.
+
+        get_obs_col
+            Column name from the ``obs`` table to return together with each minibatch,
+            for example ``"kmeans"``.
+            Defaults to ``None``, meaning no ``obs`` column is queried and each
+            iteration only ``yield``s ``X_batch``.
+
+            When a column name is provided, such as ``get_obs_col="kmeans"``, this
+            method automatically asks the underlying minibatch reader to return
+            ``filter_cell_ids``, then queries ``obs.kmeans`` according to these IDs,
+            and returns a dictionary:
 
             ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, "kmeans": values}``
 
-            其中 ``X_batch[i, :]``、``filter_cell_ids[i]`` 和 ``values[i]``三者一一对应。
+            Here ``X_batch[i, :]``, ``filter_cell_ids[i]``, and ``values[i]`` have
+            a one-to-one correspondence.
 
         Yields
         -------
-        numpy.ndarray 或 dict
-            当 ``get_obs_col is None`` 时，每次生成一个 dense ``numpy.ndarray``：
+        numpy.ndarray or dict
+            When ``get_obs_col is None``, each iteration yields a dense ``numpy.ndarray``:
 
             ``X_batch``
 
-            当 ``get_obs_col`` 不为 ``None`` 时，每次生成一个字典：
+            When ``get_obs_col`` is not ``None``, each iteration yields a dictionary:
 
             ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, get_obs_col: values}``
 
-            ``X_batch`` 为 ``float32`` dense 矩阵；
-            ``filter_cell_ids`` 为当前 batch每行对应的过滤后细胞 ID；
-            ``values`` 为 ``obs`` 表中指定列的值。
+            ``X_batch`` is a ``float32`` dense matrix;
+            ``filter_cell_ids`` are the filtered cell IDs corresponding to each row
+            in the current batch;
+            ``values`` are the values of the specified column in the ``obs`` table.
 
         Examples
         --------
-        顺序读取，用于模型拟合::
+        Sequential reading for model fitting::
 
             for X_batch in atlas.get_minibatch_dense(batch_size=4096):
                 print(X_batch.shape)
                 break
 
-        同时返回 ``obs.kmeans`` 标签::
+        Return ``obs.kmeans`` labels together::
 
             for batch in atlas.get_minibatch_dense(
                 batch_size=4096,
@@ -1152,7 +1171,7 @@ class Atlas:
                 filter_cell_ids = batch["filter_cell_ids"]
                 break
 
-        多轮随机 batch 训练，并限制总批次数::
+        Multi-pass random batch training with a limited number of total batches::
 
             for X_batch in atlas.get_minibatch_dense(
                 pass_mode="multi-pass",
@@ -1164,24 +1183,23 @@ class Atlas:
         """
 
         if pass_mode not in ("single-pass", "multi-pass"):
-            raise ValueError("pass_mode 只支持 'single-pass' 或 'multi-pass'")
+            raise ValueError("pass_mode only supports 'single-pass' or 'multi-pass'")
 
         if get_obs_col is not None and not isinstance(get_obs_col, str):
-            raise TypeError("get_obs_col 必须是 str 或 None")
+            raise TypeError("get_obs_col must be str or None")
 
         if get_obs_col is not None and get_obs_col == "":
-            raise ValueError("get_obs_col 不能为空字符串")
+            raise ValueError("get_obs_col cannot be an empty string")
 
-        # 内部参数：get_obs_col 依赖 filter_cell_ids 做映射，因此传入 obs 字段时自动打开。
+        # Internal parameter: get_obs_col depends on filter_cell_ids for mapping,
+        # so it is automatically enabled when an obs column is provided.
         return_cell_ids = get_obs_col is not None
 
         obs_conn = None
         obs_col_sql = None
 
-
         def _quote_identifier(name: str) -> str:
             return '"' + name.replace('"', '""') + '"'
-
 
         def _attach_obs_col(batch):
 
@@ -1210,26 +1228,27 @@ class Atlas:
             batch[get_obs_col] = obs_values
             return batch
 
-
         if get_obs_col is not None:
             obs_conn = duckdb.connect(self.file_path)
             obs_columns = obs_conn.execute("PRAGMA table_info('obs')").fetchdf()["name"].tolist()
 
             if "filter_cell_id" not in obs_columns:
                 obs_conn.close()
-                raise ValueError("obs 表缺少 filter_cell_id 字段，请先运行 atlas.build_read_index(...)")
+                raise ValueError(
+                    "The obs table is missing the filter_cell_id column. Please run atlas.build_read_index(...) first.")
 
             if get_obs_col not in obs_columns:
                 obs_conn.close()
-                raise ValueError(f"obs 表不存在字段: {get_obs_col}")
+                raise ValueError(f"The obs table does not contain column: {get_obs_col}")
 
             if get_obs_col in {"X", "filter_cell_ids"}:
                 obs_conn.close()
-                raise ValueError("get_obs_col 不能是 X 或 filter_cell_ids，避免覆盖 minibatch 保留字段")
+                raise ValueError(
+                    "get_obs_col cannot be X or filter_cell_ids, to avoid overwriting reserved minibatch fields")
 
             obs_col_sql = _quote_identifier(get_obs_col)
 
-        # 1. single-pass：只跑一遍
+        # 1. single-pass: run only once
         try:
             if pass_mode == "single-pass":
 
@@ -1244,23 +1263,22 @@ class Atlas:
                 )
 
                 for batch in fetcher.run():
-
                     yield _attach_obs_col(batch)
 
                 return
 
-            # 2. multi-pass：自动循环多遍
+            # 2. multi-pass: automatically loop over multiple passes
             produced_batches = 0
             pass_id = 0
 
             while True:
 
-                # 如果达到 max_batches，停止
+                # Stop if max_batches has been reached
                 if max_batches is not None and produced_batches >= max_batches:
                     logger.info(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
                     break
 
-                # 当前 pass 还需要输出多少 batch
+                # Number of batches still needed in the current pass
                 if max_batches is None:
                     remain_batches = None
                 else:
@@ -1295,7 +1313,7 @@ class Atlas:
 
                 pass_id += 1
 
-                # 防止异常情况下空 pass 无限循环
+                # Prevent an infinite loop if an abnormal empty pass occurs
                 if pass_batches == 0:
                     logger.debug("[get_minibatch_dense] pass produced 0 batch, stop")
                     break
@@ -1303,75 +1321,89 @@ class Atlas:
             if obs_conn is not None:
                 obs_conn.close()
 
-
     # =====================================================
-    # io 方法包装
+    # io method wrappers
     # -----------------------------------------------------
-    # 保留原函数位置不动：
+    # Keep the original function position unchanged:
     #   load_h5ad(file_path, atlas, ...)
     #
-    # 同时支持对象式调用：
+    # Also support object-style calls:
     #   atlas.load_h5ad(file_path, ...)
     # =====================================================
 
     def load_h5ad(
-        self,
-        h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
-        *,
-        load_type: Literal["order", "random"] = "random",
-        cells_per_block: int | None = None,
+            self,
+            h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
+            *,
+            load_type: Literal["order", "random"] = "random",
+            cells_per_block: int | None = None,
     ) -> Any:
-        """将 h5ad 文件导入 Atlas 数据库。
+        """Import h5ad files into an Atlas database.
 
-        该函数是 h5ad 导入 Atlas 的统一入口。它可以读取单个 ``.h5ad`` 文件，也可以
-        读取多个 ``.h5ad`` 文件组成的列表，并把细胞元数据、基因元数据和表达矩阵
-        写入 Atlas 的 DuckDB 数据库。
+        This function is the unified entry point for importing h5ad data into Atlas.
+        It can read a single ``.h5ad`` file or a list of multiple ``.h5ad`` files,
+        and writes cell metadata, gene metadata, and the expression matrix into the
+        Atlas DuckDB database.
 
-        导入时会根据 ``load_type`` 和 ``h5ad_path`` 的类型自动分派到对应实现：
+        During import, it automatically dispatches to the corresponding implementation
+        based on ``load_type`` and the type of ``h5ad_path``:
 
-        - 单文件 + ``"order"``：按原始细胞顺序导入；
-        - 单文件 + ``"random"``：按 shuffle-window 方式随机导入；
-        - 多文件 + ``"order"``：按文件列表顺序和文件内细胞顺序导入；
-        - 多文件 + ``"random"``：把多个文件切成 block 后全局随机导入。
+        - single file + ``"order"``: import in the original cell order;
+        - single file + ``"random"``: import randomly using a shuffle-window strategy;
+        - multiple files + ``"order"``: import according to the file list order and the
+          original cell order within each file;
+        - multiple files + ``"random"``: split multiple files into blocks and import them
+          with global randomization.
 
-        表达矩阵会统一保存为 count 尺度，写入 ``X_HyS_data.data_count`` 字段。
-        如果输入 ``X`` 被检测为 log 尺度，会在写入前转换回 count。
+        The expression matrix is stored uniformly on the count scale and written to
+        the ``X_HyS_data.data_count`` field.
+        If the input ``X`` is detected to be on the log scale, it is converted back
+        to counts before writing.
 
         Parameters
         ----------
         h5ad_path
-            输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
+            Input ``.h5ad`` file path, or a list of multiple ``.h5ad`` file paths.
+
         atlas
-            Atlas 对象。函数会通过 ``atlas.connect("r+")`` 获取 DuckDB 连接，并把
-            数据写入该 Atlas 数据库。
+            Atlas object. The function obtains a DuckDB connection through
+            ``atlas.connect("r+")`` and writes data into this Atlas database.
+
         load_type
-            导入方式，只支持 ``"order"`` 和 ``"random"``。
-            当 ``h5ad_path`` 是单个路径时，分别执行单文件顺序或随机导入；
-            当 ``h5ad_path`` 是列表时，分别执行多文件顺序或随机导入。
+            Import mode. Only ``"order"`` and ``"random"`` are supported.
+            When ``h5ad_path`` is a single path, single-file ordered or random import
+            is performed respectively.
+            When ``h5ad_path`` is a list, multi-file ordered or random import is
+            performed respectively.
+
         cells_per_block
-            读取和写入表达矩阵时每个连续 cell block 包含的细胞数量。
-            为 ``None`` 时会根据细胞总数自动估算一个默认值。
+            Number of cells contained in each contiguous cell block when reading and
+            writing the expression matrix.
+            If ``None``, a default value is automatically estimated based on the total
+            number of cells.
 
         Returns
         -------
         Any
-            返回所调用底层导入函数的结果。当前主要用于执行导入副作用，通常不依赖
-            返回值。
+            Returns the result of the called underlying import function. Currently,
+            this is mainly used to execute import side effects, and the return value
+            is usually not relied upon.
 
         Notes
         -----
-        ``random`` 导入会重排细胞顺序，因此单文件随机导入默认不会导入 ``obsm``，
-        以避免 embedding 与重排后的 ``obs`` 错位；
-        ``order`` 导入会保留原始顺序，因此可以安全导入 ``obsm`` 和 ``varm``。
+        ``random`` import reorders cells, so single-file random import does not import
+        ``obsm`` by default, to avoid misalignment between embeddings and reordered ``obs``.
+        ``order`` import preserves the original order, so ``obsm`` and ``varm`` can
+        be safely imported.
 
         Examples
         --------
-        顺序导入单个 h5ad 文件::
+        Import a single h5ad file in order::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
             atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
 
-        随机分块导入多个文件::
+        Import multiple files with random blocks::
 
             atlas.load_h5ad(
                 [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
@@ -1387,38 +1419,43 @@ class Atlas:
             cells_per_block=cells_per_block,
         )
 
-
     def load_anndata(self, adata: AnnData) -> None:
 
-        """将 AnnData 对象写入 Atlas 数据库。
+        """Write an AnnData object into an Atlas database.
 
-        该函数直接接收内存中的 AnnData 对象，并把其中的 ``obs``、``var``、
-        ``X``、``obsm`` 和 ``varm`` 写入 Atlas 数据库。适合已经用 Scanpy 或其他
-        工具完成读取、筛选或预处理后，再转入 Atlas 管理的场景。
+        This function directly accepts an in-memory AnnData object and writes its
+        ``obs``, ``var``, ``X``, ``obsm``, and ``varm`` into the Atlas database.
+        It is suitable for scenarios where data has already been read, filtered,
+        or preprocessed using Scanpy or other tools and then needs to be managed
+        by Atlas.
 
-        与 ``load_h5ad`` 的 backed 分块导入不同，该函数要求 AnnData 已经在内存中，
-        因此更适合中小型数据或已经抽样后的数据。
+        Unlike the backed chunked import path of ``load_h5ad``, this function requires
+        the AnnData object to already be in memory. Therefore, it is more suitable for
+        small to medium-sized datasets or already sampled datasets.
 
         Parameters
         ----------
         adata
-            AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
+            AnnData object. The function writes its ``obs``, ``var``, expression matrix,
+            and supported results into the Atlas database.
         atlas
-            Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected or be connectable to
+            a DuckDB database.
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库，不返回对象。
+            The result is written directly into the Atlas database and no object is returned.
 
         Notes
         -----
-        该路径会重建 ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表，并把
-        ``obsm``、``varm`` 中的二维数组写成 ``obsm_*``、``varm_*`` 表。
+        This path rebuilds the ``obs``, ``var``, ``X_HyS_indptr``, and ``X_HyS_data``
+        tables, and writes two-dimensional arrays in ``obsm`` and ``varm`` into
+        ``obsm_*`` and ``varm_*`` tables.
 
         Examples
         --------
-        从 Scanpy 读取并导入::
+        Read with Scanpy and import::
 
             adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
             atlas = sap.Atlas(r"F:\\data\\pbmc")
@@ -1427,38 +1464,42 @@ class Atlas:
 
         return _io_load_anndata(adata, self)
 
-
     def load_multi_format(self, file_path: PathLike[str] | str) -> None:
 
-        """根据文件格式导入数据到 Atlas。
+        """Import data into Atlas according to the file format.
 
-        该函数是小型或通用格式数据的导入入口。它会先根据 ``file_path`` 的后缀
-        调用 ``_read_smart`` 读取为内存 AnnData，然后调用 ``load_anndata`` 写入
-        Atlas 数据库。
+        This function is the import entry point for small or general-format data.
+        It first calls ``_read_smart`` according to the suffix of ``file_path`` to read
+        the data into an in-memory AnnData object, and then calls ``load_anndata`` to
+        write it into the Atlas database.
 
-        与 ``load_h5ad`` 的 backed 分块导入不同，该函数会先把数据完整读入内存，
-        因此更适合小文件、临时转换或非 h5ad 格式数据。
+        Unlike the backed chunked import path of ``load_h5ad``, this function first
+        loads the full data into memory. Therefore, it is more suitable for small files,
+        temporary conversion, or non-h5ad format data.
 
         Parameters
         ----------
         file_path
-            输入文件路径。函数会根据文件格式选择合适的读取方式。
+            Input file path. The function selects an appropriate reading method based
+            on the file format.
         atlas
-            Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
+            Atlas object. The object must already be connected or be connectable to
+            a DuckDB database.
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库，不返回对象。
+            The result is written directly into the Atlas database and no object is returned.
 
         Notes
         -----
-        支持的读取格式由 ``_read_smart`` 决定，包括 h5ad、loom、Matrix Market、
-        csv、txt/tsv、Excel、10x h5 和 UMI-tools 等常见格式。
+        Supported reading formats are determined by ``_read_smart``, including common
+        formats such as h5ad, loom, Matrix Market, csv, txt/tsv, Excel, 10x h5,
+        and UMI-tools.
 
         Examples
         --------
-        自动识别并导入文件::
+        Automatically detect and import a file::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
             atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
@@ -1466,104 +1507,121 @@ class Atlas:
 
         return _io_load_multi_format(file_path, self)
 
-
     def rename_duplicated_genes(
-        self,
-        gene_name_column: str = "atlas_gene_name",
+            self,
+            gene_name_column: str = "atlas_gene_name",
     ) -> bool | None:
 
-        """检查 Atlas 数据库中的基因名是否重复。
+        """Check whether gene names in the Atlas database are duplicated.
 
-        该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名，并为重复项
-        添加 ``_1``、``_2`` 等后缀。重复基因名可能影响按名称绘图、差异基因展示
-        和 AnnData 导出，因此导入后可以运行该函数进行清洗。
+        This function reads the gene name column in the ``var`` table, checks whether
+        duplicate gene names exist, and appends suffixes such as ``_1`` and ``_2`` to
+        duplicated entries. Duplicate gene names may affect plotting by gene name,
+        differential gene display, and AnnData export, so this function can be run
+        after import for cleanup.
 
-        对每个重复基因名，第一次出现的名称保持不变，后续重复项按
-        ``原名_1``、``原名_2`` 的形式重命名。
+        For each duplicated gene name, the first occurrence remains unchanged, and
+        subsequent duplicated entries are renamed in the form ``original_name_1`` and
+        ``original_name_2``.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在``var`` 表。
+            Atlas object. The object must already be connected to a DuckDB database,
+            and the database must contain the ``var`` table.
         gene_name_column
-            保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
+            The ``var`` column name that stores gene names. Usually
+            ``"atlas_gene_name"``.
 
         Returns
         -------
         bool
-            成功检查或更新时返回 ``True``；如果 ``var`` 表不存在，返回 ``False``。
+            Returns ``True`` when checking or updating succeeds; returns ``False`` if
+            the ``var`` table does not exist.
 
         Notes
         -----
-        只有检测到重复基因名时才会更新 ``var`` 表；没有重复时保持原表不变。
+        The ``var`` table is updated only when duplicated gene names are detected.
+        If no duplicates are found, the original table remains unchanged.
 
         Examples
         --------
-        检查默认基因名称列::
+        Check the default gene name column::
 
             atlas.rename_duplicated_genes()
         """
 
         return _io_rename_duplicated_genes(self, gene_name_column=gene_name_column)
 
-
     def write_h5ad(
-        self,
-        out_h5ad_path: PathLike[str] | str,
-        *,
-        batch_cells: int = 1_000_000,
-        use_data: str = "data_count",
+            self,
+            out_h5ad_path: PathLike[str] | str,
+            *,
+            batch_cells: int = 1_000_000,
+            use_data: str = "data_count",
     ) -> None:
 
-        """将 Atlas 数据库导出为 h5ad 文件。
+        """Export an Atlas database to an h5ad file.
 
-        该函数从 Atlas 的 DuckDB 数据库读取 ``obs``、``var``、稀疏表达矩阵、
-        ``obsm_*`` 和 ``varm_*`` 结果表，并写出为标准 AnnData ``.h5ad`` 文件，
-        方便继续在 Scanpy 或其他支持 AnnData 的工具中分析。
+        This function reads ``obs``, ``var``, the sparse expression matrix,
+        ``obsm_*`` result tables, and ``varm_*`` result tables from the Atlas DuckDB
+        database, and writes them out as a standard AnnData ``.h5ad`` file for
+        continued analysis in Scanpy or other tools that support AnnData.
 
-        表达矩阵会按照 Atlas 内部的 HyS 稀疏结构重新组装为 h5ad 中的 CSR
-        ``X``。其中 ``X.data`` 来自 ``X_HyS_data`` 表中由 ``use_data`` 指定的
-        字段，``X.indices`` 来自 ``atlas_gene_id``，``X.indptr`` 来自
-        ``X_HyS_indptr``。
+        The expression matrix is reassembled into the h5ad CSR ``X`` according to
+        the internal Atlas HyS sparse structure. ``X.data`` comes from the field
+        specified by ``use_data`` in the ``X_HyS_data`` table, ``X.indices`` comes
+        from ``atlas_gene_id``, and ``X.indptr`` comes from ``X_HyS_indptr``.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-            ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表。
+            Atlas object. The object must already be connected to a DuckDB database,
+            and the database must contain at least the ``obs``, ``var``,
+            ``X_HyS_indptr``, and ``X_HyS_data`` tables.
+
         out_h5ad_path
-            输出 ``.h5ad`` 文件路径。
+            Output ``.h5ad`` file path.
+
         batch_cells
-            分批写出表达矩阵 ``data`` 和 ``indices`` 时每批处理的非零表达记录数量。
-            较大的值通常更快，但会增加单批内存占用。
+            Number of nonzero expression records processed per batch when writing
+            expression matrix ``data`` and ``indices``.
+            A larger value is usually faster, but increases per-batch memory usage.
+
         use_data
-            从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
-            也可以传入 ``"data_log1p"``、``"data_normalize"`` 等已经存在的字段。
+            Expression value field exported from the ``X_HyS_data`` table.
+            The default is ``"data_count"``.
+            Existing fields such as ``"data_log1p"`` and ``"data_normalize"`` can
+            also be used.
 
         Returns
         -------
         None
-            结果直接写入 ``out_h5ad_path`` 指定的 h5ad 文件，不返回对象。
+            The result is written directly to the h5ad file specified by
+            ``out_h5ad_path`` and no object is returned.
 
         Notes
         -----
-        ``obsm_*`` 表会导出到 h5ad 的 ``obsm``，表名中的 ``obsm_`` 前缀会被去掉；
-        ``varm_*`` 表会导出到 h5ad 的 ``varm``，表名中的 ``varm_`` 前缀会被去掉。
+        ``obsm_*`` tables are exported to h5ad ``obsm``. The ``obsm_`` prefix in the
+        table name is removed.
+        ``varm_*`` tables are exported to h5ad ``varm``. The ``varm_`` prefix in the
+        table name is removed.
 
-        导出前会检查 ``use_data`` 是否存在于 ``X_HyS_data`` 表中；不存在时会直接
-        抛出中文错误，避免导出空矩阵或错误字段。
+        Before export, the function checks whether ``use_data`` exists in the
+        ``X_HyS_data`` table. If it does not exist, an error is raised directly to
+        avoid exporting an empty matrix or an incorrect field.
 
         Examples
         --------
-        导出当前数据库::
+        Export the current database::
 
             atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
 
-        使用对象式 API 并降低单批内存占用::
+        Use the object-style API and reduce per-batch memory usage::
 
             atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
 
-        导出 log1p 表达矩阵::
+        Export the log1p expression matrix::
 
             atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
 
@@ -1574,105 +1632,118 @@ class Atlas:
             use_data=use_data,
         )
 
-
     def get_obs_df(
-        self,
-        columns: list[str] | str | None = None,
+            self,
+            columns: list[str] | str | None = None,
     ) -> pd.DataFrame:
 
-        """读取 Atlas 数据库中的 obs 表。
+        """Read the obs table from the Atlas database.
 
-        该函数把 ``obs`` 表中的全部列或指定列读取为 pandas DataFrame，适合快速
-        检查细胞元数据、导出统计结果或与外部分析结果合并。
-        返回结果会以``atlas_cell_id`` 作为 pandas index，同时保留 ``atlas_cell_id`` 列本身。
+        This function reads all columns or selected columns from the ``obs`` table
+        into a pandas DataFrame. It is suitable for quickly checking cell metadata,
+        exporting statistical results, or merging with external analysis results.
+        The returned result uses ``atlas_cell_id`` as the pandas index while also
+        preserving the ``atlas_cell_id`` column itself.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在
-            ``obs`` 表。
+            Atlas object. The object must already be connected to a DuckDB database,
+            and the database must contain the ``obs`` table.
+
         columns
-            需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
-            为 ``None`` 时读取全部列。
+            Column names to read from ``obs``. This can be a single string, a list of
+            strings, or ``None``.
+            If ``None``, all columns are read.
 
         Returns
         -------
         pandas.DataFrame
-            ``obs`` 的查询结果。默认 index 为 ``atlas_cell_id``。
+            Query result from ``obs``. The default index is ``atlas_cell_id``.
 
         Notes
         -----
-        即使 ``columns`` 中没有显式包含 ``atlas_cell_id``，函数也会自动把
-        ``atlas_cell_id`` 放在第一列，用于设置 DataFrame index。
+        Even if ``atlas_cell_id`` is not explicitly included in ``columns``, the
+        function automatically places ``atlas_cell_id`` as the first column to set
+        the DataFrame index.
 
         Examples
         --------
-        读取全部 obs 信息::
+        Read all obs information::
 
             obs = atlas.get_obs_df()
 
-        只读取聚类和自动注释列::
+        Read only clustering and automatic annotation columns::
 
             obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
 
         return _io_get_obs_df(self, columns=columns)
 
-
     def get_anndata(
-        self,
-        atlas_cell_ids: list[int] | np.ndarray | None,
-        use_data: str = "data_count",
-        include_obsm: bool = True,
-        include_varm: bool = True,
+            self,
+            atlas_cell_ids: list[int] | np.ndarray | None,
+            use_data: str = "data_count",
+            include_obsm: bool = True,
+            include_varm: bool = True,
     ) -> AnnData:
 
-        """从 Atlas 数据库构建 AnnData 对象。
+        """Construct an AnnData object from the Atlas database.
 
-        该函数根据用户提供的 ``atlas_cell_ids`` 从 Atlas 数据库中导出一个内存
-        AnnData 对象。函数会保留输入细胞 ID 的顺序，读取对应的 ``obs`` 子集、
-        全量 ``var``、指定表达字段组成的稀疏 CSR ``X``，并可选读取 ``obsm_*`` 和
-        ``varm_*`` 结果表。
+        This function exports an in-memory AnnData object from the Atlas database
+        according to the user-provided ``atlas_cell_ids``. It preserves the order of
+        the input cell IDs, reads the corresponding ``obs`` subset, the full ``var``,
+        a sparse CSR ``X`` composed from the specified expression field, and optionally
+        reads ``obsm_*`` and ``varm_*`` result tables.
 
-        该函数适合小规模抽样导出、局部 Scanpy 分析、模型检查或把 Atlas 中的一组
-        细胞临时转换回 AnnData。
+        This function is suitable for small-scale sampling export, local Scanpy analysis,
+        model checking, or temporarily converting a group of cells in Atlas back to AnnData.
 
         Parameters
         ----------
         atlas
-            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
-            ``obs``、``var`` 和 ``X_HyS_data`` 表。
-        atlas_cell_ids
-            需要导出的 Atlas 细胞 ID 列表。不能为空，且不能包含重复值。
+            Atlas object. The object must already be connected to a DuckDB database,
+            and the database must contain at least the ``obs``, ``var``, and
+            ``X_HyS_data`` tables.
 
-            返回 AnnData 中细胞的顺序会与该列表顺序一致。
+        atlas_cell_ids
+            List of Atlas cell IDs to export. It cannot be empty and cannot contain
+            duplicate values.
+
+            The order of cells in the returned AnnData object will be the same as
+            the order of this list.
+
         use_data
-            从 ``X_HyS_data`` 表读取的表达字段名。常用值包括 ``"data_count"``、
-            ``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
+            Expression field read from the ``X_HyS_data`` table. Common values include
+            ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
+
         include_obsm
-            是否把 ``obsm_*`` 结果表写入返回的 AnnData。
+            Whether to write ``obsm_*`` result tables into the returned AnnData object.
+
         include_varm
-            是否把 ``varm_*`` 结果表写入返回的 AnnData。
+            Whether to write ``varm_*`` result tables into the returned AnnData object.
 
         Returns
         -------
         AnnData
-            从 Atlas 数据库构建的 AnnData 对象。
+            AnnData object constructed from the Atlas database.
 
         Notes
         -----
-        ``obsm_*`` 表会按所选细胞顺序左连接导出；某些细胞没有 embedding 时，对应
-        位置会写入 ``NaN``。``varm_*`` 表按全量基因顺序导出。
+        ``obsm_*`` tables are exported by left-joining according to the selected cell
+        order. If some cells do not have embeddings, the corresponding positions are
+        written as ``NaN``. ``varm_*`` tables are exported in full gene order.
 
-        该函数会创建临时表 ``_selected_cells``，用于保留用户传入的细胞顺序。
+        This function creates a temporary table ``_selected_cells`` to preserve the
+        order of user-provided cells.
 
         Examples
         --------
-        导出指定细胞::
+        Export specified cells::
 
             cell_ids = [0, 1, 2, 3]
             adata = atlas.get_anndata(cell_ids, use_data="data_log1p")
 
-        导出过滤后的前 5000 个细胞并包含 UMAP/PCA::
+        Export the first 5000 filtered cells and include UMAP/PCA::
 
             cell_ids = atlas.query(
                 "SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000"
@@ -1687,4 +1758,3 @@ class Atlas:
             include_obsm=include_obsm,
             include_varm=include_varm,
         )
-

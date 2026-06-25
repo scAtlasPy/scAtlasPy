@@ -8,32 +8,34 @@ _PROGRESS_ENABLED: bool | None = None
 
 def set_progress(enabled: bool | None = True) -> None:
 
-    """设置全局进度条显示策略。
+    """Set the global progress bar display policy.
 
-    该函数用于控制 ``scatlaspy.io.progress`` 包装器是否显示 ``tqdm`` 进度条。
-    设置后会影响当前 Python 进程中后续通过 ``progress(...)`` 创建的进度条。
+    This function controls whether the ``scatlaspy.io.progress`` wrapper displays
+    ``tqdm`` progress bars. Once set, it affects progress bars created later through
+    ``progress(...)`` in the current Python process.
 
     Parameters
     ----------
     enabled
-        进度条显示策略。
+        Progress bar display policy.
 
-        - ``True``：始终显示进度条；
-        - ``False``：始终关闭进度条；
-        - ``None``：恢复自动检测，根据运行环境决定是否显示。
+        - ``True``: always show progress bars;
+        - ``False``: always disable progress bars;
+        - ``None``: restore automatic detection and decide whether to show progress
+          bars according to the runtime environment.
 
     Returns
     -------
     None
-        只更新模块级全局设置，不返回对象。
+        Only updates the module-level global setting and does not return an object.
 
     Examples
     --------
-    在脚本中关闭所有 scAtlasPy 进度条::
+    Disable all scAtlasPy progress bars in a script::
 
         sap.io.set_progress(False)
 
-    恢复自动检测::
+    Restore automatic detection::
 
         sap.io.set_progress(None)
     """
@@ -45,22 +47,23 @@ def set_progress(enabled: bool | None = True) -> None:
 
 
 def _env_progress_setting() -> bool | None:
-    """读取环境变量中的进度条设置。
+    """Read the progress bar setting from environment variables.
 
-    该内部函数读取 ``SCATLASPY_PROGRESS`` 环境变量，并将常见字符串转换为
-    布尔值或自动模式。
+    This internal function reads the ``SCATLASPY_PROGRESS`` environment variable
+    and converts common strings into boolean values or automatic mode.
 
     Returns
     -------
     bool or None
-        ``True`` 表示强制显示，``False`` 表示强制关闭，``None`` 表示没有设置
-        或使用自动检测。
+        ``True`` means progress bars are forced to be shown, ``False`` means
+        progress bars are forced to be disabled, and ``None`` means no setting
+        is provided or automatic detection is used.
 
     Notes
     -----
-    支持的开启值包括 ``1``、``true``、``yes``、``on``；
-    支持的关闭值包括 ``0``、``false``、``no``、``off``；
-    ``auto`` 会被解释为 ``None``。
+    Supported enabled values include ``1``, ``true``, ``yes``, and ``on``;
+    supported disabled values include ``0``, ``false``, ``no``, and ``off``;
+    ``auto`` is interpreted as ``None``.
     """
 
     value = os.environ.get("SCATLASPY_PROGRESS")
@@ -79,13 +82,13 @@ def _env_progress_setting() -> bool | None:
 
 
 def _in_notebook() -> bool:
-    """判断当前代码是否运行在 Jupyter Notebook 环境中。
+    """Determine whether the current code is running in a Jupyter Notebook environment.
 
     Returns
     -------
     bool
-        如果检测到 IPython shell 类型为 ``ZMQInteractiveShell``，返回 ``True``；
-        否则返回 ``False``。
+        Returns ``True`` if the detected IPython shell type is
+        ``ZMQInteractiveShell``; otherwise returns ``False``.
     """
     try:
         shell = get_ipython().__class__.__name__  # type: ignore[name-defined]
@@ -95,16 +98,17 @@ def _in_notebook() -> bool:
 
 
 def _auto_disable() -> bool:
-    """根据环境自动判断是否关闭进度条。
+    """Automatically determine whether to disable progress bars according to the environment.
 
-    判断优先级为：环境变量 ``SCATLASPY_PROGRESS``、全局
-    ``set_progress`` 设置、Notebook 环境检测、stderr 是否为交互式终端。
+    The priority order is: the ``SCATLASPY_PROGRESS`` environment variable, the global
+    ``set_progress`` setting, Notebook environment detection, and whether stderr is
+    an interactive terminal.
 
     Returns
     -------
     bool
-        返回给 ``tqdm(disable=...)`` 使用的布尔值。``True`` 表示关闭进度条，
-        ``False`` 表示显示进度条。
+        Boolean value used by ``tqdm(disable=...)``. ``True`` means disabling the
+        progress bar, and ``False`` means showing the progress bar.
     """
     env_setting = _env_progress_setting()
     if env_setting is not None:
@@ -124,31 +128,33 @@ def _auto_disable() -> bool:
 
 
 def progress(*args: Any, **kwargs: Any) -> Any:
-    """创建带 scAtlasPy 默认设置的 tqdm 进度条。
+    """Create a tqdm progress bar with scAtlasPy default settings.
 
-    该函数是项目内部统一使用的 ``tqdm`` 包装器。它会在交互式终端和 Notebook
-    中默认显示进度条，在 CI、文档构建或 stderr 被捕获的非交互环境中自动关闭
-    进度条，减少日志噪声。
+    This function is the unified ``tqdm`` wrapper used internally by the project.
+    By default, it shows progress bars in interactive terminals and Notebooks, and
+    automatically disables progress bars in non-interactive environments such as CI,
+    documentation builds, or cases where stderr is captured, reducing log noise.
 
-    除非用户显式传入 ``disable``，否则函数会调用 ``_auto_disable`` 自动决定
-    是否显示。同时会设置 ``dynamic_ncols=True``、``leave=False`` 和
-    ``mininterval=0.5`` 作为默认值。
+    Unless the user explicitly passes ``disable``, this function calls
+    ``_auto_disable`` to automatically decide whether to show the progress bar.
+    It also sets ``dynamic_ncols=True``, ``leave=False``, and ``mininterval=0.5``
+    as default values.
 
     Parameters
     ----------
     *args
-        透传给 ``tqdm.auto.tqdm`` 的位置参数。
+        Positional arguments passed through to ``tqdm.auto.tqdm``.
     **kwargs
-        透传给 ``tqdm.auto.tqdm`` 的关键字参数。
+        Keyword arguments passed through to ``tqdm.auto.tqdm``.
 
     Returns
     -------
     Any
-        ``tqdm`` 返回的进度条对象或迭代器包装对象。
+        The progress bar object or iterator wrapper returned by ``tqdm``.
 
     Examples
     --------
-    在内部循环中使用统一进度条::
+    Use the unified progress bar in an internal loop::
 
         for i in progress(range(100), desc="load"):
             ...
