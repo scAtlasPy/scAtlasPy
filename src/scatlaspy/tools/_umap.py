@@ -8,7 +8,7 @@ from ..data import Atlas
 import logging
 logger = logging.getLogger('Atlas')
 
-# 评估函数：KNN overlap
+
 def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
 
     """计算高维和低维空间的近邻重叠率。
@@ -16,6 +16,10 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
     该函数分别在高维坐标和低维 embedding 中计算每个样本的 k 近邻集合，
     然后返回两个近邻集合的平均重叠比例。它用于评估 UMAP embedding 对 PCA
     局部邻域结构的保留程度。
+
+    对每个样本，函数会分别取 ``X_high`` 和 ``X_low`` 中除自身以外的前
+    ``k`` 个最近邻，计算两个近邻集合的交集比例，最后对所有样本取平均。
+    分数越接近 ``1``，表示低维 embedding 越能保留高维空间中的局部邻域。
 
     Parameters
     ----------
@@ -30,6 +34,11 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
     -------
     float
         所有样本的平均 kNN overlap，取值范围通常为 ``0`` 到 ``1``。
+
+    Notes
+    -----
+    当样本数较少时，函数会自动把 ``k`` 限制到 ``n_samples - 1``，避免把样本
+    自身或不存在的近邻纳入计算。
 
     Examples
     --------
@@ -66,7 +75,6 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
     return float(np.mean(overlap))
 
 
-# UMAP 抽样训练
 def umap(
         atlas: Atlas,
         fit_sample_n: int | None = None,
@@ -86,24 +94,46 @@ def umap(
 ):
     """基于 PCA embedding 计算 UMAP。
 
-    该函数从 ``obsm_X_pca`` 读取 PCA 坐标，先抽样拟合 UMAP 模型，再把全量细胞分批 transform 到 UMAP 空间，并将坐标写入数据库。它类似 Scanpy 的 ``sc.tl.umap``，但采用抽样拟合和全量分块转换以降低内存占用。
+    该函数从 Atlas 数据库的 ``obsm_X_pca`` 表读取 PCA 坐标，先抽样拟合
+    UMAP 模型，再把全量细胞分批 ``transform`` 到低维空间，并将 UMAP 坐标
+    写入数据库。它类似 Scanpy 的 ``sc.tl.umap``，但面向大规模数据采用
+    “抽样拟合 + 全量分块转换”的方式，以降低一次性加载全部 PCA 坐标带来的
+    内存压力。
+
+    运行完成后，函数会写入三类结果：
+
+    - ``add_table``：每个细胞的 UMAP 坐标，默认 ``obsm_X_umap``；
+    - ``save_params_table``：本次 UMAP 使用的关键参数；
+    - ``save_eval_table``：抽样评估得到的 trustworthiness 和 kNN overlap。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中已经存在``obsm_X_pca`` 表。
+
     fit_sample_n
-        用于拟合模型的细胞抽样数量。为 ``None`` 时使用全部细胞。
+        用于拟合 UMAP 模型的细胞抽样数量。默认值为 ``None``，表示使用
+        ``obsm_X_pca`` 中的全部细胞拟合。
+
+        对超大数据集可以设置为较小的抽样数量，例如 ``500_000``，以加快拟合
+        并降低内存占用。
     transform_batch_size
-        模型拟合后 transform 全量数据时的分块大小。
+        模型拟合后，对全量 PCA 坐标执行 ``transform`` 时每个 batch 的细胞
+        数量。较大的值通常更快，但会增加单批内存占用。
     n_components
-        输出维度或参与计算的主成分数量。
+        UMAP 低维 embedding 的维度数量。默认值为 ``2``。
+
+        当前结果表固定写入 ``umap1`` 和 ``umap2`` 两列，因此常规使用应保持
+        ``n_components=2``。
     n_pcs
-        用于 UMAP 的 PCA 维度数量。为 ``None`` 时使用 ``obsm_X_pca`` 中全部 PC。
+        用于 UMAP 的 PCA 维度数量。为 ``None`` 时使用 ``obsm_X_pca`` 中全部
+        PC 列；传入整数时只使用前 ``n_pcs`` 个 PC。
     n_neighbors
-        UMAP 构建局部邻域时使用的近邻数。
+        UMAP 构建局部邻域图时使用的近邻数。较小值更强调局部结构，较大值更
+        强调整体连续结构。
     min_dist
-        UMAP 低维空间中点与点之间允许的最小距离。
+        UMAP 低维空间中点与点之间允许的最小距离。较小值会让 cluster 更紧凑，
+        较大值会让 embedding 更分散。
     spread
         UMAP 低维空间的整体铺开尺度。通常要求 ``spread >= min_dist``。
     metric
@@ -117,14 +147,23 @@ def umap(
     save_params_table
         保存本次运行参数的数据库表名。
     eval_sample_n
-        用于评估 embedding 质量的细胞抽样数量。
+        用于评估 embedding 质量的细胞抽样数量。评估只在拟合样本的子集上
+        进行，避免大规模距离计算占用过多内存。
     save_eval_table
         保存评估结果的数据库表名。
 
     Returns
     -------
     umap.UMAP
-        拟合完成的 UMAP 对象，可继续用于 transform 或检查模型参数。
+        拟合完成的 UMAP 对象，可继续用于 ``transform`` 或检查模型参数。
+
+    Notes
+    -----
+    该函数不会自动计算 PCA。如果数据库中不存在 ``obsm_X_pca``，需要先运行
+    ``sap.tl.pca(atlas)``。
+
+    拟合样本通过 ``hash(atlas_cell_id + seed)`` 排序后取前 ``fit_sample_n``
+    个细胞，便于在固定 ``random_state`` 时获得相对稳定的抽样结果。
 
     Examples
     --------
@@ -144,14 +183,7 @@ def umap(
             random_state=42,
         )
 
-    保存为不同名称的 UMAP 结果表::
-
-        sap.tl.umap(
-            atlas,
-            add_table="obsm_X_umap_n45_d02",
-            save_params_table="uns_umap_params_n45_d02",
-            save_eval_table="uns_umap_eval_n45_d02",
-        )"""
+    """
 
     start = datetime.now()
     conn = atlas.connection

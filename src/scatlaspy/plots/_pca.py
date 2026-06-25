@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
-from os import PathLike, fspath
+from os import PathLike
 import re
 from typing import Any
 
@@ -46,126 +46,6 @@ DEFAULT_DISCRETE_PALETTES = (
 _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
-def _natural_sort_key(value: Any):
-    """
-    分类标签自然排序 key。
-
-    Examples
-    --------
-    embryo_1  < embryo_2  < embryo_10
-    cluster_1 < cluster_2 < cluster_11
-    """
-
-    s = str(value).strip()
-
-    # 缺失值标签放最后
-    if s.casefold() in _MISSING_CATEGORY_LABELS:
-        return (1, ())
-
-    parts = re.split(r"(\d+)", s)
-
-    key = []
-    for part in parts:
-        if part == "":
-            continue
-
-        if part.isdigit():
-            key.append((0, int(part)))
-        else:
-            key.append((1, part.casefold()))
-
-    return (0, tuple(key))
-
-
-def _sort_categories_natural(labels: Any) -> list[str]:
-    """
-    对分类标签做默认自然排序。
-
-    不额外暴露参数，所有离散分类变量默认使用这个排序。
-    """
-
-    labels = [str(x) for x in list(labels)]
-
-    # 去重，避免重复 category
-    labels = list(dict.fromkeys(labels))
-
-    return sorted(labels, key=_natural_sort_key)
-
-
-def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """构建内部中间数据结构。
-
-    该内部函数属于PCA 可视化模块，用于支撑同一模块中的公共 API。
-
-    读取 PCA embedding 和方差解释率表，绘制 PCA 散点图和 variance ratio 图。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    labels
-        分类标签列表。
-
-    palette
-        离散分类变量使用的颜色方案。
-
-    Returns
-    -------
-    result
-        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-
-    labels = list(labels)
-
-    #  默认使用大颜色池
-    if palette is None:
-        palette_names = DEFAULT_DISCRETE_PALETTES
-
-    # 兼容原来的 palette="tab20" 写法
-    elif isinstance(palette, str):
-        palette_names = (palette,)
-
-    # 支持 palette=["tab20", "tab20b", ...]
-    else:
-        palette_names = tuple(palette)
-
-    palette_colors = []
-
-    for cmap_name in palette_names:
-        cmap_obj = plt.get_cmap(cmap_name)
-
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
-        if hasattr(cmap_obj, "colors"):
-            palette_colors.extend(list(cmap_obj.colors))
-
-        # 兜底：如果是连续 colormap，就均匀取色
-        else:
-            n = getattr(cmap_obj, "N", 256)
-            palette_colors.extend([
-                cmap_obj(i / max(n - 1, 1))
-                for i in range(n)
-            ])
-
-    # 如果类别数超过颜色池，继续用 hsv 补足
-    if len(palette_colors) < len(labels):
-        extra_n = len(labels) - len(palette_colors)
-        hsv = plt.get_cmap("hsv")
-        palette_colors.extend([
-            hsv(i / max(extra_n, 1))
-            for i in range(extra_n)
-        ])
-
-    return {
-        lab: palette_colors[i]
-        for i, lab in enumerate(labels)
-    }
-
-
-# 可视化 / 对外入口层 ;  用 PCA 的前两个主成分（PC1, PC2）做二维散点图
 def pca(
         atlas: Atlas,
         color: str | None = None,
@@ -174,25 +54,34 @@ def pca(
         annotate_var_explained: bool = True,
         sample_n: int | None = None,
         use_data: str = "data_log1p",
-        figsize: tuple[float, float] | None=(6, 5), # (6, 5) (22, 8)
+        figsize: tuple[float, float] | None=(6, 5),
         point_size: float = 12,
         alpha: float = 0.8,
         cmap: str = "viridis",
         palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        legend_loc: str | None = None,  # str = "right_margin",
+        legend_loc: str | None = None,
         frameon: bool = True,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 PCA 细胞 embedding。
+    """绘制细胞 PCA embedding 散点图。
 
-    该函数读取 ``obsm_X_pca`` 中的细胞 PCA 坐标，并按指定 ``obs`` 列或数值变量着色，绘制二维 PCA 散点图。它类似 Scanpy 的 ``sc.pl.pca``。
+    该函数从 ``obsm_X_pca`` 表读取细胞 PCA 坐标，使用 ``x_pc`` 和 ``y_pc`` 指定的两个
+    主成分绘制二维散点图。
+    ``color`` 可以是 ``obs`` 表中的细胞级字段，也可以是``var.atlas_gene_name`` 中的基因名：
+    前者按 obs 列上色，后者会从 ``X_HyS_data`` 的``use_data`` 字段读取该基因表达量并按连续色条上色。
+
+    该图类似 Scanpy 的 ``sc.pl.pca``，常用于查看 PCA 降维结果、批次效应、QC 指标或
+    marker gene 在 PCA 空间中的分布。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成
+        ``obsm_X_pca`` 表；如需坐标轴标注方差解释率，还需要 ``uns_pca_stats`` 表。
     color
-        用于给散点上色的 ``obs`` 列名或数值列名。
+        用于给散点上色的名称。可以是 ``obs`` 表列名，也可以是基因名。
+        为 ``None`` 时使用统一灰色。
     x_pc
         横轴使用的 PCA 主成分编号，从 0 开始。
     y_pc
@@ -202,22 +91,24 @@ def pca(
     sample_n
         绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
-        ``"data_scale"``。
+        当 ``color`` 是基因名时，从 ``X_HyS_data`` 读取的表达值字段，例如
+        ``"data_log1p"``、``"data_count"`` 或 ``"data_scale"``。
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        Matplotlib 图像大小。
     point_size
         散点大小。
     alpha
         图形元素透明度。
     cmap
-        连续变量使用的 Matplotlib colormap 名称。
+        连续变量或基因表达量使用的 Matplotlib colormap 名称。
     palette
-        离散变量使用的颜色列表或调色板。
+        离散 ``obs`` 分类变量使用的 Matplotlib palette 名称或 palette 名称序列。
     legend_loc
-        图例位置。
+        离散分类图例位置。默认值为``"right_margin"`` 会把图例放到右侧留白处；
     frameon
         是否显示坐标轴边框。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
 
     Returns
     -------
@@ -230,16 +121,19 @@ def pca(
         sap.tl.pca(atlas)
         sap.pl.pca(atlas, color="kmeans")
 
-    绘制 PC2 和 PC3，并返回用于检查的 DataFrame::
+    绘制 PC2 和 PC3，并按 QC 指标连续上色::
 
-        df = sap.pl.pca(
+        sap.pl.pca(
             atlas,
             color="pct_counts_mt",
             x_pc=1,
             y_pc=2,
             sample_n=200000,
-            return_df=True,
-        )"""
+        )
+
+    按基因表达量上色::
+
+        sap.pl.pca(atlas, color="MS4A1", use_data="data_log1p")"""
 
     start = datetime.now()
     conn = atlas.connection
@@ -249,27 +143,20 @@ def pca(
 
     # DuckDB 字段安全引用
     def _q(name: str) -> str:
-        """为 SQL 标识符添加安全引用。
+        """为 DuckDB SQL 标识符添加双引号引用。
 
-        该内部函数属于PCA 可视化模块，用于支撑同一模块中的公共 API。
-
-        读取 PCA embedding 和方差解释率表，绘制 PCA 散点图和 variance ratio 图。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        该内部 helper 用于安全拼接列名，避免 ``obs`` 字段、表达字段或其他 SQL 标识符
+        与关键字冲突。函数只处理标识符引用，不处理 SQL 值的转义。
 
         Parameters
         ----------
         name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+            需要作为 SQL 标识符使用的列名。
 
         Returns
         -------
-        quoted_name
-            加双引号后的 SQL 标识符。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        str
+            已加双引号并转义内部双引号的 SQL 标识符。
         """
         return '"' + name.replace('"', '""') + '"'
 
@@ -666,45 +553,60 @@ def pca(
     else:
         plt.tight_layout(pad=0.8)
 
+    if save_path is not None:
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+
     plt.show()
 
 
-
-# 画 pca_variance_ratio
 def pca_variance_ratio(
         atlas: Atlas,
         n_pcs: int = 30,
         *,
         log: bool = False,
         show: bool | None = None,
-        save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None = (7, 6),
+        save_path: PathLike[str] | str | None = None,
 ):
-    """绘制 PCA 方差解释比例，Scanpy-like 风格。
+    """绘制 PCA 各主成分的方差解释比例。
 
-    该函数读取 ``uns_pca_stats`` 中每个主成分的 explained variance ratio，
-    并以 Scanpy ``sc.pl.pca_variance_ratio`` 类似的方式绘图：
-    横轴为 ranking，纵轴为 variance ratio，每个 PC 以竖排文本标注。
+    该函数从 ``uns_pca_stats`` 表读取每个主成分的 ``variance_ratio``，并以类似
+    Scanpy ``sc.pl.pca_variance_ratio`` 的风格绘图：
+    横轴为主成分 ranking，纵轴为方差解释比例，每个 PC 用竖排文本标注。
+
+    该图用于观察前几个主成分分别解释了多少变异，辅助判断 PCA 维度是否足够、
+    是否存在单个主成分解释比例异常偏高等情况。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成``uns_pca_stats`` 表。
 
     n_pcs
-        展示的 PCA 主成分数量。
+        展示前多少个 PCA 主成分。
 
     log
         是否使用 y 轴对数坐标。
 
     show
-        是否显示图像。
-
-    save
-        图片保存路径。
+        是否显示图像。为 ``None`` 时默认显示。
 
     figsize
-        图形大小。
+        Matplotlib 图像大小。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
+    Returns
+    -------
+    None
+
+    Examples
+    --------
+    查看前 30 个主成分的方差解释比例::
+
+        sap.tl.pca(atlas)
+        sap.pl.pca_variance_ratio(atlas, n_pcs=30)
+
     """
 
     conn = atlas.connection
@@ -798,27 +700,7 @@ def pca_variance_ratio(
     fig.tight_layout()
 
     # 6. 保存图像
-    if save:
-        default_name = "pca_variance_ratio"
-
-        if save is True:
-            save_path = f"{default_name}.png"
-
-        elif isinstance(save, (str, PathLike)):
-            save = fspath(save)
-
-            if save.startswith("."):
-                save_path = f"{default_name}{save}"
-
-            elif save.startswith("_"):
-                save_path = f"{default_name}{save}"
-
-            else:
-                save_path = save
-
-        else:
-            raise ValueError("save 只支持 bool 或 str。")
-
+    if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
     # 7. 显示或关闭
@@ -831,35 +713,36 @@ def pca_variance_ratio(
         plt.close(fig)
 
 
-
-# 画累计解释方差
 def pca_variance_ratio_cumsum(
         atlas: Atlas,
         n_pcs: int = 30,
         *,
         log: bool = False,
         show: bool | None = None,
-        save: bool | PathLike[str] | str | None = None,
         figsize: tuple[float, float] | None=(16, 8),
+        save_path: PathLike[str] | str | None = None,
 ):
     """绘制 PCA 累积方差解释比例。
 
-    该函数读取 PCA 方差解释比例并计算累积和，帮助判断 PCA 维度选择是否足以覆盖主要变化。
+    该函数从 ``uns_pca_stats`` 表读取每个主成分的 ``variance_ratio``，计算累积和后绘制折线图。
+    横轴为主成分编号，纵轴为累计解释比例。
+
+    该图用于判断保留多少个 PCA 维度可以覆盖主要变异，例如查看前 30、50 或 80 个 PC的累计解释比例是否达到预期。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成``uns_pca_stats`` 表。
     n_pcs
         展示的 PCA 主成分数量。
     log
-        是否使用对数坐标或对数显示。
+        是否使用 y 轴对数坐标。累计解释比例通常不需要对数坐标，保留该参数用于接口统一。
     show
-        是否立即显示图形。为 ``None`` 时遵循 Matplotlib 当前行为。
-    save
-        图片保存路径。为 ``None`` 时不保存。
+        是否立即显示图形。为 ``None`` 时默认显示。
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        Matplotlib 图像大小。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
 
     Returns
     -------
@@ -871,12 +754,13 @@ def pca_variance_ratio_cumsum(
 
         sap.pl.pca_variance_ratio_cumsum(atlas, n_pcs=50)
 
-    返回 Figure 以便进一步修改::
+    保存累计解释比例图::
 
-        fig = sap.pl.pca_variance_ratio_cumsum(
+        sap.pl.pca_variance_ratio_cumsum(
             atlas,
             n_pcs=80,
-            return_fig=True,
+            save_path=r"F:\\figures\\pca_cumsum.png",
+            show=False,
         )"""
 
     # 1. 获取数据库连接
@@ -922,32 +806,7 @@ def pca_variance_ratio_cumsum(
     fig.tight_layout()
 
     # 5. 保存图像
-    if save:
-        default_name = "pca_variance_ratio_cumsum"
-
-        # save=True：保存为默认 png 文件
-        if save is True:
-            save_path = f"{default_name}.png"
-
-        # save 是字符串：根据字符串形式判断保存路径
-        elif isinstance(save, (str, PathLike)):
-            save = fspath(save)
-
-            # save=".pdf" / ".png" / ".svg"
-            if save.startswith("."):
-                save_path = f"{default_name}{save}"
-
-            # save="_test.png"
-            elif save.startswith("_"):
-                save_path = f"{default_name}{save}"
-
-            # save="my_pca_cum.png"
-            else:
-                save_path = save
-
-        else:
-            raise ValueError("save 只支持 bool 或 str。")
-
+    if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
     # 6. 显示或关闭图像
@@ -971,18 +830,22 @@ def pca_loadings(
         include_lowest: bool = True,
         figsize: tuple[float, float] | None = (14, 8),
         show: bool | None = None,
-        save: bool | PathLike[str] | str | None = None,
+        save_path: PathLike[str] | str | None = None,
 ):
-    """绘制 PCA loadings 图，类似 scanpy.pl.pca_loadings。
+    """绘制 PCA loadings 图。
 
-    该函数从 ``varm_PCs`` 表中读取每个基因在指定 PC 上的 loading，
-    并展示 loading 最大的基因；当 ``include_lowest=True`` 时，
-    同时展示 loading 最小的基因。
+    该函数从 ``varm_PCs`` 表读取每个基因在指定主成分上的 loading，并为每个 PC
+    绘制贡献最大的基因。``include_lowest=True`` 时会同时展示 loading 最小的一端，
+    用于观察正负两个方向分别由哪些基因驱动。
+
+    该图类似 ``scanpy.pl.pca_loadings``，常用于解释 PCA 轴的生物学含义，判断某个
+    主成分是否由特定 marker、线粒体基因、核糖体基因或批次相关基因主导。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。需要已经运行过 PCA，并包含 ``varm_PCs`` 表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 PCA，生成 ``varm_PCs``
+        表；如果 ``var`` 表中有 ``atlas_gene_name``，图中会优先显示基因名。
 
     components
         需要展示的主成分编号。注意这里和 Scanpy 一样，从 1 开始。
@@ -1001,8 +864,30 @@ def pca_loadings(
     show
         是否显示图像。默认为 True。
 
-    save
-        图片保存路径。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
+    Returns
+    -------
+    None
+        函数直接绘图或保存图片，不返回 figure。
+
+    Examples
+    --------
+    绘制 PC1 和 PC2 两端贡献最高的基因::
+
+        sap.pl.pca_loadings(atlas, components=(1, 2), n_genes=10)
+
+    只展示 PC3 loading 最大的一端，并保存图片::
+
+        sap.pl.pca_loadings(
+            atlas,
+            components=3,
+            n_genes=20,
+            include_lowest=False,
+            save_path=r"F:\\figures\\pc3_loadings.png",
+            show=False,
+        )
     """
 
     conn = atlas.connection
@@ -1011,6 +896,18 @@ def pca_loadings(
         raise ValueError("atlas.connection 为空，请先连接数据库")
 
     def _q(name: str) -> str:
+        """为 DuckDB SQL 标识符添加双引号引用。
+
+        Parameters
+        ----------
+        name
+            需要作为 SQL 标识符使用的列名。
+
+        Returns
+        -------
+        str
+            已加双引号并转义内部双引号的 SQL 标识符。
+        """
         return '"' + name.replace('"', '""') + '"'
 
     # -------------------------------------------------
@@ -1071,6 +968,22 @@ def pca_loadings(
     # 3. 自动匹配 PC 列名
     # -------------------------------------------------
     def _find_pc_col(comp: int) -> str:
+        """在 ``varm_PCs`` 中查找指定主成分对应的 loading 列。
+
+        ``components`` 使用 Scanpy 风格的 1-based 编号，而数据库列可能使用
+        ``pc0``、``PC1``、``1`` 等不同命名方式。该 helper 会尝试一组常见列名并返回
+        第一个匹配项。
+
+        Parameters
+        ----------
+        comp
+            1-based 主成分编号，例如 ``1`` 表示 PC1。
+
+        Returns
+        -------
+        str
+            ``varm_PCs`` 中实际存在的 loading 列名。
+        """
         # comp 是 1-based，pc_index 是 0-based
         pc_index = comp - 1
 
@@ -1266,25 +1179,7 @@ def pca_loadings(
     # -------------------------------------------------
     # 7. 保存图像
     # -------------------------------------------------
-    if save:
-        default_name = "pca_loadings"
-
-        if save is True:
-            save_path = f"{default_name}.png"
-
-        elif isinstance(save, (str, PathLike)):
-            save = fspath(save)
-
-            if save.startswith("."):
-                save_path = f"{default_name}{save}"
-            elif save.startswith("_"):
-                save_path = f"{default_name}{save}"
-            else:
-                save_path = save
-
-        else:
-            raise ValueError("save 只支持 bool 或 str。")
-
+    if save_path is not None:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
 
     # -------------------------------------------------
@@ -1297,3 +1192,138 @@ def pca_loadings(
         plt.show()
     else:
         plt.close(fig)
+
+
+def _natural_sort_key(value: Any):
+    """生成分类标签的自然排序键。
+
+    该内部 helper 用于让离散分类图例按更符合阅读习惯的顺序排列，避免
+    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
+    的标签会被放到最后。
+
+    Parameters
+    ----------
+    value
+        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+
+    Returns
+    -------
+    tuple
+        可传给 ``sorted(..., key=...)`` 的排序键。
+
+    Examples
+    --------
+    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    """
+
+    s = str(value).strip()
+
+    # 缺失值标签放最后
+    if s.casefold() in _MISSING_CATEGORY_LABELS:
+        return (1, ())
+
+    parts = re.split(r"(\d+)", s)
+
+    key = []
+    for part in parts:
+        if part == "":
+            continue
+
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.casefold()))
+
+    return (0, tuple(key))
+
+
+def _sort_categories_natural(labels: Any) -> list[str]:
+    """对分类标签去重并执行自然排序。
+
+    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供 PCA
+    离散上色图例和类别绘图顺序使用。
+
+    Parameters
+    ----------
+    labels
+        分类标签序列。
+
+    Returns
+    -------
+    list[str]
+        去重后的自然排序标签列表。
+    """
+
+    labels = [str(x) for x in list(labels)]
+
+    # 去重，避免重复 category
+    labels = list(dict.fromkeys(labels))
+
+    return sorted(labels, key=_natural_sort_key)
+
+
+def _build_discrete_color_map(labels: Any, palette: Any | None=None):
+    """为离散分类标签构建颜色映射。
+
+    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
+    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+
+    Parameters
+    ----------
+    labels
+        已排序的分类标签列表。
+
+    palette
+        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
+        ``DEFAULT_DISCRETE_PALETTES``。
+
+    Returns
+    -------
+    dict
+        ``{label: color}`` 形式的字典，可直接传给 Matplotlib scatter/legend。
+    """
+
+    labels = list(labels)
+
+    #  默认使用大颜色池
+    if palette is None:
+        palette_names = DEFAULT_DISCRETE_PALETTES
+
+    # 兼容原来的 palette="tab20" 写法
+    elif isinstance(palette, str):
+        palette_names = (palette,)
+
+    # 支持 palette=["tab20", "tab20b", ...]
+    else:
+        palette_names = tuple(palette)
+
+    palette_colors = []
+
+    for cmap_name in palette_names:
+        cmap_obj = plt.get_cmap(cmap_name)
+
+        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        if hasattr(cmap_obj, "colors"):
+            palette_colors.extend(list(cmap_obj.colors))
+
+        # 兜底：如果是连续 colormap，就均匀取色
+        else:
+            n = getattr(cmap_obj, "N", 256)
+            palette_colors.extend([
+                cmap_obj(i / max(n - 1, 1))
+                for i in range(n)
+            ])
+
+    # 如果类别数超过颜色池，继续用 hsv 补足
+    if len(palette_colors) < len(labels):
+        extra_n = len(labels) - len(palette_colors)
+        hsv = plt.get_cmap("hsv")
+        palette_colors.extend([
+            hsv(i / max(extra_n, 1))
+            for i in range(extra_n)
+        ])
+
+    return {
+        lab: palette_colors[i]
+        for i, lab in enumerate(labels)
+    }

@@ -47,126 +47,6 @@ DEFAULT_DISCRETE_PALETTES = (
 _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
-def _natural_sort_key(value: Any):
-    """
-    分类标签自然排序 key。
-
-    Examples
-    --------
-    embryo_1  < embryo_2  < embryo_10
-    cluster_1 < cluster_2 < cluster_11
-    """
-
-    s = str(value).strip()
-
-    # 缺失值标签放最后
-    if s.casefold() in _MISSING_CATEGORY_LABELS:
-        return (1, ())
-
-    parts = re.split(r"(\d+)", s)
-
-    key = []
-    for part in parts:
-        if part == "":
-            continue
-
-        if part.isdigit():
-            key.append((0, int(part)))
-        else:
-            key.append((1, part.casefold()))
-
-    return (0, tuple(key))
-
-
-def _sort_categories_natural(labels: Any) -> list[str]:
-    """
-    对分类标签做默认自然排序。
-
-    不额外暴露参数，所有离散分类变量默认使用这个排序。
-    """
-
-    labels = [str(x) for x in list(labels)]
-
-    # 去重，同时保留原始列表中的唯一标签
-    labels = list(dict.fromkeys(labels))
-
-    return sorted(labels, key=_natural_sort_key)
-
-
-def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """构建内部中间数据结构。
-
-    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
-
-    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    labels
-        分类标签列表。
-
-    palette
-        离散分类变量使用的颜色方案。
-
-    Returns
-    -------
-    result
-        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-
-    labels = list(labels)
-
-    #  默认使用大颜色池
-    if palette is None:
-        palette_names = DEFAULT_DISCRETE_PALETTES
-
-    # 兼容原来的 palette="tab20" 写法
-    elif isinstance(palette, str):
-        palette_names = (palette,)
-
-    # 支持 palette=["tab20", "tab20b", ...]
-    else:
-        palette_names = tuple(palette)
-
-    palette_colors = []
-
-    for cmap_name in palette_names:
-        cmap_obj = plt.get_cmap(cmap_name)
-
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
-        if hasattr(cmap_obj, "colors"):
-            palette_colors.extend(list(cmap_obj.colors))
-
-        # 兜底：如果是连续 colormap，就均匀取色
-        else:
-            n = getattr(cmap_obj, "N", 256)
-            palette_colors.extend([
-                cmap_obj(i / max(n - 1, 1))
-                for i in range(n)
-            ])
-
-    # 如果类别数超过颜色池，继续用 hsv 补足
-    if len(palette_colors) < len(labels):
-        extra_n = len(labels) - len(palette_colors)
-        hsv = plt.get_cmap("hsv")
-        palette_colors.extend([
-            hsv(i / max(extra_n, 1))
-            for i in range(extra_n)
-        ])
-
-    return {
-        lab: palette_colors[i]
-        for i, lab in enumerate(labels)
-    }
-
-
-# dotplot 热图
 def dotplot(
         atlas: Atlas,
         genes: str | list[str],
@@ -184,41 +64,46 @@ def dotplot(
         save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制基因在不同分组中的 dotplot。
+    """绘制基因在不同细胞分组中的 dotplot。
 
-    该函数从 Atlas 数据库抽样读取指定基因在各分组中的表达，计算平均表达和表达比例，并绘制类似 Scanpy ``sc.pl.dotplot`` 的点图。
+    该函数从 ``X_HyS_data`` 读取指定基因在各 ``obs[groupby]`` 分组中的表达，计算每个
+    ``group × gene`` 组合的平均表达和表达细胞比例，并绘制类似 Scanpy
+    ``sc.pl.dotplot`` 的点图：点的颜色表示平均表达，点的大小表示表达细胞比例。
+
+    该图适合快速比较多个 marker genes 在不同 cluster、细胞类型或样本分组中的表达模式。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs``、``var`` 和``X_HyS_data`` 表。
     genes
-        需要展示的基因名称列表。
+        需要展示的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
     groupby
         ``obs`` 中的分组列名，例如 ``"kmeans"``、``"leiden"`` 或 ``"cell_type"``。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
-        ``"data_scale"``。
+        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
+        或 ``"data_scale"``。
     sample_cells_per_group
-        每个分组抽样用于绘图的细胞数量。
+        每个分组最多抽样用于绘图的细胞数量。为 ``None`` 时使用全部细胞。
     groups
-        需要计算、展示或保留的分组列表。为 ``None`` 时使用全部分组。
+        需要展示的分组列表。为 ``None`` 时使用满足条件的全部分组。
     where
         额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
     order
-        分组或基因展示顺序。为 ``None`` 时使用默认顺序。
+        分组展示顺序。为 ``None`` 时使用自然排序。
     expression_cutoff
-        判断基因是否表达的阈值。
+        判断“该细胞表达该基因”的阈值。表达值大于该阈值的细胞会计入表达比例。
     standard_scale
-        是否按变量或分组对颜色值做标准化。
+        是否对平均表达颜色值做标准化。当前支持 ``"var"``，表示在每个基因内部把平均表达
+        缩放到 0 到 1；为 ``None`` 时直接使用原始平均表达。
     colorbar_vmin
-        颜色条下限。
+        颜色条下限。为 ``None`` 时根据当前颜色值自动估计。
     colorbar_vmax
-        颜色条上限。
+        颜色条上限。为 ``None`` 时根据当前颜色值自动估计。
     font_size
         绘图字体大小。
     save_path
-        图片保存路径。为 ``None`` 时只显示或返回图对象。
+        图片保存路径。为 ``None`` 时只显示图片。
 
     Returns
     -------
@@ -319,27 +204,20 @@ def dotplot(
 
     # 数字型 group 按数值排序，避免 0,1,10,11,2
     def _group_sort_key(x: Any):
-        """生成分组或标签的自然排序键。
+        """生成 dotplot 分组标签的排序键。
 
-        该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
-
-        读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        能转换为整数或浮点数的分组按数值排序，其他标签按字符串排序，避免
+        ``"10"`` 排在 ``"2"`` 前面。
 
         Parameters
         ----------
         x
-            需要排序、格式化或转换的单个输入值。
+            单个分组标签。
 
         Returns
         -------
-        sort_key
-            可用于自然排序的键。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        tuple
+            可传给 ``sorted(..., key=...)`` 的排序键。
         """
         try:
             return (0, int(x))
@@ -615,3 +493,138 @@ def dotplot(
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
+
+
+def _natural_sort_key(value: Any):
+    """生成分类标签的自然排序键。
+
+    该内部 helper 用于让 dotplot 的分组标签按更符合阅读习惯的顺序排列，避免
+    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
+    的标签会被放到最后。
+
+    Parameters
+    ----------
+    value
+        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+
+    Returns
+    -------
+    tuple
+        可传给 ``sorted(..., key=...)`` 的排序键。
+
+    Examples
+    --------
+    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    """
+
+    s = str(value).strip()
+
+    # 缺失值标签放最后
+    if s.casefold() in _MISSING_CATEGORY_LABELS:
+        return (1, ())
+
+    parts = re.split(r"(\d+)", s)
+
+    key = []
+    for part in parts:
+        if part == "":
+            continue
+
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.casefold()))
+
+    return (0, tuple(key))
+
+
+def _sort_categories_natural(labels: Any) -> list[str]:
+    """对分类标签去重并执行自然排序。
+
+    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供 dotplot
+    的分组显示顺序使用。
+
+    Parameters
+    ----------
+    labels
+        分类标签序列。
+
+    Returns
+    -------
+    list[str]
+        去重后的自然排序标签列表。
+    """
+
+    labels = [str(x) for x in list(labels)]
+
+    # 去重，同时保留原始列表中的唯一标签
+    labels = list(dict.fromkeys(labels))
+
+    return sorted(labels, key=_natural_sort_key)
+
+
+def _build_discrete_color_map(labels: Any, palette: Any | None=None):
+    """为离散分类标签构建颜色映射。
+
+    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
+    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+
+    Parameters
+    ----------
+    labels
+        已排序的分类标签列表。
+
+    palette
+        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
+        ``DEFAULT_DISCRETE_PALETTES``。
+
+    Returns
+    -------
+    dict
+        ``{label: color}`` 形式的字典，可直接用于 Matplotlib 绘图。
+    """
+
+    labels = list(labels)
+
+    #  默认使用大颜色池
+    if palette is None:
+        palette_names = DEFAULT_DISCRETE_PALETTES
+
+    # 兼容原来的 palette="tab20" 写法
+    elif isinstance(palette, str):
+        palette_names = (palette,)
+
+    # 支持 palette=["tab20", "tab20b", ...]
+    else:
+        palette_names = tuple(palette)
+
+    palette_colors = []
+
+    for cmap_name in palette_names:
+        cmap_obj = plt.get_cmap(cmap_name)
+
+        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        if hasattr(cmap_obj, "colors"):
+            palette_colors.extend(list(cmap_obj.colors))
+
+        # 兜底：如果是连续 colormap，就均匀取色
+        else:
+            n = getattr(cmap_obj, "N", 256)
+            palette_colors.extend([
+                cmap_obj(i / max(n - 1, 1))
+                for i in range(n)
+            ])
+
+    # 如果类别数超过颜色池，继续用 hsv 补足
+    if len(palette_colors) < len(labels):
+        extra_n = len(labels) - len(palette_colors)
+        hsv = plt.get_cmap("hsv")
+        palette_colors.extend([
+            hsv(i / max(extra_n, 1))
+            for i in range(extra_n)
+        ])
+
+    return {
+        lab: palette_colors[i]
+        for i, lab in enumerate(labels)
+    }

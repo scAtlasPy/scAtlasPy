@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
-''' 数据导出: 把数据直接变成文件'''
+# 数据导出: 把数据直接变成文件
 def write_h5ad(
     atlas: Atlas,
     out_h5ad_path: PathLike[str] | str,
@@ -24,23 +24,41 @@ def write_h5ad(
 ):
     """将 Atlas 数据库导出为 h5ad 文件。
 
-    该函数从 Atlas 数据库读取 ``obs``、``var``、表达矩阵和可用的 embedding 结果，并写出为标准 AnnData ``.h5ad`` 文件，方便继续在 Scanpy 或其他工具中分析。
+    该函数从 Atlas 的 DuckDB 数据库读取 ``obs``、``var``、稀疏表达矩阵、
+    ``obsm_*`` 和 ``varm_*`` 结果表，并写出为标准 AnnData ``.h5ad`` 文件，
+    方便继续在 Scanpy 或其他支持 AnnData 的工具中分析。
+
+    表达矩阵会按照 Atlas 内部的 HyS 稀疏结构重新组装为 h5ad 中的 CSR
+    ``X``。其中 ``X.data`` 来自 ``X_HyS_data`` 表中由 ``use_data`` 指定的
+    字段，``X.indices`` 来自 ``atlas_gene_id``，``X.indptr`` 来自
+    ``X_HyS_indptr``。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
+        ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表。
     out_h5ad_path
         输出 ``.h5ad`` 文件路径。
     batch_cells
-        导出表达矩阵时每批处理的细胞数。
+        分批写出表达矩阵 ``data`` 和 ``indices`` 时每批处理的非零表达记录数量。
+        较大的值通常更快，但会增加单批内存占用。
     use_data
         从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
+        也可以传入 ``"data_log1p"``、``"data_normalize"`` 等已经存在的字段。
 
     Returns
     -------
     None
-        结果直接写入 Atlas 数据库或当前图形窗口。
+        结果直接写入 ``out_h5ad_path`` 指定的 h5ad 文件，不返回对象。
+
+    Notes
+    -----
+    ``obsm_*`` 表会导出到 h5ad 的 ``obsm``，表名中的 ``obsm_`` 前缀会被去掉；
+    ``varm_*`` 表会导出到 h5ad 的 ``varm``，表名中的 ``varm_`` 前缀会被去掉。
+
+    导出前会检查 ``use_data`` 是否存在于 ``X_HyS_data`` 表中；不存在时会直接
+    抛出中文错误，避免导出空矩阵或错误字段。
 
     Examples
     --------
@@ -73,6 +91,22 @@ def write_h5ad(
 
     # 安全引用 SQL 标识符
     def _q(name: str) -> str:
+        """为 DuckDB SQL 标识符添加安全引用。
+
+        该内部 helper 用于引用动态字段名或表名，例如 ``use_data``、
+        ``obsm_*`` 和 ``varm_*`` 表。函数会转义名称中的双引号，并在外层补上
+        双引号，避免特殊字符或关键字导致 SQL 解析失败。
+
+        Parameters
+        ----------
+        name
+            需要引用的 SQL 标识符。
+
+        Returns
+        -------
+        str
+            加双引号后的 SQL 标识符。
+        """
         return '"' + str(name).replace('"', '""') + '"'
 
     x_field_exists = conn.execute(
@@ -284,80 +318,6 @@ def write_h5ad(
     logger.info(f" write_h5ad Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
 
 
-# 写 AnnData 到 h5ad
-def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
-
-    """将计算结果写入数据库表。
-
-    该内部函数属于数据导出模块，用于支撑同一模块中的公共 API。
-
-    把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    f
-        打开的 HDF5 文件句柄。
-
-    key
-        结果键名、表名前缀或 HDF5 group 名称。
-
-    df
-        包含中间统计量或绘图数据的 pandas DataFrame。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-    g = f.create_group(key)
-
-    # ---- AnnData dataframe metadata ----
-    g.attrs["encoding-type"] = "dataframe"
-    g.attrs["encoding-version"] = "0.2.0"
-
-    # index
-    index_name = df.index.name or "_index"
-    index_data = np.array(df.index.astype(str).tolist(), dtype=object)
-
-    g.create_dataset(
-        index_name,
-        data=index_data,
-        dtype=h5py.string_dtype(encoding="utf-8"),
-    )
-
-    # columns
-    colnames = []
-
-    for col in df.columns:
-        colnames.append(col)
-        series = df[col]
-
-        # pandas categorical → string
-        if pd.api.types.is_categorical_dtype(series):
-            series = series.astype(str)
-
-        arr = series.to_numpy()
-
-        # ===== 字符串列 =====
-        if arr.dtype.kind in {"U", "O"}:
-            data = np.array(series.astype(str).tolist(), dtype=object)
-
-            g.create_dataset(
-                col,
-                data=data,
-                dtype=h5py.string_dtype(encoding="utf-8"),
-            )
-
-        # ===== 数值列 =====
-        else:
-            g.create_dataset(col, data=arr)
-
-    # AnnData spec attrs（关键）
-    g.attrs["column-order"] = np.array(colnames, dtype="S")
-    g.attrs["_index"] = index_name
-
-
 # 将 DuckDB 中的 obs 表导出为 pandas DataFrame
 def get_obs_df(
     atlas: Atlas,
@@ -365,19 +325,28 @@ def get_obs_df(
 ):
     """读取 Atlas 数据库中的 obs 表。
 
-    该函数把 ``obs`` 表中的全部列或指定列读取为 DataFrame，适合快速检查细胞元数据、导出统计结果或与外部分析结果合并。
+    该函数把 ``obs`` 表中的全部列或指定列读取为 pandas DataFrame，适合快速
+    检查细胞元数据、导出统计结果或与外部分析结果合并。
+    返回结果会以``atlas_cell_id`` 作为 pandas index，同时保留 ``atlas_cell_id`` 列本身。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在
+        ``obs`` 表。
     columns
         需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
+        为 ``None`` 时读取全部列。
 
     Returns
     -------
     pandas.DataFrame
-        包含查询、统计或绘图所需数据的表格。
+        ``obs`` 的查询结果。默认 index 为 ``atlas_cell_id``。
+
+    Notes
+    -----
+    即使 ``columns`` 中没有显式包含 ``atlas_cell_id``，函数也会自动把
+    ``atlas_cell_id`` 放在第一列，用于设置 DataFrame index。
 
     Examples
     --------
@@ -466,17 +435,26 @@ def get_anndata(
 ):
     """从 Atlas 数据库构建 AnnData 对象。
 
-    该函数按指定细胞 ID、表达矩阵表和可选 embedding 结果，从 Atlas 数据库中构建内存 AnnData。适合抽样导出、局部分析或与 Scanpy 工作流衔接。
+    该函数根据用户提供的 ``atlas_cell_ids`` 从 Atlas 数据库中导出一个内存
+    AnnData 对象。函数会保留输入细胞 ID 的顺序，读取对应的 ``obs`` 子集、
+    全量 ``var``、指定表达字段组成的稀疏 CSR ``X``，并可选读取 ``obsm_*`` 和
+    ``varm_*`` 结果表。
+
+    该函数适合小规模抽样导出、局部 Scanpy 分析、模型检查或把 Atlas 中的一组
+    细胞临时转换回 AnnData。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
+        ``obs``、``var`` 和 ``X_HyS_data`` 表。
     atlas_cell_ids
-        需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
+        需要导出的 Atlas 细胞 ID 列表。不能为空，且不能包含重复值。
+
+        返回 AnnData 中细胞的顺序会与该列表顺序一致。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
-        ``"data_scale"``。
+        从 ``X_HyS_data`` 表读取的表达字段名。常用值包括 ``"data_count"``、
+        ``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
     include_obsm
         是否把 ``obsm_*`` 结果表写入返回的 AnnData。
     include_varm
@@ -486,6 +464,13 @@ def get_anndata(
     -------
     AnnData
         从 Atlas 数据库构建的 AnnData 对象。
+
+    Notes
+    -----
+    ``obsm_*`` 表会按所选细胞顺序左连接导出；某些细胞没有 embedding 时，对应
+    位置会写入 ``NaN``。``varm_*`` 表按全量基因顺序导出。
+
+    该函数会创建临时表 ``_selected_cells``，用于保留用户传入的细胞顺序。
 
     Examples
     --------
@@ -499,9 +484,8 @@ def get_anndata(
         cell_ids = atlas.query(
             "SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000"
         )["atlas_cell_id"].tolist()
-        adata = atlas.get_anndata(cell_ids, include_obsm=True, include_varm=True)"""
-
-
+        adata = atlas.get_anndata(cell_ids, include_obsm=True, include_varm=True)
+    """
 
     conn = atlas.connection
 
@@ -522,16 +506,14 @@ def get_anndata(
     def _q(name: str) -> str:
         """为 SQL 标识符添加安全引用。
 
-        该内部函数属于数据导出模块，用于支撑同一模块中的公共 API。
-
-        把 Atlas 数据库重新组装为 h5ad、AnnData 或 pandas DataFrame。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        该内部 helper 用于在 ``get_anndata`` 中引用动态字段名或表名，例如
+        ``use_data``、``obsm_*`` 和 ``varm_*``。函数会转义名称中的双引号，并在
+        外层添加双引号。
 
         Parameters
         ----------
         name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+            需要引用的 SQL 标识符。
 
         Returns
         -------
@@ -540,7 +522,7 @@ def get_anndata(
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        该函数只用于 SQL 标识符，不用于普通字符串值。
         """
         return '"' + name.replace('"', '""') + '"'
 
@@ -769,3 +751,81 @@ def get_anndata(
     logger.info(f"  - genes: {adata.n_vars:,}")
 
     return adata
+
+
+# 写 AnnData 到 h5ad
+def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
+
+    """按 AnnData dataframe 编码写入 pandas DataFrame。
+
+    该内部函数用于 ``write_h5ad``，负责把 ``obs`` 或 ``var`` 这类
+    pandas DataFrame 写入已经打开的 HDF5 文件。函数会创建对应的 HDF5 group，
+    写入 index、列数据、列顺序和 AnnData dataframe 编码属性，使导出的文件
+    可以被 AnnData/Scanpy 正常读取。
+
+    Parameters
+    ----------
+    f
+        打开的 HDF5 文件句柄。
+    key
+        HDF5 group 名称，例如 ``"obs"`` 或 ``"var"``。
+    df
+        需要写入 h5ad 的 DataFrame。
+
+    Returns
+    -------
+    None
+        DataFrame 直接写入 HDF5 文件，不返回对象。
+
+    Notes
+    -----
+    字符串列会使用 UTF-8 可变长度字符串写入；pandas categorical 列会先转换为
+    字符串。该实现是轻量写出，不展开 AnnData 对 categorical 的完整 category
+    编码。
+    """
+    g = f.create_group(key)
+
+    # ---- AnnData dataframe metadata ----
+    g.attrs["encoding-type"] = "dataframe"
+    g.attrs["encoding-version"] = "0.2.0"
+
+    # index
+    index_name = df.index.name or "_index"
+    index_data = np.array(df.index.astype(str).tolist(), dtype=object)
+
+    g.create_dataset(
+        index_name,
+        data=index_data,
+        dtype=h5py.string_dtype(encoding="utf-8"),
+    )
+
+    # columns
+    colnames = []
+
+    for col in df.columns:
+        colnames.append(col)
+        series = df[col]
+
+        # pandas categorical → string
+        if pd.api.types.is_categorical_dtype(series):
+            series = series.astype(str)
+
+        arr = series.to_numpy()
+
+        # ===== 字符串列 =====
+        if arr.dtype.kind in {"U", "O"}:
+            data = np.array(series.astype(str).tolist(), dtype=object)
+
+            g.create_dataset(
+                col,
+                data=data,
+                dtype=h5py.string_dtype(encoding="utf-8"),
+            )
+
+        # ===== 数值列 =====
+        else:
+            g.create_dataset(col, data=arr)
+
+    # AnnData spec attrs（关键）
+    g.attrs["column-order"] = np.array(colnames, dtype="S")
+    g.attrs["_index"] = index_name

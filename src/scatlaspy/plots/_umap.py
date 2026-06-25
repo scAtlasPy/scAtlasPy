@@ -8,7 +8,6 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
-import matplotlib.patheffects as pe
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
@@ -51,200 +50,6 @@ DEFAULT_DISCRETE_PALETTES = (
 _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
-def _natural_sort_key(value: Any):
-    """
-    分类标签自然排序 key。
-
-    Examples
-    --------
-    embryo_1  < embryo_2  < embryo_10
-    cluster_1 < cluster_2 < cluster_11
-    """
-
-    s = str(value).strip()
-
-    # 缺失值标签放最后
-    if s.casefold() in _MISSING_CATEGORY_LABELS:
-        return (1, ())
-
-    parts = re.split(r"(\d+)", s)
-
-    key = []
-    for part in parts:
-        if part == "":
-            continue
-
-        if part.isdigit():
-            key.append((0, int(part)))
-        else:
-            key.append((1, part.casefold()))
-
-    return (0, tuple(key))
-
-
-def _sort_categories_natural(labels: Any) -> list[str]:
-    """
-    对分类标签做默认自然排序。
-
-    不额外暴露参数，所有离散分类变量默认使用这个排序。
-    """
-
-    labels = [str(x) for x in list(labels)]
-
-    # 去重，同时保留原始列表中的唯一标签
-    labels = list(dict.fromkeys(labels))
-
-    return sorted(labels, key=_natural_sort_key)
-
-
-def _build_discrete_color_map(labels: Any, palette: Any | None=None):
-    """构建内部中间数据结构。
-
-    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
-
-    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    Parameters
-    ----------
-    labels
-        分类标签列表。
-
-    palette
-        离散分类变量使用的颜色方案。
-
-    Returns
-    -------
-    result
-        构建得到的内部对象，通常是 DataFrame、Arrow Table 或更新后的游标元组。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
-    """
-
-    labels = list(labels)
-
-    #  默认使用大颜色池
-    if palette is None:
-        palette_names = DEFAULT_DISCRETE_PALETTES
-
-    # 兼容原来的 palette="tab20" 写法
-    elif isinstance(palette, str):
-        palette_names = (palette,)
-
-    # 支持 palette=["tab20", "tab20b", ...]
-    else:
-        palette_names = tuple(palette)
-
-    palette_colors = []
-
-    for cmap_name in palette_names:
-        cmap_obj = plt.get_cmap(cmap_name)
-
-        # ListedColormap，比如 tab20 / Set3，通常有 .colors
-        if hasattr(cmap_obj, "colors"):
-            palette_colors.extend(list(cmap_obj.colors))
-
-        # 兜底：如果是连续 colormap，就均匀取色
-        else:
-            n = getattr(cmap_obj, "N", 256)
-            palette_colors.extend([
-                cmap_obj(i / max(n - 1, 1))
-                for i in range(n)
-            ])
-
-    # 如果类别数超过颜色池，继续用 hsv 补足
-    if len(palette_colors) < len(labels):
-        extra_n = len(labels) - len(palette_colors)
-        hsv = plt.get_cmap("hsv")
-        palette_colors.extend([
-            hsv(i / max(extra_n, 1))
-            for i in range(extra_n)
-        ])
-
-    return {
-        lab: palette_colors[i]
-        for i, lab in enumerate(labels)
-    }
-
-
-def _spread_on_data_label_positions(
-        center_df: pd.DataFrame,
-        x_col: str = "x_center",
-        y_col: str = "y_center",
-        min_dx_frac: float = 0.08,
-        min_dy_frac: float = 0.06,
-        step_frac: float = 0.018,
-        max_iter: int = 200,
-) -> pd.DataFrame:
-    """
-    简单避让 on_data 标签位置，避免多个类别标签挤在一起。
-
-    不改变细胞点的位置，只调整文字标签的位置。
-    """
-
-    center_df = center_df.copy()
-
-    if len(center_df) <= 1:
-        center_df["label_x"] = center_df[x_col].astype(float)
-        center_df["label_y"] = center_df[y_col].astype(float)
-        return center_df
-
-    x = center_df[x_col].astype(float).to_numpy()
-    y = center_df[y_col].astype(float).to_numpy()
-
-    x_span = max(float(np.nanmax(x) - np.nanmin(x)), 1e-12)
-    y_span = max(float(np.nanmax(y) - np.nanmin(y)), 1e-12)
-
-    min_dx = min_dx_frac * x_span
-    min_dy = min_dy_frac * y_span
-
-    step_x = step_frac * x_span
-    step_y = step_frac * y_span
-
-    label_x = x.copy()
-    label_y = y.copy()
-
-    for _ in range(max_iter):
-        moved = False
-
-        for i in range(len(center_df)):
-            for j in range(i + 1, len(center_df)):
-
-                dx = label_x[j] - label_x[i]
-                dy = label_y[j] - label_y[i]
-
-                if abs(dx) < min_dx and abs(dy) < min_dy:
-
-                    # 如果两个标签几乎完全重合，给一个固定方向
-                    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
-                        direction = 1 if (i + j) % 2 == 0 else -1
-                        dx = direction * 1e-6
-                        dy = direction * 1e-6
-
-                    # 水平方向和垂直方向都稍微推开
-                    sx = step_x if dx >= 0 else -step_x
-                    sy = step_y if dy >= 0 else -step_y
-
-                    label_x[i] -= sx
-                    label_x[j] += sx
-                    label_y[i] -= sy
-                    label_y[j] += sy
-
-                    moved = True
-
-        if not moved:
-            break
-
-    center_df["label_x"] = label_x
-    center_df["label_y"] = label_y
-
-    return center_df
-
-
-# UMAP 可视化入口
 def umap(
         atlas: Atlas,
         color: str | list[str] = "kmeans",
@@ -272,23 +77,30 @@ def umap(
         save_path: PathLike[str] | str | None = None,
 ):
 
-    """绘制 UMAP embedding。
+    """绘制细胞 UMAP embedding。
 
-    该函数读取 ``obsm_X_umap`` 或指定 UMAP 结果表，并按 ``obs`` 列、表达值或其他变量着色，绘制二维 UMAP 散点图。它类似 Scanpy 的 ``sc.pl.umap``。
+    该函数从 ``obsm_X_umap`` 表读取 UMAP 坐标，并根据 ``color`` 绘制一个或多个 UMAP面板。
+    ``color`` 可以是 ``obs`` 表字段，也可以是 ``var.atlas_gene_name`` 中的基因名；
+    当传入列表且同时包含 obs 字段和基因名时，会自动走混合多面板绘图逻辑。
+
+    该图类似 Scanpy 的 ``sc.pl.umap``，常用于查看聚类、细胞类型注释、QC 指标或
+    marker gene 表达在 UMAP 空间中的分布。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且已经运行 UMAP，生成``obsm_X_umap`` 表。
     color
-        用于给散点上色的 ``obs`` 列名或数值列名。
+        用于给散点上色的名称或名称列表。每个元素可以是 ``obs`` 表列名，也可以是
+        基因名。单个 ``obs`` 列会走 obs 绘图；单个或多个基因名会走 gene feature 绘图；
+        混合列表会走多面板混合绘图。
     sample_n
         绘图时最多抽样的细胞数量。为 ``None`` 时使用全部细胞。
     where
-        额外 SQL 过滤条件。为 ``None`` 时不添加额外条件。
+        额外 SQL 过滤条件，用于限制参与绘图的细胞。为 ``None`` 时不添加额外条件。
     use_data
-        读取的表达矩阵或结果表名称。常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"`` 和
-        ``"data_scale"``。
+        当 ``color`` 包含基因名时，从 ``X_HyS_data`` 读取的表达值字段，例如
+        ``"data_log1p"``、``"data_count"`` 或 ``"data_scale"``。
     figsize
         图形大小。为 ``None`` 时使用函数默认尺寸。
     point_size
@@ -300,17 +112,16 @@ def umap(
     palette
         离散变量使用的颜色列表或调色板。
     legend_loc
-        图例位置。
+        离散分类图例位置。``"right_margin"`` 会把图例放到右侧留白处；
+        ``"on_data"`` 会把分类标签标在 UMAP 点云上。
     ncols
-        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
+        多面板绘图时每行的子图数量。
     frameon
         是否显示坐标轴边框。
     plot_batch_size
-        参数。用于控制该函数的输入、输出或计算细节；默认值适合常规 Atlas 工作流。
+        大数据绘图时每批从 DuckDB 读取的细胞数量。主要用于离散 obs streaming 绘图。
     save_path
-        图片保存路径。为 ``None`` 时只显示或返回图对象。
-    return_df
-        是否返回结果 DataFrame。
+        图片保存路径。为 ``None`` 时只显示图片。
 
     Returns
     -------
@@ -329,15 +140,14 @@ def umap(
             atlas,
             color="MS4A1",
             use_data="data_log1p",
-            save=r"F:\\figures\\umap_MS4A1.png",
+            save_path=r"F:\\figures\\umap_MS4A1.png",
         )
 
-    使用自定义 UMAP 表和较小点大小::
+    同时绘制 obs 分组和基因表达::
 
         sap.pl.umap(
             atlas,
-            use_table="obsm_X_umap_n45_d02",
-            color="cell_type_auto",
+            color=["cell_type_auto", "MS4A1", "CD3D"],
             point_size=0.5,
         )"""
 
@@ -429,6 +239,7 @@ def umap(
             point_size=point_size,
             alpha=alpha,
             cmap=cmap,
+            save_path=save_path,
         )
         return None
 
@@ -473,30 +284,28 @@ def _plot_umap_obs(
         return_df: bool = False,
 ):
 
-    """绘制中间分析结果。
+    """按单个 ``obs`` 字段绘制 UMAP。
 
-    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
+    该内部函数从 ``obsm_X_umap`` 读取 UMAP 坐标，并从 ``obs`` 读取 ``color`` 指定的
+    细胞级字段进行上色。数值型字段会使用连续 colormap；字符串、布尔值或分类字段会
+    使用离散颜色和图例。
 
-    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obs``、``obsm_X_umap``。
+    当离散分类的细胞数量较大且不需要返回 DataFrame 时，函数会转给
+    ``_draw_umap_obs_streaming`` 分批读取绘图，减少一次性加载的数据量。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs`` 和 ``obsm_X_umap`` 表。
 
     color
-        用于着色的 ``obs`` 列名、基因名或它们的列表。
+        用于上色的 ``obs`` 列名。
 
     sample_n
         抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
 
     groups
-        需要分析或绘制的分组；为 ``None`` 时使用全部分组。
+        当 ``color`` 是离散字段时，需要保留的分类标签列表。为 ``None`` 时使用全部分类。
 
     where
         可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
@@ -532,16 +341,12 @@ def _plot_umap_obs(
         绘图时分批读取数据库的细胞数量。
 
     return_df
-        是否返回用于绘图或分析的 DataFrame。
+        是否返回用于绘图的 DataFrame。主要用于调试或外部复用绘图数据。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    pandas.DataFrame | None
+        ``return_df=True`` 时返回已读取的绘图数据；否则直接绘图并返回 ``None``。
     """
 
     conn = atlas.connection
@@ -799,27 +604,22 @@ def _draw_umap_obs_streaming(
         plot_batch_size: int = 200000
 ):
 
-    """执行 ``_draw_umap_obs_streaming`` 的核心功能。
+    """分批绘制离散 ``obs`` 分类变量的 UMAP。
 
-    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
-
-    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obs``、``obsm_X_umap``。
+    该内部函数用于大数据场景下的离散分类 UMAP 绘图。它会先读取所有分类标签以固定
+    颜色映射，再按 ``plot_batch_size`` 从 DuckDB 分批读取 UMAP 坐标和分类标签，
+    逐批 scatter 到同一个坐标轴上，避免一次性把全部细胞加载到内存。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obs`` 和 ``obsm_X_umap`` 表。
 
     color
-        用于着色的 ``obs`` 列名、基因名或它们的列表。
+        用于上色的离散 ``obs`` 列名。
 
     where_sql
-        已经拼接好的 SQL WHERE 条件。
+        已经拼接好的 SQL ``WHERE`` 条件，不包含 ``WHERE`` 关键字。
 
     legend_loc
         图例位置。
@@ -843,19 +643,15 @@ def _draw_umap_obs_streaming(
         是否显示图框。
 
     save_path
-        图像或结果保存路径。
+        图片保存路径。为 ``None`` 时只显示图片。
 
     plot_batch_size
         绘图时分批读取数据库的细胞数量。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
-
-    Notes
-    -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    None
+        函数直接绘图，不返回绘图数据。
     """
 
     conn = atlas.connection
@@ -1079,26 +875,24 @@ def _plot_umap_features(
         point_size: float = 8,
         alpha: float = 0.9,
         cmap: str = "viridis",
+        save_path: PathLike[str] | str | None = None,
 ):
 
-    """绘制中间分析结果。
+    """按基因表达量绘制 UMAP feature plot。
 
-    该内部函数属于UMAP/表达可视化模块，用于支撑同一模块中的公共 API。
-
-    读取 UMAP、obs、var 和表达矩阵，绘制 UMAP、feature plot、violin、dotplot 和 stacked violin。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``obs``、``obsm_X_umap``、``var``。
+    该内部函数从 ``var`` 表解析基因名，从 ``X_HyS_data`` 的 ``use_data`` 字段读取表达值，
+    并与 ``obsm_X_umap`` 坐标合并后绘制一个或多个 gene feature UMAP 面板。
+    未检测到的稀疏表达会补为 0；当 ``use_data="data_scale"`` 时，会根据该字段的分布
+    选择更合适的 0 填充值。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且包含 ``obsm_X_umap``、``obs``、
+        ``var`` 和 ``X_HyS_data`` 表。
 
     genes
-        需要绘制或分析的基因名称列表。
+        需要绘制的基因名称或基因名称列表，需存在于 ``var.atlas_gene_name``。
 
     sample_n
         抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
@@ -1107,7 +901,8 @@ def _plot_umap_features(
         可选 SQL 过滤条件，用于限制参与计算或绘图的细胞。
 
     use_data
-        绘制 gene feature 或表达分布时读取的 ``X_HyS_data`` 表达字段。
+        从 ``X_HyS_data`` 读取的表达值字段，例如 ``"data_log1p"``、``"data_count"``
+        或 ``"data_scale"``。
 
     ncols
         多面板绘图时每行的子图数量。
@@ -1121,13 +916,18 @@ def _plot_umap_features(
     alpha
         绘图透明度。
 
+    cmap
+        基因表达连续值使用的 Matplotlib colormap。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
     Returns
     -------
     None
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    该函数是 ``sap.pl.umap`` 的内部实现路径；用户通常通过 ``sap.pl.umap`` 并传入基因名调用。
     """
 
     start = datetime.now()
@@ -1375,6 +1175,9 @@ def _plot_umap_features(
         ax.set_visible(False)
 
     plt.tight_layout(pad=1.0)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
     return None
@@ -1439,7 +1242,7 @@ def _plot_umap_mixed(
 
     use_data
         gene feature 绘图时读取的 ``X_HyS_data`` 表达字段。
-        常用值包括 ``"data"``、``"data_normalize"``、``"data_log1p"``
+        常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"``
         和 ``"data_scale"``。
 
     ncols
@@ -1845,3 +1648,234 @@ def _plot_umap_mixed(
     plt.show()
 
     return None
+
+
+def _natural_sort_key(value: Any):
+    """生成分类标签的自然排序键。
+
+    该内部 helper 用于让 UMAP 图例中的离散分类按更符合阅读习惯的顺序排列，避免
+    ``cluster_10`` 排在 ``cluster_2`` 前面。空字符串、``NA``、``nan`` 等缺失值样式
+    的标签会被放到最后。
+
+    Parameters
+    ----------
+    value
+        需要排序的分类标签，可以是字符串、数字或可转换为字符串的对象。
+
+    Returns
+    -------
+    tuple
+        可传给 ``sorted(..., key=...)`` 的排序键。
+
+    Examples
+    --------
+    ``embryo_1 < embryo_2 < embryo_10``，``cluster_1 < cluster_2 < cluster_11``。
+    """
+
+    s = str(value).strip()
+
+    # 缺失值标签放最后
+    if s.casefold() in _MISSING_CATEGORY_LABELS:
+        return (1, ())
+
+    parts = re.split(r"(\d+)", s)
+
+    key = []
+    for part in parts:
+        if part == "":
+            continue
+
+        if part.isdigit():
+            key.append((0, int(part)))
+        else:
+            key.append((1, part.casefold()))
+
+    return (0, tuple(key))
+
+
+def _sort_categories_natural(labels: Any) -> list[str]:
+    """对分类标签去重并执行自然排序。
+
+    该内部 helper 会先把标签转成字符串，再按 ``_natural_sort_key`` 排序，供离散
+    UMAP 图例和分组绘图顺序使用。
+
+    Parameters
+    ----------
+    labels
+        分类标签序列。
+
+    Returns
+    -------
+    list[str]
+        去重后的自然排序标签列表。
+    """
+
+    labels = [str(x) for x in list(labels)]
+
+    # 去重，同时保留原始列表中的唯一标签
+    labels = list(dict.fromkeys(labels))
+
+    return sorted(labels, key=_natural_sort_key)
+
+
+def _build_discrete_color_map(labels: Any, palette: Any | None=None):
+    """为离散分类标签构建颜色映射。
+
+    该内部 helper 按 ``labels`` 的顺序从一个或多个 Matplotlib 离散 palette 中取色。
+    当类别数量超过默认颜色池时，会继续使用 ``hsv`` 补足颜色，保证每个分类都有对应颜色。
+
+    Parameters
+    ----------
+    labels
+        已排序的分类标签列表。
+
+    palette
+        Matplotlib colormap 名称、colormap 名称序列，或 ``None``。为 ``None`` 时使用
+        ``DEFAULT_DISCRETE_PALETTES``。
+
+    Returns
+    -------
+    dict
+        ``{label: color}`` 形式的字典，可直接用于 Matplotlib scatter 和 legend。
+    """
+
+    labels = list(labels)
+
+    #  默认使用大颜色池
+    if palette is None:
+        palette_names = DEFAULT_DISCRETE_PALETTES
+
+    # 兼容原来的 palette="tab20" 写法
+    elif isinstance(palette, str):
+        palette_names = (palette,)
+
+    # 支持 palette=["tab20", "tab20b", ...]
+    else:
+        palette_names = tuple(palette)
+
+    palette_colors = []
+
+    for cmap_name in palette_names:
+        cmap_obj = plt.get_cmap(cmap_name)
+
+        # ListedColormap，比如 tab20 / Set3，通常有 .colors
+        if hasattr(cmap_obj, "colors"):
+            palette_colors.extend(list(cmap_obj.colors))
+
+        # 兜底：如果是连续 colormap，就均匀取色
+        else:
+            n = getattr(cmap_obj, "N", 256)
+            palette_colors.extend([
+                cmap_obj(i / max(n - 1, 1))
+                for i in range(n)
+            ])
+
+    # 如果类别数超过颜色池，继续用 hsv 补足
+    if len(palette_colors) < len(labels):
+        extra_n = len(labels) - len(palette_colors)
+        hsv = plt.get_cmap("hsv")
+        palette_colors.extend([
+            hsv(i / max(extra_n, 1))
+            for i in range(extra_n)
+        ])
+
+    return {
+        lab: palette_colors[i]
+        for i, lab in enumerate(labels)
+    }
+
+
+def _spread_on_data_label_positions(
+        center_df: pd.DataFrame,
+        x_col: str = "x_center",
+        y_col: str = "y_center",
+        min_dx_frac: float = 0.08,
+        min_dy_frac: float = 0.06,
+        step_frac: float = 0.018,
+        max_iter: int = 200,
+) -> pd.DataFrame:
+    """对 UMAP 图上直接显示的分类标签做简单避让。
+
+    该内部 helper 根据每个分类在 UMAP 空间中的中心点，迭代微调标签坐标，减少多个
+    类别文字挤在一起的情况。它只调整文字标签的位置，不改变任何细胞点坐标。
+
+    Parameters
+    ----------
+    center_df
+        包含每个分类中心点坐标的 DataFrame。
+    x_col
+        中心点 x 坐标列名。
+    y_col
+        中心点 y 坐标列名。
+    min_dx_frac
+        标签之间允许的最小水平距离，占当前 UMAP x 轴跨度的比例。
+    min_dy_frac
+        标签之间允许的最小垂直距离，占当前 UMAP y 轴跨度的比例。
+    step_frac
+        每次避让移动的步长，占坐标跨度的比例。
+    max_iter
+        最大迭代次数。
+
+    Returns
+    -------
+    pandas.DataFrame
+        在输入 DataFrame 基础上新增 ``label_x`` 和 ``label_y`` 两列。
+    """
+
+    center_df = center_df.copy()
+
+    if len(center_df) <= 1:
+        center_df["label_x"] = center_df[x_col].astype(float)
+        center_df["label_y"] = center_df[y_col].astype(float)
+        return center_df
+
+    x = center_df[x_col].astype(float).to_numpy()
+    y = center_df[y_col].astype(float).to_numpy()
+
+    x_span = max(float(np.nanmax(x) - np.nanmin(x)), 1e-12)
+    y_span = max(float(np.nanmax(y) - np.nanmin(y)), 1e-12)
+
+    min_dx = min_dx_frac * x_span
+    min_dy = min_dy_frac * y_span
+
+    step_x = step_frac * x_span
+    step_y = step_frac * y_span
+
+    label_x = x.copy()
+    label_y = y.copy()
+
+    for _ in range(max_iter):
+        moved = False
+
+        for i in range(len(center_df)):
+            for j in range(i + 1, len(center_df)):
+
+                dx = label_x[j] - label_x[i]
+                dy = label_y[j] - label_y[i]
+
+                if abs(dx) < min_dx and abs(dy) < min_dy:
+
+                    # 如果两个标签几乎完全重合，给一个固定方向
+                    if abs(dx) < 1e-12 and abs(dy) < 1e-12:
+                        direction = 1 if (i + j) % 2 == 0 else -1
+                        dx = direction * 1e-6
+                        dy = direction * 1e-6
+
+                    # 水平方向和垂直方向都稍微推开
+                    sx = step_x if dx >= 0 else -step_x
+                    sy = step_y if dy >= 0 else -step_y
+
+                    label_x[i] -= sx
+                    label_x[j] += sx
+                    label_y[i] -= sy
+                    label_y[j] += sy
+
+                    moved = True
+
+        if not moved:
+            break
+
+    center_df["label_x"] = label_x
+    center_df["label_y"] = label_y
+
+    return center_df

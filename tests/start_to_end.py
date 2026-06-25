@@ -42,7 +42,7 @@ h5ad_paths = [ # 18,251,480 x 62,710
 # 2. 大文件读取
 atlas.load_h5ad(file_path,load_type = "order")   # 顺序导入
 atlas.load_h5ad(file_path,load_type = "random")   # 随机导入
-atlas.load_h5ad(file_path,load_type = "list_random")   # 多文件随机导入
+atlas.load_h5ad(h5ad_paths,load_type = "random")   # 多文件随机导入
 
 # 导入完数据，直接画 最高表达基因占比图（highest expressed genes
 # 用来检查 有没有少数基因“垄断”表达（技术偏差）

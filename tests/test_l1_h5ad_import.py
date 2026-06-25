@@ -21,7 +21,7 @@ def _dense_by_cell_name(adata):
 
 def _assert_export_matches_by_cell_name(atlas, expected):
     out = atlas.get_anndata(
-        _all_cell_ids(atlas), use_data="data", include_obsm=False, include_varm=False
+        _all_cell_ids(atlas), use_data="data_count", include_obsm=False, include_varm=False
     )
     expected_by_name = _dense_by_cell_name(expected)
     actual_names = out.obs["atlas_cell_name"].tolist()
@@ -57,10 +57,10 @@ def test_h5ad_file_import_round_trip_matches_source(tmp_path, load_type):
 
 
 @pytest.mark.l1
-def test_h5ad_list_random_import_combines_shards_and_supports_downstream(tmp_path):
+def test_h5ad_multi_file_random_import_combines_shards_and_supports_downstream(tmp_path):
     h5ad_paths, _, shape = write_h5ad_shards(
         tmp_path,
-        base_name="list_random",
+        base_name="multi_file_random",
         seed=2201,
         n_cells=157,
         n_genes=19,
@@ -69,10 +69,10 @@ def test_h5ad_list_random_import_combines_shards_and_supports_downstream(tmp_pat
         dtype="float32",
     )
 
-    atlas = sap.Atlas(tmp_path / "list_random.sasql")
+    atlas = sap.Atlas(tmp_path / "multi_file_random.sasql")
     atlas.load_h5ad(
         [str(path) for path in h5ad_paths],
-        load_type="list_random",
+        load_type="random",
         cells_per_block=13,
         blocks_per_pool=2,
     )
@@ -86,7 +86,7 @@ def test_h5ad_list_random_import_combines_shards_and_supports_downstream(tmp_pat
     atlas.connection.execute(
         "ALTER TABLE var ADD COLUMN IF NOT EXISTS zero_scale_transform REAL DEFAULT 0.0"
     )
-    atlas.build_read_index(use_hvg=False, use_data="data")
+    atlas.build_read_index(use_hvg=False, use_data="data_count")
     batches = list(
         atlas.get_minibatch_dense(
             pass_mode="single-pass", batch_size=31, buffer_batch_num=2

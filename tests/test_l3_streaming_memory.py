@@ -30,6 +30,7 @@ def _prepare_streaming_atlas(
     cells_per_block = int(os.environ.get("SCATLASPY_L3_IMPORT_CELLS_PER_BLOCK", "1000"))
     blocks_per_pool = int(os.environ.get("SCATLASPY_L3_IMPORT_BLOCKS_PER_POOL", "4"))
     n_shards = int(os.environ.get("SCATLASPY_L3_SHARDS", "1"))
+    is_multi_file = n_shards > 1
 
     paths, params, shape = write_h5ad_shards(
         tmp_path,
@@ -38,12 +39,12 @@ def _prepare_streaming_atlas(
         n_cells=n_cells,
         n_genes=n_genes,
         density=density,
-        n_shards=n_shards if load_type == "list_random" else 1,
+        n_shards=n_shards,
         dtype="float32",
         max_count=10,
     )
     atlas = sap.Atlas(path)
-    import_input = [str(p) for p in paths] if load_type == "list_random" else str(paths[0])
+    import_input = [str(p) for p in paths] if is_multi_file else str(paths[0])
     import_t0 = time.perf_counter()
     atlas.load_h5ad(
         import_input,
@@ -62,7 +63,7 @@ def _prepare_streaming_atlas(
     atlas.connection.execute(
         "ALTER TABLE var ADD COLUMN IF NOT EXISTS zero_scale_transform REAL DEFAULT 0.0"
     )
-    atlas.build_read_index(use_hvg=False, use_data="data")
+    atlas.build_read_index(use_hvg=False, use_data="data_count")
     gc.collect()
     return atlas, params, shape, paths
 

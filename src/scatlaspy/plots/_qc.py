@@ -1,65 +1,91 @@
 from ..data import Atlas
 import pandas as pd
 import os
+from os import PathLike
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 from datetime import datetime
 
 
-# 最高表达基因占比图（highest expressed genes）: 用来检查 有没有少数基因“垄断”表达（技术偏差）
 def highest_expr_genes(
         atlas: Atlas,
         n_top: int = 20,
         use_all_cells: bool = True,
-        show_outliers: bool = True,    # 是否绘制离群点
-        max_outliers: int = 5000,       # 每个基因最多绘制多少个离群点
+        show_outliers: bool = True,
+        max_outliers: int = 5000,
         figsize: tuple[float, float] | None=(12, 10),
-        approx_quantile: bool = True,   # 大数据默认用近似分位数，避免 OOM
-        sample_cells: int | None = None # 大数据绘图时可抽样细胞，适合 1e8 cells 小内存场景
+        approx_quantile: bool = True,
+        sample_cells: int | None = None,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制最高表达基因统计图。
+    """绘制最高表达基因占总 counts 百分比的 QC 图。
 
-    该函数从表达矩阵中统计每个基因的表达贡献，展示 top genes 的表达量或比例。
+    该函数基于 ``X_HyS_data.data_count`` 计算每个基因在每个细胞总 counts 中所占的
+    百分比，并选出平均占比最高的 ``n_top`` 个基因。图中每一行对应一个基因，
+    横轴表示该基因在单个细胞总 counts 中的百分比，箱线图展示细胞间分布，
+    可选空心点展示离群细胞。
 
-    它常用于导入后 QC，帮助识别线粒体、核糖体或其他可能主导总表达量的基因。
+    该图常用于导入后 QC，帮助发现少数基因是否“垄断”表达量，例如线粒体基因、
+    核糖体基因、血红蛋白基因或其他技术偏差相关基因。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且数据库中包含 ``obs``、``var``和 ``X_HyS_data`` 表。
+        ``X_HyS_data`` 需要包含 ``data_count`` 字段。
 
     n_top
-        需要展示的 top 项数量。
+        展示平均占比最高的基因数量。
 
     use_all_cells
-        是否使用所有细胞计算统计量。
+        是否把所有细胞纳入 top 基因和箱线图统计。为 ``True`` 时会把未检测到该基因
+        的细胞按 0 计入，更符合“占所有细胞总 counts 百分比”的定义；为 ``False`` 时
+        主要基于非零表达记录计算，速度更快，但不会把隐式 0 纳入分布。
 
     show_outliers
-        是否显示离群点。
+        是否在箱线图上额外绘制离群细胞点。
 
     max_outliers
-        最多显示的离群点数量。
+        每个基因最多绘制的离群点数量，避免大数据下图形过密。
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib 图像大小。
 
     approx_quantile
-        用于识别离群表达的近似分位数。
+        是否使用 DuckDB 的近似分位数函数计算四分位数。大数据场景建议保持
+        ``True``，可以降低内存和计算压力；为 ``False`` 时使用精确分位数。
 
     sample_cells
-        用于估计统计量的抽样细胞数量。
+        用于绘图统计的细胞抽样数量。为 ``None`` 时使用满足 ``use_all_cells`` 逻辑的
+        全部细胞；传入整数时使用基于 ``atlas_cell_id`` hash 的近似抽样，适合超大数据。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
+    Returns
+    -------
+    None
+        函数直接绘图，不返回统计表。
 
     Notes
     -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    如果 ``obs`` 中已有 ``cell_total_counts`` 或 ``total_counts``，函数会优先复用该列；
+    否则会临时从 ``X_HyS_data.data_count`` 聚合每个细胞的总 counts。
 
     Examples
     --------
-    调用该函数：::
+    绘制平均占比最高的 20 个基因::
 
-        sap.pl.highest_expr_genes(...)
+        sap.pl.highest_expr_genes(atlas, n_top=20)
+
+    在大数据上抽样绘图，并使用近似分位数::
+
+        sap.pl.highest_expr_genes(
+            atlas,
+            n_top=30,
+            sample_cells=100000,
+            approx_quantile=True,
+        )
     """
 
     start = datetime.now()
@@ -550,27 +576,24 @@ def highest_expr_genes(
     ax.tick_params(axis="y", width=1.0, length=4)
 
     plt.tight_layout(pad=0.8)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
     # 清理
     # DuckDB 中同名对象可能是 VIEW，也可能是 TABLE，直接 DROP VIEW 可能因类型不匹配报错
     def _safe_drop_temp(name: str):
-        """清理当前步骤产生的临时资源。
+        """清理 ``highest_expr_genes`` 创建的临时表或临时视图。
 
-        该内部函数属于QC 可视化模块，用于支撑同一模块中的公共 API。
-
-        读取 QC 指标和表达矩阵，绘制最高表达基因、violin、scatter 和 HVG 诊断图。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        DuckDB 中同名临时对象可能是 VIEW，也可能是 TABLE。该 helper 会分别尝试
+        ``DROP VIEW`` 和 ``DROP TABLE``，用于保证函数结束后清理中间对象，同时不让
+        “对象类型不匹配”的清理错误影响绘图结果。
 
         Parameters
         ----------
         name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+            需要清理的临时对象名称。
         """
         try:
             conn.execute(f"DROP VIEW IF EXISTS {name}")
@@ -590,7 +613,6 @@ def highest_expr_genes(
     _safe_drop_temp("_all_gene_mean_pct")
 
 
-# 可视化QC指标 , 画 QC 小提琴图
 def violin_qc_metrics(
         atlas: Atlas,
         keys: str | list[str]=None,
@@ -600,54 +622,69 @@ def violin_qc_metrics(
         use_filtered: bool = False,
         filter_key: str = "filter_cells",
         sample_n: int | None = 50000,
-        random_state: int = 0
+        random_state: int = 0,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 QC 指标小提琴图。
+    """绘制 ``obs`` 中 QC 指标的小提琴图。
 
-    该函数从 ``obs`` 中读取一个或多个 QC 指标，并绘制分布图，可选择抽样、过滤细胞和多面板布局。
+    该函数从 ``obs`` 表读取一个或多个细胞级 QC 指标，并为每个指标绘制小提琴图，
+    同时叠加轻微抖动的散点用于观察真实细胞分布。默认绘制
+    ``n_genes_by_counts``、``cell_total_counts`` 和 ``pct_counts_mt``。
 
-    常用于检查 ``total_counts``、``n_genes_by_counts``、线粒体比例等指标的分布。
+    该图常用于检查细胞测序深度、检测基因数、线粒体比例等 QC 指标的整体分布，
+    辅助决定过滤阈值。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``obs`` 表中包含待绘制的 QC 列。
 
     keys
-        需要绘制的 QC 指标列名。
+        需要绘制的 QC 指标列名。可以传入单个字符串或字符串列表；为 ``None`` 时使用
+        默认 QC 指标列表。
 
     jitter
         小提琴图中散点抖动强度。
 
     multi_panel
-        是否为多个指标使用多面板布局。
+        是否为多个指标使用横向多面板布局。为 ``False`` 时多个指标纵向排列。
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib 图像大小。为 ``None`` 时根据指标数量自动估计。
 
     use_filtered
-        是否只使用通过过滤的细胞或基因。
+        是否只绘制 ``filter_key = TRUE`` 的细胞。
 
     filter_key
-        表示过滤状态的列名。
+        ``obs`` 中表示细胞是否通过过滤的布尔列名，默认 ``"filter_cells"``。
 
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+        从 ``obs`` 中抽样的细胞数量。为 ``None`` 时使用全部满足条件的细胞。
 
     random_state
         随机种子；固定整数可以提高结果复现性。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
 
     Notes
     -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    绘图前通常需要先运行 ``sap.pp.calculate_qc_metrics`` 或其他会写入相应 QC 列的
+    预处理函数。函数会跳过全部为空的指标列。
 
     Examples
     --------
-    调用该函数：::
+    绘制默认 QC 指标::
 
-        sap.pl.violin_qc_metrics(...)
+        sap.pl.violin_qc_metrics(atlas)
+
+    只绘制过滤后的细胞，并指定指标::
+
+        sap.pl.violin_qc_metrics(
+            atlas,
+            keys=["cell_total_counts", "pct_counts_mt"],
+            use_filtered=True,
+        )
     """
 
     start = datetime.now()
@@ -791,10 +828,12 @@ def violin_qc_metrics(
         ax.tick_params(axis="x", width=1.0, length=0)
 
     plt.tight_layout(pad=1.0)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
 
-# QC 散点图（scatter plot），用来发现“异常细胞”的关系图
 def scatter_qc_metrics(
         atlas: Atlas,
         pairs: list[tuple[str, str]] | None=None,
@@ -803,38 +842,38 @@ def scatter_qc_metrics(
         filter_key: str = "filter_cells",
         sample_n: int | None = 50000,
         point_size: float = 8,
-        alpha: float = 0.7
+        alpha: float = 0.7,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 QC 指标散点图。
+    """绘制 ``obs`` 中 QC 指标两两关系的散点图。
 
-    该函数读取 ``obs`` 中的 QC 指标对，例如 total counts 与检测基因数，并用散点图展示关系。
+    该函数从 ``obs`` 表读取一组或多组 QC 指标对，并用散点图展示它们之间的关系。
+    默认绘制 ``cell_total_counts`` 对 ``pct_counts_mt``，
+    以及 ``cell_total_counts`` 对``n_genes_by_counts``。
 
-    它适合辅助决定细胞过滤阈值，发现低质量细胞、双细胞或异常测序深度。
+    该图适合辅助判断过滤阈值，例如识别低测序深度细胞、高线粒体比例细胞、疑似双细胞或其他 QC 异常群体。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``obs`` 表中包含待绘制的 QC 列。
 
     pairs
-        scatter QC 图中需要绘制的指标对。
+        需要绘制的指标对列表，例如 ``[("cell_total_counts", "pct_counts_mt")]``。
+        为 ``None`` 时使用默认两组 QC 关系。
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib 图像大小。
 
     use_filtered
-        是否只使用通过过滤的细胞或基因。
+        是否只绘制 ``filter_key = TRUE`` 的细胞。
 
     filter_key
-        表示过滤状态的列名。
+        ``obs`` 中表示细胞是否通过过滤的布尔列名，默认 ``"filter_cells"``。
 
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
-
-    random_state
-        随机种子；固定整数可以提高结果复现性。
+        从 ``obs`` 中抽样的细胞数量。为 ``None`` 时使用全部满足条件的细胞。
 
     point_size
         散点大小。
@@ -842,15 +881,27 @@ def scatter_qc_metrics(
     alpha
         绘图透明度。
 
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
     Notes
     -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    绘图前通常需要先运行 ``sap.pp.calculate_qc_metrics`` 或其他会写入相应 QC 列的
+    预处理函数。函数会自动过滤当前指标对中任一列为空的细胞。
 
     Examples
     --------
-    调用该函数：::
+    绘制默认 QC 散点图::
 
-        sap.pl.scatter_qc_metrics(...)
+        sap.pl.scatter_qc_metrics(atlas)
+
+    自定义 QC 指标对::
+
+        sap.pl.scatter_qc_metrics(
+            atlas,
+            pairs=[("cell_total_counts", "n_genes_by_counts")],
+            sample_n=100000,
+        )
     """
 
     start = datetime.now()
@@ -956,6 +1007,9 @@ def scatter_qc_metrics(
         ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
 
     plt.tight_layout(pad=1.0)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
 

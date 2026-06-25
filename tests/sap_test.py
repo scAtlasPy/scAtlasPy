@@ -6,8 +6,11 @@ adata.write_h5ad(r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test
 
 # 1. 建立数据库
 import scatlaspy as sap
-atlas = sap.Atlas(r"F:\data\database\pbmc3k",verbosity = "info")
+sap.set_progress(True)
+sap.set_verbosity("info")
+atlas = sap.Atlas(r"F:\data\database\pbmc3k")
 file_path = r"E:\python\scAtlas\Package\python-version-scAtlasAnalysis\test\pbmc3k\pbmc3k.h5ad"
+# file_path = r"F:\data\adata_JAX_dataset_1.h5ad"
 atlas.load_h5ad(file_path,load_type="random")
 
 #  小数据 / 和 Scanpy 对齐 / 做展示图
@@ -47,9 +50,9 @@ atlas.build_read_index(use_data = "data_scale")
 # 计算层：训练 PCA + 写入 obsm_X_pca / varm_PCs / uns_pca_stats
 sap.tl.pca(
     atlas,
-    n_components=50,
-    fit_batches=200,
-    batch_size = 2048,
+    n_components = 50,
+    fit_batches = 50,
+    batch_size  = 2048,
 )
 # 可视化层：只读 PCA 结果
 sap.pl.pca(atlas, color="CST3")
@@ -70,7 +73,7 @@ sap.tl.kmeans(
     n_clusters = 8,
     batch_size = 2048,
     fit_batches= 1000, # 训练轮数
-    use_obs_col="kmeans"
+    add_obs_col="kmeans"
 )
 
 # 可视化层：看每个 cluster 有多少细胞
@@ -108,7 +111,7 @@ sap.pl.umap(
 sap.pl.umap(
     atlas,
     color=["CST3", "NKG7", "PPBP"],
-    use_data="data"
+    use_data="data_count"
 ) # uamp3
 sap.pl.umap(
     atlas,
@@ -186,17 +189,17 @@ cell_type_order = [
 ]
 
 # 热图
-stat_df = sap.pl.dotplot(
+sap.pl.dotplot(
     atlas,
     genes=marker_genes,
     groupby="cell_type_manual",
     use_data="data_log1p",
-    sample_n_per_group=None,
+    sample_cells_per_group=None,
     order=cell_type_order,
 )
 
 # 堆叠提琴图
-expr_df, median_df = sap.pl.stacked_violin(
+sap.pl.stacked_violin(
     atlas,
     genes=marker_genes,
     groupby="cell_type_manual",

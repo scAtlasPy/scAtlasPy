@@ -398,7 +398,7 @@ class MultiThreadedMinibatchFetcher:
 
         self.out_queue = queue.Queue(maxsize=20)  # 输出队列
 
-        self.fetch_size = 1_0000_0000  # fetch_record_batch 流式读取的size
+        self.fetch_size = 500_0000  # fetch_record_batch 流式读取的size
         self.pass_mode = pass_mode  # single-pass 单次遍历 ，multi-pass 多次遍历
         self.buffer_batch_num = buffer_batch_num  # 多次遍历 ，缓冲区的容量，n: 表示batch_size * n
 

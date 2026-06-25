@@ -13,9 +13,19 @@ class StreamingKMeans:
 
     """基于 PCA embedding 的流式 MiniBatchKMeans 聚类器。
 
-    该类读取 Atlas 中的 PCA loadings 和表达矩阵 minibatch，将表达矩阵投影到 PCA
-    空间后使用 ``MiniBatchKMeans.partial_fit`` 训练聚类模型，并把聚类标签写回
-    ``obs`` 或聚类结果表。它是 ``sap.tl.kmeans`` 的底层实现。
+    该类读取 Atlas 数据库中的 PCA loadings 表 ``varm_PCs``，并通过
+    ``atlas.get_minibatch_dense`` 分批读取表达矩阵。每个 minibatch 会先投影到
+    PCA 空间，再用于 sklearn ``MiniBatchKMeans`` 的流式训练或预测。
+
+    完整流程分为两步：
+
+    - ``fit_kmeans``：读取 minibatch，投影到 PCA 空间，并用
+      ``partial_fit`` 训练 KMeans 中心；
+    - ``predict_kmeans``：再次读取全量 minibatch，预测每个细胞的 cluster，
+      并写入独立结果表和可选的 ``obs`` 列。
+
+    该类是 ``sap.tl.kmeans`` 的底层实现。普通用户通常直接调用公共函数
+    ``kmeans``。
 
     Parameters
     ----------
@@ -32,7 +42,8 @@ class StreamingKMeans:
 
     Notes
     -----
-    推荐通过 ``sap.tl.kmeans`` 调用该流程。直接使用本类时，需要先完成 PCA 并构建读取索引。
+    运行前需要先完成 PCA，确保数据库中存在 ``varm_PCs`` 表，并且 Atlas 的
+    dense minibatch 读取索引已经构建完成。
 
     Examples
     --------
@@ -40,18 +51,15 @@ class StreamingKMeans:
 
         sap.tl.pca(atlas, n_components=50)
         sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
+    """
 
-    直接使用底层类，适合调试聚类训练过程::
-
-        model = StreamingKMeans(n_components=30, n_clusters=20, batch_size=4096)
-        model.run(atlas, add_obs_col="kmeans_20", write_to_obs=True)"""
     def __init__(
             self,
             n_components: int=50,
             n_clusters: int=2,
             batch_size: int=2048,
-            fit_batches: int = 1000,        #  KMeans 训练阶段使用多少个 minibatch
-            buffer_batch_num: int = 5,      #  multi-pass 时 ShuffleBuffer 的 batch 数，和 PCA 的设计保持一致
+            fit_batches: int = 1000,
+            buffer_batch_num: int = 5,
     ):
         """初始化流式 MiniBatchKMeans 聚类器。
 
@@ -99,45 +107,35 @@ class StreamingKMeans:
             init="k-means++",
             n_init="auto",
         )
-        # self.kmeans = MiniBatchKMeans(
-        #     n_clusters=n_clusters,
-        #     batch_size=batch_size,
-        #     init="random",  # ✅ 修改：避免第一次 partial_fit 卡在 k-means++ 初始化
-        #     n_init=1,  # ✅ 修改：不要用 auto
-        #     random_state=42,  # ✅ 新增：保证可复现
-        #     reassignment_ratio=0,  # ✅ 新增：减少运行中重新分配中心带来的额外开销
-        # )
-
 
     # 写 obs_cluster
     def _write_clusters(self, atlas: Atlas, cell_ids: np.ndarray, labels: np.ndarray, table_name: str):
 
-        """将计算结果写入数据库表。
+        """将一个 batch 的 KMeans 聚类标签写入结果表。
 
-        该内部函数属于KMeans 聚类模块，用于支撑同一模块中的公共 API。
-
-        基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        该内部函数把当前 batch 的 ``atlas_cell_id`` 和 KMeans 预测得到的
+        ``cluster_id`` 组成 DataFrame，并追加写入 ``obs_cluster`` 风格的结果表。
 
         Parameters
         ----------
         atlas
-            Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-            embedding 结果表。
-
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
         cell_ids
-            当前 batch 对应的 Atlas 细胞 ID 数组。
-
+            当前 batch 对应的 ``atlas_cell_id`` 数组。
         labels
-            分类标签列表。
-
+            当前 batch 预测得到的 cluster 标签数组。
         table_name
-            数据库表名。
+            保存聚类标签的结果表名。
+
+        Returns
+        -------
+        None
+            聚类标签直接追加写入数据库表，不返回对象。
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        该 helper 当前只追加写入独立结果表；同步写回 ``obs`` 的逻辑在
+        ``predict_kmeans`` 中完成。
         """
         df = pd.DataFrame({
             "atlas_cell_id": cell_ids,
@@ -150,28 +148,27 @@ class StreamingKMeans:
     # 写 kmeans_centers
     def _write_centers(self, atlas: Atlas, table_name: str="kmeans_centers"):
 
-        """将计算结果写入数据库表。
+        """将 KMeans 聚类中心写入数据库表。
 
-        该内部函数属于KMeans 聚类模块，用于支撑同一模块中的公共 API。
-
-        基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-        当前实现中会访问或生成的关键表包括：``kmeans_centers``。
+        该内部函数读取 ``self.kmeans.cluster_centers_``，并将每个 cluster 在每个
+        PCA 维度上的中心坐标展开成长表，写入 ``kmeans_centers`` 风格的表。
+        输出表包含 ``cluster_id``、``pc_index`` 和 ``value`` 三列。
 
         Parameters
         ----------
         atlas
-            Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-            embedding 结果表。
-
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
         table_name
-            数据库表名。
+            保存 KMeans 中心的表名。默认值为 ``"kmeans_centers"``。
+
+        Returns
+        -------
+        None
+            聚类中心直接写入数据库表，不返回对象。
 
         Notes
         -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        调用前需要先完成 ``fit_kmeans``，否则 ``cluster_centers_`` 尚未生成。
         """
         conn = atlas.connection
 
@@ -203,37 +200,32 @@ class StreamingKMeans:
     # 转换 pca + minibatch kmeans 聚类 训练
     def fit_kmeans(self, atlas: Atlas):
 
-        """执行 ``fit_kmeans`` 的核心功能。
+        """分批训练 MiniBatchKMeans 模型。
 
-        基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
+        该方法先从 ``varm_PCs`` 表读取 PCA loadings，然后通过
+        ``atlas.get_minibatch_dense(pass_mode="multi-pass")`` 分批读取表达矩阵。
+        每个 batch 会先乘以 PCA loadings 转换到 PCA 空间，再调用
+        ``MiniBatchKMeans.partial_fit`` 更新聚类中心。
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.tl.fit_kmeans`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        当前实现中会访问或生成的关键表包括：``varm_PCs``。
+        该方法只训练 KMeans 模型，不写入细胞聚类标签。标签写入由
+        ``predict_kmeans`` 或 ``run`` 完成。
 
         Parameters
         ----------
         atlas
-            Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-            embedding 结果表。
+            Atlas 对象。要求已经连接到 DuckDB 数据库，数据库中存在
+            ``varm_PCs`` 表，并且 dense minibatch 读取流程可用。
 
         Returns
         -------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        StreamingKMeans
+            当前 ``StreamingKMeans`` 对象，便于链式调用。
 
         Notes
         -----
-        运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+        如果数据库中的 PCA 维度与初始化时传入的 ``n_components`` 不一致，当前
+        实现会使用数据库中实际读取到的 PCA 维度。
 
-        Examples
-        --------
-        调用该函数：::
-
-            sap.tl.fit_kmeans(...)
         """
 
         # 读取 PCA components
@@ -293,46 +285,44 @@ class StreamingKMeans:
             add_obs_col: str = "kmeans"
     ):
 
-        """执行 ``predict_kmeans`` 的核心功能。
+        """为全量细胞预测 KMeans 聚类标签并写入数据库。
 
-        基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
+        该方法使用已经训练好的 ``MiniBatchKMeans`` 模型，对全量表达矩阵执行
+        single-pass minibatch 读取。每个 batch 会先投影到 PCA 空间，再调用
+        ``self.kmeans.predict`` 得到 cluster 标签。
 
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.tl.predict_kmeans`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        当前实现中会访问或生成的关键表包括：``kmeans_centers``、``obs``。
+        预测结果会写入 ``use_cluster_table`` 指定的独立结果表；当
+        ``write_to_obs=True`` 时，也会同步写回 ``obs`` 表中的 ``add_obs_col`` 列。
+        预测结束后，函数还会把聚类中心写入 ``kmeans_centers`` 表。
 
         Parameters
         ----------
         atlas
-            Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-            embedding 结果表。
-
+            Atlas 对象。要求已经连接到 DuckDB 数据库，并且 dense minibatch 读取
+            流程可用。
         use_cluster_table
-            保存细胞聚类标签的数据库表名。
-
+            保存细胞聚类标签的数据库表名。默认值为 ``"obs_cluster"``。
         write_to_obs
-            是否将结果同步写入 ``obs`` 表。
-
+            是否将聚类标签同步写入 ``obs`` 表。默认值为 ``True``。
         add_obs_col
-            ``obs`` 中用于写入或读取结果的列名。
+            写入 ``obs`` 表的聚类标签列名。默认值为 ``"kmeans"``。
 
         Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        -------
+        StreamingKMeans
+            当前 ``StreamingKMeans`` 对象。
 
         Notes
         -----
-        运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+        调用前需要先运行 ``fit_kmeans``。如果 ``self.components_`` 为空，函数会
+        自动从 ``varm_PCs`` 表读取 PCA loadings。
 
         Examples
         --------
-        调用该函数：::
+        在已训练模型上写入聚类标签::
 
-            sap.tl.predict_kmeans(...)
+            model.fit_kmeans(atlas)
+            model.predict_kmeans(atlas, add_obs_col="kmeans_20")
         """
 
         conn = atlas.connection
@@ -418,40 +408,34 @@ class StreamingKMeans:
     # 从数据库读取 PCA components，并恢复到 self.components_
     def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
 
-        """执行 ``load_components`` 的核心功能。
+        """从数据库读取 PCA loadings 供 KMeans 投影使用。
 
-        基于 PCA loadings 和 Atlas minibatch 流式训练 MiniBatchKMeans，并写入聚类标签。
-
-        函数会直接读取或写入 Atlas 数据库中的相关表，并尽量通过 SQL、分块读取或流式计算减少内存占用。
-
-        整体用法和 Scanpy 中相近的 ``sap.tl.load_components`` 风格 API 类似，但结果保存在 Atlas
-        数据库表中，便于后续步骤复用。
-
-        当前实现中会访问或生成的关键表包括：``varm_PCs``。
+        该方法读取 ``varm_PCs`` 表，按 ``atlas_gene_id`` 排序后去掉基因 ID 列，
+        并转置为 ``(n_components, n_genes)`` 形状。返回的矩阵会用于
+        ``X_batch @ components_.T``，将表达矩阵投影到 PCA 空间。
 
         Parameters
         ----------
         atlas
-            Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-            embedding 结果表。
-
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库。
         table_name
-            数据库表名。
+            读取的 PCA loadings 表名。默认值为 ``"varm_PCs"``。
 
         Returns
--------
-        result
-            函数返回结果。具体类型取决于参数设置和内部执行路径。
+        -------
+        numpy.ndarray
+            PCA loadings 数组，形状为 ``(n_components, n_genes)``，类型为
+            ``float32``。
 
         Notes
         -----
-        运行前请确认前序步骤已经生成所需的表达字段、过滤索引或 embedding 表。
+        该方法依赖 ``sap.tl.pca`` 已经生成 ``varm_PCs`` 表。
 
         Examples
         --------
-        调用该函数：::
+        读取 PCA loadings::
 
-            sap.tl.load_components(...)
+            components = model.load_components(atlas)
         """
         conn = atlas.connection
 
@@ -534,42 +518,54 @@ def kmeans(
         n_components: int = 30,
         n_clusters: int = 10,
         batch_size: int = 2048,
-        fit_batches: int = 1000,        # 指定 KMeans 训练阶段使用多少个 minibatch
-        buffer_batch_num: int = 5,      # multi-pass 时 ShuffleBuffer 的 batch 数
+        fit_batches: int = 1000,
         add_obs_col: str = "kmeans",
         use_cluster_table: str = "obs_cluster",
-        write_to_obs: bool = True,
 ):
 
     """基于 PCA embedding 进行 MiniBatch K-means 聚类。
 
-    该函数读取 ``obsm_X_pca`` 中的 PCA 坐标，拟合 MiniBatchKMeans 模型，并将聚类标签写入 ``obs`` 或聚类统计表。适合在大规模细胞数据上快速生成粗粒度 cluster。
+    该函数是 scAtlasPy 的 KMeans 公共入口。它读取 ``varm_PCs`` 中保存的 PCA
+    loadings，并通过 Atlas dense minibatch 接口分批读取表达矩阵。
+    训练阶段：会将每个 minibatch 投影到 PCA 空间并流式更新 ``MiniBatchKMeans``；
+    预测阶段：会再次分批读取全量细胞，预测 cluster 标签并写入数据库。
+
+    运行完成后通常会生成或更新三类结果：
+
+    - ``use_cluster_table``：每个细胞的 ``cluster_id``；
+    - ``obs[add_obs_col]``：可选的 obs 聚类标签列；
+    - ``kmeans_centers``：每个 cluster 在 PCA 空间中的中心坐标。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中已经存在
+        PCA loadings 表 ``varm_PCs``。
     n_components
-        输出维度或参与计算的主成分数量。
+        用于 KMeans 聚类的 PCA 主成分数量。默认值为 ``30``。
+        如果 ``varm_PCs`` 中实际可用的维度与该值不同，底层类会使用数据库中
+        实际读取到的 PCA 维度。
     n_clusters
-        K-means 聚类数。
+        KMeans 聚类数量。默认值为 ``10``。
     batch_size
-        每个小批量包含的细胞数量。较大值通常更快，但会增加内存占用。
+        每个 minibatch 包含的细胞数量。较大值通常更快，但会增加单批内存占用。
     fit_batches
-        用于拟合模型的小批量数量。较大值通常更稳定，但计算时间更长。
-    buffer_batch_num
-        预取缓冲区中的批次数量。较大值可提高吞吐，但会占用更多内存。
+        训练阶段最多读取多少个 minibatch。较大值通常使聚类中心更稳定，但会
+        增加运行时间。
     add_obs_col
-        读取或写入 ``obs`` 的列名。
+        写入 ``obs`` 表的聚类标签列名。默认值为 ``"kmeans"``。
     use_cluster_table
-        保存聚类统计结果的数据库表名。
-    write_to_obs
-        是否把结果写回 ``obs`` 表。
+        保存每个细胞聚类标签的独立结果表名。默认值为 ``"obs_cluster"``。
 
     Returns
     -------
-    Any
-        函数返回底层实现产生的结果。
+    None
+        聚类结果直接写入 Atlas 数据库，不返回对象。
+
+    Notes
+    -----
+    该函数不会自动运行 PCA。如果数据库中不存在 ``varm_PCs``，函数会报错并提示
+    先运行 ``sap.tl.pca(atlas)``。
 
     Examples
     --------
@@ -577,15 +573,7 @@ def kmeans(
 
         sap.tl.pca(atlas, n_components=50)
         sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
-
-    写入自定义 obs 列，并保存 cluster 统计表::
-
-        sap.tl.kmeans(
-            atlas,
-            n_clusters=50,
-            add_obs_col="kmeans_50",
-            use_cluster_table="obs_cluster_kmeans_50",
-        )"""
+    """
 
     t_start = time.time()
 
@@ -604,13 +592,11 @@ def kmeans(
         n_clusters=n_clusters,
         batch_size=batch_size,
         fit_batches=fit_batches,
-        buffer_batch_num=buffer_batch_num,
     )
 
     runner.run(
         atlas,
         use_cluster_table=use_cluster_table,
-        write_to_obs=write_to_obs,
         add_obs_col=add_obs_col,
     )
 

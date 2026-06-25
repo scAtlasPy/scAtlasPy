@@ -1,33 +1,41 @@
 import matplotlib.pyplot as plt
 from datetime import datetime
+from os import PathLike
 from ..data import Atlas
 
 
-# KMeans 聚类结果图,看数量（cluster 大小）
 def kmeans_cluster_size(
         atlas: Atlas,
         use_obs_col: str = "kmeans",
         figsize: tuple[float, float] | None=(7, 4),
         show_percent: bool = True,
-        title: str | None = None
+        title: str | None = None,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制 K-means cluster 的细胞数量。
+    """绘制 K-means 或其他分组列的细胞数量分布。
 
-    该函数读取 ``obs`` 中的聚类列，统计每个 cluster 的细胞数，并绘制柱状图。适合检查聚类是否过度不均衡或是否存在很小的 cluster。
+    该函数从 ``obs`` 表读取 ``use_obs_col`` 指定的分组列，统计每个分组包含的细胞数，
+    并用柱状图展示分组规模。默认按百分比显示，也可以切换为原始细胞数。
+
+    该图常用于检查聚类结果是否过度不均衡、是否存在很小的 cluster，或确认不同
+    聚类参数下的分组规模是否符合预期。虽然默认列名是 ``"kmeans"``，但也可以用于
+    ``leiden``、``cell_type`` 等任意 ``obs`` 分组列，只要该列能转换为整数标签。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且数据库中包含 ``obs`` 表。
     use_obs_col
-        读取或写入 ``obs`` 的列名。
+        ``obs`` 中用于统计分组大小的列名。默认读取 ``"kmeans"``。
     figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
+        Matplotlib 图像大小。默认 ``(7, 4)``。
     show_percent
-        是否在图中展示百分比信息。
+        是否把 y 轴显示为细胞百分比。为 ``False`` 时显示每个分组的原始细胞数量。
     title
-        图标题。为 ``None`` 时使用默认标题。
+        图标题。为 ``None`` 时自动使用 ``"{use_obs_col} cluster distribution"``。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
 
     Returns
     -------
@@ -109,5 +117,7 @@ def kmeans_cluster_size(
     ax.tick_params(axis="both", labelsize=11)
 
     plt.tight_layout()
-    plt.show()
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
+    plt.show()

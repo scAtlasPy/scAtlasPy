@@ -79,7 +79,7 @@ def test_l4_real_tahoe_release_scale_streaming_and_training(
         atlas.build_read_index(
             gene_condition="l4_gene_subset",
             use_hvg=False,
-            use_data="data",
+            use_data="data_count",
         )
 
         rows = 0

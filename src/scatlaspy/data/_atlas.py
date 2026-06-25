@@ -35,11 +35,9 @@ def set_verbosity(
     Parameters
     ----------
     level
-        日志级别字符串。可选值包括 ``"silence"``、``"error"``、``"warning"``、
-        ``"info"`` 和 ``"debug"``。
+        日志级别字符串。可选值包括 ``"silence"``、``"error"``、``"warning"``、``"info"`` 和 ``"debug"``。
 
-        默认值为 ``"silence"``，表示关闭 ``Atlas`` logger，不输出 scAtlasPy
-        自身日志。
+        默认值为 ``"silence"``，表示关闭 ``Atlas`` logger，不输出 scAtlasPy自身日志。
 
         传入 ``None`` 时也会关闭 ``Atlas`` logger，用于兼容旧版本写法。
 
@@ -113,7 +111,8 @@ def set_verbosity(
 class Atlas:
     """Atlas 数据库对象。
 
-    Atlas 对象管理一个持久化的 DuckDB-backed ``.sasql`` 数据库，保存数据库路径、活动连接，并提供创建、打开、查询、检查、读取和调用 IO 函数的便捷方法。
+    Atlas 对象管理一个持久化的 DuckDB-backed ``.sasql`` 数据库，保存数据库路径、活动连接，
+    并提供创建、打开、查询、检查、读取和调用 IO 函数的便捷方法。
 
     Attributes
     ----------
@@ -157,22 +156,21 @@ class Atlas:
             也可以传入不带后缀的路径；函数会自动补全 ``.sasql`` 后缀。
 
         db_memory_limit
-            DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如
-            ``"4GB"``；也可以传入整数，整数会按 GB 解释，
-            例如 ``4`` 等价于 ``"4GB"``。
+            DuckDB 可使用的内存上限。可以传入 DuckDB 支持的字符串，例如``"4GB"``；
+            也可以传入整数，整数会按 GB 解释，例如 ``4`` 等价于 ``"4GB"``。
 
             默认值为 ``None``。当为 ``None`` 时，会自动获取当前系统物理内存总量，
             并向下取整为整数 GB 后设置为 DuckDB 的内存上限。
             这意味着内存管理由DuckDB自身的引擎负责，而非施加明确的限制。
             例如当前系统内存约为 31.8GB 时，会自动设置为 ``"31GB"``。
 
-            该参数只限制 DuckDB 查询和中间计算使用的内存，不限制
-            Python、NumPy 或 pandas 本身占用的内存。
+            该参数只限制 DuckDB 查询和中间计算使用的内存，
+            不限制Python、NumPy 或 pandas 本身占用的内存。
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            结果直接写入 Atlas 数据库。
 
         Examples
         --------
@@ -201,8 +199,6 @@ class Atlas:
 
         logger.info(f"开始初始化 Atlas 实例，file_name: {self.file_path}")
 
-        # 修改：保留原来的数据库创建 / 连接逻辑
-        # 注意：这里不再设置 verbosity，日志级别完全由 sap.set_verbosity(...) 全局控制
         if not os.path.exists(self.file_path):
             logger.info(f"数据库文件不存在，开始创建新数据库: {self.file_path}")
             try:
@@ -404,8 +400,8 @@ class Atlas:
 
         ``db_memory_limit`` 只限制 DuckDB 查询和中间计算可使用的内存，
         不限制 Python、NumPy 或 pandas 本身占用的内存。
-        如果 ``db_memory_limit`` 是整数，则按 GB 解释，例如 ``4`` 会被转换为
-        ``"4GB"``。
+        如果 ``db_memory_limit`` 是整数，则按 GB 解释，
+        例如 ``4`` 会被转换为``"4GB"``。
 
         Returns
         -------
@@ -943,14 +939,15 @@ class Atlas:
 
         conn = self.__connection
 
-        # 修改：先检查 atlas_read_index_meta 表是否已经存在
+        # 先检查 atlas_read_index_meta 表是否已经存在
         table_exists = conn.execute("""
             SELECT COUNT(*)
             FROM information_schema.tables
             WHERE table_name = 'atlas_read_index_meta'
         """).fetchone()[0]
 
-        # 修改：不存在才新建；存在则不重复建表，并打印提示
+        # 不存在才新建；
+        # 存在则不重复建表，并打印提示
         if table_exists == 0:
             conn.execute("""
                 CREATE TABLE atlas_read_index_meta (
@@ -1049,10 +1046,9 @@ class Atlas:
         x_type
             返回的小批量矩阵格式。常用值为 ``"CSR"`` 或其他函数支持的稀疏矩阵格式。
 
-        Returns
+        Yields
         -------
-        Any
-            函数返回底层实现产生的结果。
+        ``X_batch`` 为 ``float32`` csr 格式的稀疏矩阵格式；
 
         Examples
         --------
@@ -1064,8 +1060,7 @@ class Atlas:
 
         fetcher = MultiThreadedMinibatchFetcher(file_path = self.file_path, x_type = x_type)
         for X_batch in fetcher.run():
-            pass
-            # yield X_batch
+            yield X_batch
 
 
     def get_minibatch_dense(
@@ -1080,20 +1075,14 @@ class Atlas:
 
         该方法基于 ``atlas.build_read_index(...)`` 生成的过滤后读取索引，
         从 ``X_HyS_data_filtered`` / ``X_HyS_indptr_filtered`` 中按批恢复表达矩阵，
-        并把稀疏表达记录转换为 ``float32`` dense array。它主要服务于
-        ``IncrementalPCA``、``MiniBatchKMeans``、流式训练和大数据分批推理等
+        并把稀疏表达记录转换为 ``float32`` dense array。
+        它主要服务于``IncrementalPCA``、``MiniBatchKMeans``、流式训练和大数据分批推理等
         需要 dense 输入的算法。
 
         返回值是一个生成器，会逐批 ``yield`` minibatch，而不是一次性把全部数据读入内存。
-        默认情况下，每次只返回一个 ``X_batch`` 矩阵；当传入 ``get_obs_col`` 时，
-        会额外返回当前 batch 每一行对应的 ``filter_cell_ids``，并根据这些
-        ``filter_cell_ids`` 从 ``obs`` 表中取出指定列，例如 ``kmeans`` 标签。
-
-        ``filter_cell_ids`` 是 ``build_read_index`` 后生成的连续细胞编号，只包含当前
-        读取索引中保留的细胞。它用于保证 ``X_batch[i, :]`` 可以精确对应
-        ``obs.filter_cell_id == filter_cell_ids[i]`` 的那一行元数据。特别是在
-        ``multi-pass`` 模式中，batch 会经过 ``ShuffleBuffer`` 随机打乱；
-        因此标签必须跟随 ``X`` 一起 shuffle，不能在输出后再用 batch 序号临时推算。
+        默认情况下，每次只返回一个 ``X_batch`` 矩阵；
+        当传入 ``get_obs_col`` 时，会额外返回当前 batch 每一行对应的 ``filter_cell_ids``，
+        并根据这些``filter_cell_ids`` 从 ``obs`` 表中取出指定列，例如 ``kmeans`` 标签。
 
         Parameters
         ----------
@@ -1108,11 +1097,9 @@ class Atlas:
         batch_size
             每个 minibatch 包含的细胞数量。较大值通常可以减少 Python 层循环次数、
             提高吞吐，但会增加单批 dense 矩阵的内存占用。输出矩阵形状通常为
-            ``(当前批细胞数, 过滤后基因数)``；最后一个 batch 的细胞数可能小于
-            ``batch_size``。
+            ``(当前批细胞数, 过滤后基因数)``；最后一个 batch 的细胞数可能小于``batch_size``。
         max_batches
             最多读取或输出的 minibatch 数量。为 ``None`` 时：
-
             - 在 ``single-pass`` 模式下遍历当前读取索引中的全部 batch；
             - 在 ``multi-pass`` 模式下不主动限制轮数，通常建议显式传入该参数。
         buffer_batch_num
@@ -1125,14 +1112,11 @@ class Atlas:
             默认为 ``None``，不查询 ``obs`` 表字段，且每次只 ``yield X_batch``。
 
             当传入字段名时，例如 ``get_obs_col="kmeans"``，该方法会自动让底层
-            minibatch 读取器返回 ``filter_cell_ids``，再根据这些 ID 查询
-            ``obs.kmeans``，并返回字典：
+            minibatch 读取器返回 ``filter_cell_ids``，再根据这些 ID 查询``obs.kmeans``，并返回字典：
 
             ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, "kmeans": values}``
 
-            其中 ``X_batch[i, :]``、``filter_cell_ids[i]`` 和 ``values[i]``
-            三者一一对应。该字段必须已经存在于 ``obs`` 表中；如果缺少
-            ``filter_cell_id``，需要先运行 ``atlas.build_read_index(...)``。
+            其中 ``X_batch[i, :]``、``filter_cell_ids[i]`` 和 ``values[i]``三者一一对应。
 
         Yields
         -------
@@ -1145,8 +1129,9 @@ class Atlas:
 
             ``{"X": X_batch, "filter_cell_ids": filter_cell_ids, get_obs_col: values}``
 
-            ``X_batch`` 为 ``float32`` dense 矩阵；``filter_cell_ids`` 为当前 batch
-            每行对应的过滤后细胞 ID；``values`` 为 ``obs`` 表中指定列的值。
+            ``X_batch`` 为 ``float32`` dense 矩阵；
+            ``filter_cell_ids`` 为当前 batch每行对应的过滤后细胞 ID；
+            ``values`` 为 ``obs`` 表中指定列的值。
 
         Examples
         --------
@@ -1336,25 +1321,48 @@ class Atlas:
         load_type: Literal["order", "random"] = "random",
         cells_per_block: int | None = None,
     ) -> Any:
-        """通过 Atlas 对象导入 h5ad 文件。
+        """将 h5ad 文件导入 Atlas 数据库。
 
-        这是底层 h5ad 导入函数的对象式入口，可以用 ``atlas.load_h5ad(...)`` 直接调用。
-        表达矩阵会统一保存为 count 尺度；如果输入 ``X`` 被检测为 log 尺度，会在写入前转回 count。
+        该函数是 h5ad 导入 Atlas 的统一入口。它可以读取单个 ``.h5ad`` 文件，也可以
+        读取多个 ``.h5ad`` 文件组成的列表，并把细胞元数据、基因元数据和表达矩阵
+        写入 Atlas 的 DuckDB 数据库。
+
+        导入时会根据 ``load_type`` 和 ``h5ad_path`` 的类型自动分派到对应实现：
+
+        - 单文件 + ``"order"``：按原始细胞顺序导入；
+        - 单文件 + ``"random"``：按 shuffle-window 方式随机导入；
+        - 多文件 + ``"order"``：按文件列表顺序和文件内细胞顺序导入；
+        - 多文件 + ``"random"``：把多个文件切成 block 后全局随机导入。
+
+        表达矩阵会统一保存为 count 尺度，写入 ``X_HyS_data.data_count`` 字段。
+        如果输入 ``X`` 被检测为 log 尺度，会在写入前转换回 count。
 
         Parameters
         ----------
         h5ad_path
             输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
+        atlas
+            Atlas 对象。函数会通过 ``atlas.connect("r+")`` 获取 DuckDB 连接，并把
+            数据写入该 Atlas 数据库。
         load_type
             导入方式，只支持 ``"order"`` 和 ``"random"``。
-            当 ``h5ad_path`` 是列表时，会自动进入对应的多文件顺序或随机导入逻辑。
+            当 ``h5ad_path`` 是单个路径时，分别执行单文件顺序或随机导入；
+            当 ``h5ad_path`` 是列表时，分别执行多文件顺序或随机导入。
         cells_per_block
-            写入稀疏表达矩阵时每个细胞块包含的细胞数。
+            读取和写入表达矩阵时每个连续 cell block 包含的细胞数量。
+            为 ``None`` 时会根据细胞总数自动估算一个默认值。
 
         Returns
         -------
         Any
-            函数返回底层实现产生的结果。
+            返回所调用底层导入函数的结果。当前主要用于执行导入副作用，通常不依赖
+            返回值。
+
+        Notes
+        -----
+        ``random`` 导入会重排细胞顺序，因此单文件随机导入默认不会导入 ``obsm``，
+        以避免 embedding 与重排后的 ``obs`` 错位；
+        ``order`` 导入会保留原始顺序，因此可以安全导入 ``obsm`` 和 ``varm``。
 
         Examples
         --------
@@ -1363,12 +1371,15 @@ class Atlas:
             atlas = sap.Atlas(r"F:\\data\\pbmc")
             atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
 
-        随机导入多个 h5ad 文件::
+        随机分块导入多个文件::
 
-            atlas.load_h5ad([
-                r"F:\\data\\batch1.h5ad",
-                r"F:\\data\\batch2.h5ad",
-            ], load_type="random")"""
+            atlas.load_h5ad(
+                [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
+                load_type="random",
+                cells_per_block=1000,
+            )
+        """
+
         return _io_load_h5ad(
             h5ad_path,
             self,
@@ -1378,52 +1389,80 @@ class Atlas:
 
 
     def load_anndata(self, adata: AnnData) -> None:
-        """通过 Atlas 对象导入 AnnData。
 
-        这是底层 AnnData 导入函数的对象式入口，用于把内存中的 AnnData 写入当前 Atlas 数据库。
+        """将 AnnData 对象写入 Atlas 数据库。
+
+        该函数直接接收内存中的 AnnData 对象，并把其中的 ``obs``、``var``、
+        ``X``、``obsm`` 和 ``varm`` 写入 Atlas 数据库。适合已经用 Scanpy 或其他
+        工具完成读取、筛选或预处理后，再转入 Atlas 管理的场景。
+
+        与 ``load_h5ad`` 的 backed 分块导入不同，该函数要求 AnnData 已经在内存中，
+        因此更适合中小型数据或已经抽样后的数据。
 
         Parameters
         ----------
         adata
             AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
+        atlas
+            Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            结果直接写入 Atlas 数据库，不返回对象。
+
+        Notes
+        -----
+        该路径会重建 ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表，并把
+        ``obsm``、``varm`` 中的二维数组写成 ``obsm_*``、``varm_*`` 表。
 
         Examples
         --------
-        从 Scanpy 读取 h5ad 后导入 Atlas::
+        从 Scanpy 读取并导入::
 
             adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
             atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.load_anndata(adata)"""
+            atlas.load_anndata(adata)
+        """
 
         return _io_load_anndata(adata, self)
 
 
     def load_multi_format(self, file_path: PathLike[str] | str) -> None:
-        """通过 Atlas 对象导入多格式输入文件。
 
-        这是底层多格式导入函数的对象式入口，用于根据文件后缀选择对应导入流程。
+        """根据文件格式导入数据到 Atlas。
+
+        该函数是小型或通用格式数据的导入入口。它会先根据 ``file_path`` 的后缀
+        调用 ``_read_smart`` 读取为内存 AnnData，然后调用 ``load_anndata`` 写入
+        Atlas 数据库。
+
+        与 ``load_h5ad`` 的 backed 分块导入不同，该函数会先把数据完整读入内存，
+        因此更适合小文件、临时转换或非 h5ad 格式数据。
 
         Parameters
         ----------
         file_path
             输入文件路径。函数会根据文件格式选择合适的读取方式。
+        atlas
+            Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            结果直接写入 Atlas 数据库，不返回对象。
+
+        Notes
+        -----
+        支持的读取格式由 ``_read_smart`` 决定，包括 h5ad、loom、Matrix Market、
+        csv、txt/tsv、Excel、10x h5 和 UMI-tools 等常见格式。
 
         Examples
         --------
-        导入一个支持的输入文件::
+        自动识别并导入文件::
 
             atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")"""
+            atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
+        """
 
         return _io_load_multi_format(file_path, self)
 
@@ -1432,29 +1471,38 @@ class Atlas:
         self,
         gene_name_column: str = "atlas_gene_name",
     ) -> bool | None:
-        """检查基因名称是否重复。
 
-        这是底层基因名重复检查函数的对象式入口，用于检查 ``var`` 中指定基因名称列是否存在重复值。
+        """检查 Atlas 数据库中的基因名是否重复。
+
+        该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名，并为重复项
+        添加 ``_1``、``_2`` 等后缀。重复基因名可能影响按名称绘图、差异基因展示
+        和 AnnData 导出，因此导入后可以运行该函数进行清洗。
+
+        对每个重复基因名，第一次出现的名称保持不变，后续重复项按
+        ``原名_1``、``原名_2`` 的形式重命名。
 
         Parameters
         ----------
+        atlas
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在``var`` 表。
         gene_name_column
             保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
 
         Returns
         -------
-        bool 或 None
-            检查结果。无法完成检查时可能返回 ``None``。
+        bool
+            成功检查或更新时返回 ``True``；如果 ``var`` 表不存在，返回 ``False``。
+
+        Notes
+        -----
+        只有检测到重复基因名时才会更新 ``var`` 表；没有重复时保持原表不变。
 
         Examples
         --------
-        检查默认基因名列::
+        检查默认基因名称列::
 
             atlas.rename_duplicated_genes()
-
-        检查自定义基因名列::
-
-            atlas.rename_duplicated_genes(gene_name_column="gene_symbol")"""
+        """
 
         return _io_rename_duplicated_genes(self, gene_name_column=gene_name_column)
 
@@ -1466,31 +1514,52 @@ class Atlas:
         batch_cells: int = 1_000_000,
         use_data: str = "data_count",
     ) -> None:
-        """通过 Atlas 对象导出 h5ad 文件。
 
-        这是底层 h5ad 导出函数的对象式入口，会把当前 Atlas 数据库中的表达矩阵和元数据导出为 AnnData/h5ad。
+        """将 Atlas 数据库导出为 h5ad 文件。
+
+        该函数从 Atlas 的 DuckDB 数据库读取 ``obs``、``var``、稀疏表达矩阵、
+        ``obsm_*`` 和 ``varm_*`` 结果表，并写出为标准 AnnData ``.h5ad`` 文件，
+        方便继续在 Scanpy 或其他支持 AnnData 的工具中分析。
+
+        表达矩阵会按照 Atlas 内部的 HyS 稀疏结构重新组装为 h5ad 中的 CSR
+        ``X``。其中 ``X.data`` 来自 ``X_HyS_data`` 表中由 ``use_data`` 指定的
+        字段，``X.indices`` 来自 ``atlas_gene_id``，``X.indptr`` 来自
+        ``X_HyS_indptr``。
 
         Parameters
         ----------
+        atlas
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
+            ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表。
         out_h5ad_path
             输出 ``.h5ad`` 文件路径。
         batch_cells
-            导出表达矩阵时每批处理的细胞数。
+            分批写出表达矩阵 ``data`` 和 ``indices`` 时每批处理的非零表达记录数量。
+            较大的值通常更快，但会增加单批内存占用。
         use_data
             从 ``X_HyS_data`` 表中导出的表达值字段名，默认使用 ``"data_count"``。
+            也可以传入 ``"data_log1p"``、``"data_normalize"`` 等已经存在的字段。
 
         Returns
         -------
         None
-            结果直接写入 Atlas 数据库或当前图形窗口。
+            结果直接写入 ``out_h5ad_path`` 指定的 h5ad 文件，不返回对象。
+
+        Notes
+        -----
+        ``obsm_*`` 表会导出到 h5ad 的 ``obsm``，表名中的 ``obsm_`` 前缀会被去掉；
+        ``varm_*`` 表会导出到 h5ad 的 ``varm``，表名中的 ``varm_`` 前缀会被去掉。
+
+        导出前会检查 ``use_data`` 是否存在于 ``X_HyS_data`` 表中；不存在时会直接
+        抛出中文错误，避免导出空矩阵或错误字段。
 
         Examples
         --------
-        导出为 h5ad 文件::
+        导出当前数据库::
 
             atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
 
-        使用较小批次降低内存占用::
+        使用对象式 API 并降低单批内存占用::
 
             atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
 
@@ -1510,29 +1579,41 @@ class Atlas:
         self,
         columns: list[str] | str | None = None,
     ) -> pd.DataFrame:
-        """通过 Atlas 对象读取 obs 表。
 
-        这是底层 ``obs`` 读取函数的对象式入口，用于把 ``obs`` 表中的指定列读取为 DataFrame。
+        """读取 Atlas 数据库中的 obs 表。
+
+        该函数把 ``obs`` 表中的全部列或指定列读取为 pandas DataFrame，适合快速
+        检查细胞元数据、导出统计结果或与外部分析结果合并。
+        返回结果会以``atlas_cell_id`` 作为 pandas index，同时保留 ``atlas_cell_id`` 列本身。
 
         Parameters
         ----------
+        atlas
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在
+            ``obs`` 表。
         columns
             需要从 ``obs`` 中读取的列名。可以是单个字符串、字符串列表或 ``None``。
+            为 ``None`` 时读取全部列。
 
         Returns
         -------
         pandas.DataFrame
-            包含查询、统计或绘图所需数据的表格。
+            ``obs`` 的查询结果。默认 index 为 ``atlas_cell_id``。
+
+        Notes
+        -----
+        即使 ``columns`` 中没有显式包含 ``atlas_cell_id``，函数也会自动把
+        ``atlas_cell_id`` 放在第一列，用于设置 DataFrame index。
 
         Examples
         --------
-        读取全部 ``obs`` 列::
+        读取全部 obs 信息::
 
             obs = atlas.get_obs_df()
 
-        只读取聚类和 QC 列::
+        只读取聚类和自动注释列::
 
-            obs = atlas.get_obs_df(columns=["kmeans", "n_genes_by_counts", "pct_counts_mt"])"""
+            obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
 
         return _io_get_obs_df(self, columns=columns)
 
@@ -1544,19 +1625,29 @@ class Atlas:
         include_obsm: bool = True,
         include_varm: bool = True,
     ) -> AnnData:
-        """通过 Atlas 对象构建 AnnData。
 
-        该函数不是遍历函数，仅用于取用较小的数据子集；
+        """从 Atlas 数据库构建 AnnData 对象。
 
-        这是底层 AnnData 构建函数的对象式入口，用于从 Atlas 数据库读取指定细胞、表达矩阵和 embedding，构建内存中的 AnnData 对象。
+        该函数根据用户提供的 ``atlas_cell_ids`` 从 Atlas 数据库中导出一个内存
+        AnnData 对象。函数会保留输入细胞 ID 的顺序，读取对应的 ``obs`` 子集、
+        全量 ``var``、指定表达字段组成的稀疏 CSR ``X``，并可选读取 ``obsm_*`` 和
+        ``varm_*`` 结果表。
+
+        该函数适合小规模抽样导出、局部 Scanpy 分析、模型检查或把 Atlas 中的一组
+        细胞临时转换回 AnnData。
 
         Parameters
         ----------
+        atlas
+            Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中至少包含
+            ``obs``、``var`` 和 ``X_HyS_data`` 表。
         atlas_cell_ids
-            需要导出的 Atlas 细胞 ID 列表；为 ``None`` 时通常导出当前索引对应的全部细胞。
+            需要导出的 Atlas 细胞 ID 列表。不能为空，且不能包含重复值。
+
+            返回 AnnData 中细胞的顺序会与该列表顺序一致。
         use_data
-            读取的表达矩阵或结果表名称。常用值包括 ``"data_count"``、``"data_normalize"``、``"data_log1p"`` 和
-            ``"data_scale"``。
+            从 ``X_HyS_data`` 表读取的表达字段名。常用值包括 ``"data_count"``、
+            ``"data_normalize"``、``"data_log1p"`` 和 ``"data_scale"``。
         include_obsm
             是否把 ``obsm_*`` 结果表写入返回的 AnnData。
         include_varm
@@ -1567,16 +1658,27 @@ class Atlas:
         AnnData
             从 Atlas 数据库构建的 AnnData 对象。
 
+        Notes
+        -----
+        ``obsm_*`` 表会按所选细胞顺序左连接导出；某些细胞没有 embedding 时，对应
+        位置会写入 ``NaN``。``varm_*`` 表按全量基因顺序导出。
+
+        该函数会创建临时表 ``_selected_cells``，用于保留用户传入的细胞顺序。
+
         Examples
         --------
-        导出前 1000 个细胞为 AnnData::
+        导出指定细胞::
 
-            cell_ids = atlas.query("SELECT atlas_cell_id FROM obs LIMIT 1000")["atlas_cell_id"]
-            adata = atlas.get_anndata(cell_ids.tolist(), use_data="data_log1p")
+            cell_ids = [0, 1, 2, 3]
+            adata = atlas.get_anndata(cell_ids, use_data="data_log1p")
 
-        导出当前过滤索引中的全部细胞::
+        导出过滤后的前 5000 个细胞并包含 UMAP/PCA::
 
-            adata = atlas.get_anndata(None, include_obsm=True)"""
+            cell_ids = atlas.query(
+                "SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000"
+            )["atlas_cell_id"].tolist()
+            adata = atlas.get_anndata(cell_ids, include_obsm=True, include_varm=True)
+        """
 
         return _io_get_anndata(
             self,

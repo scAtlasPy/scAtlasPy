@@ -34,12 +34,16 @@ def test_real_tahoe_h5ad_import_streaming_and_downstream(
     ).MiniBatchKMeans
 
     import_mode = os.environ.get("SCATLASPY_REALDATA_IMPORT", "order")
+    if import_mode not in {"order", "random"}:
+        raise ValueError("SCATLASPY_REALDATA_IMPORT 只能是 order 或 random")
+
+    multi_file_import = os.environ.get("SCATLASPY_REALDATA_MULTI_FILE", "0") == "1"
     cells_per_block = int(os.environ.get("SCATLASPY_REALDATA_CELLS_PER_BLOCK", "1000"))
     blocks_per_pool = int(os.environ.get("SCATLASPY_REALDATA_BLOCKS_PER_POOL", "4"))
     batch_size = int(os.environ.get("SCATLASPY_REALDATA_BATCH_SIZE", "4096"))
     max_train_batches = int(os.environ.get("SCATLASPY_REALDATA_TRAIN_BATCHES", "4"))
 
-    if import_mode == "list_random":
+    if multi_file_import:
         selected_paths = paths
         expected_cells = sum(h5ad_shape(path)[0] for path in selected_paths)
         expected_genes = h5ad_shape(selected_paths[0])[1]
@@ -72,7 +76,7 @@ def test_real_tahoe_h5ad_import_streaming_and_downstream(
     atlas.connection.execute(
         "ALTER TABLE var ADD COLUMN IF NOT EXISTS zero_scale_transform REAL DEFAULT 0.0"
     )
-    atlas.build_read_index(use_hvg=False, use_data="data")
+    atlas.build_read_index(use_hvg=False, use_data="data_count")
 
     rows = 0
     n_batches = 0

@@ -96,11 +96,11 @@ class FilterIndexBuilder:
 
         self.file_path = fspath(file_path)       # sasql 文件绝对路径
         self.producer_num = 10           # minibatch 流式读取的线程数
-        self.fetch_size = 1_0000_0000    # minibatch 流式读取的size
-        self.chunk_size = 2_0000_0000    # 每次处理的数据量
+        self.fetch_size = 500_0000    # minibatch 流式读取的size
+        self.chunk_size = 1000_0000    # 每次处理的数据量
 
-        self.cell_condition = cell_condition # cell 过滤条件 filter_cells 表示只选 filter_cells = True 的cell
-        self.gene_condition = gene_condition # gene 过滤条件 filter_genes 表示只选 filter_genes = True 的gene
+        self.cell_condition = cell_condition # cell 过滤条件 filter_cells ：表示只选 filter_cells = True 的cell
+        self.gene_condition = gene_condition # gene 过滤条件 filter_genes ：表示只选 filter_genes = True 的gene
         self.use_hvg = use_hvg               # 是否 使用hvg基因
         self.use_data = use_data       # 选择什么数据进行处理
 

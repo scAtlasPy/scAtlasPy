@@ -37,7 +37,13 @@ def test_round_trip_preserves_shape_metadata_values_and_reopen(
     atlas = sap.Atlas(atlas_path)
     atlas.load_anndata(adata)
     ids = _all_cell_ids(atlas)
-    out = atlas.get_anndata(ids, use_data="data", include_obsm=False, include_varm=False)
+    out = atlas.get_anndata(ids, use_data="data_count", include_obsm=False, include_varm=False)
+
+    x_cols = {
+        row[1] for row in atlas.connection.execute("PRAGMA table_info(X_HyS_data)").fetchall()
+    }
+    assert "data_count" in x_cols
+    assert "data" not in x_cols
 
     assert out.shape == adata.shape
     assert out.obs["atlas_cell_name"].tolist() == list(adata.obs_names)
@@ -48,7 +54,7 @@ def test_round_trip_preserves_shape_metadata_values_and_reopen(
     reopened = sap.Atlas(atlas_path)
     reopened_ids = _all_cell_ids(reopened)
     reopened_out = reopened.get_anndata(
-        reopened_ids, use_data="data", include_obsm=False, include_varm=False
+        reopened_ids, use_data="data_count", include_obsm=False, include_varm=False
     )
     _assert_dense_equal(reopened_out.X.toarray(), adata.X.toarray())
     reopened.close()
@@ -61,7 +67,7 @@ def test_nan_values_are_preserved_as_known_future_contract(atlas_path):
     atlas = sap.Atlas(atlas_path)
     atlas.load_anndata(adata)
     out = atlas.get_anndata(
-        _all_cell_ids(atlas), use_data="data", include_obsm=False, include_varm=False
+        _all_cell_ids(atlas), use_data="data_count", include_obsm=False, include_varm=False
     )
     _assert_dense_equal(out.X.toarray(), adata.X.toarray())
     atlas.close()
@@ -77,7 +83,7 @@ def test_non_contiguous_cell_selection_preserves_requested_order(atlas_path):
 
     requested = [7, 1, 10, 3]
     out = atlas.get_anndata(
-        requested, use_data="data", include_obsm=False, include_varm=False
+        requested, use_data="data_count", include_obsm=False, include_varm=False
     )
 
     assert out.obs["atlas_cell_id"].astype(int).tolist() == requested
@@ -96,7 +102,7 @@ def test_contiguous_slice_matches_source_matrix(atlas_path):
     start, end = 4, 11
     requested = list(range(start, end))
     out = atlas.get_anndata(
-        requested, use_data="data", include_obsm=False, include_varm=False
+        requested, use_data="data_count", include_obsm=False, include_varm=False
     )
 
     _assert_dense_equal(out.X.toarray(), adata.X[start:end].toarray())
@@ -121,7 +127,7 @@ def test_cell_and_gene_filtering_reindexes_data_and_metadata(atlas_path):
         cell_condition="keep_cell",
         gene_condition="keep_gene",
         use_hvg=False,
-        use_data="data",
+        use_data="data_count",
     )
 
     filtered = conn.execute(
@@ -165,7 +171,7 @@ def test_database_copy_is_portable(tmp_path):
     shutil.copy2(source, copied)
     reopened = sap.Atlas(copied)
     out = reopened.get_anndata(
-        ids, use_data="data", include_obsm=False, include_varm=False
+        ids, use_data="data_count", include_obsm=False, include_varm=False
     )
     _assert_dense_equal(out.X.toarray(), adata.X.toarray())
     reopened.close()

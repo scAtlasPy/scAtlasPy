@@ -35,26 +35,46 @@ def load_h5ad(
 ) -> Any:
     """将 h5ad 文件导入 Atlas 数据库。
 
-    该函数读取一个或多个 ``.h5ad`` 文件，并把细胞信息、基因信息和表达矩阵写入 Atlas 的 DuckDB 数据库。它类似 Scanpy 的 ``sc.read_h5ad`` 加对象保存流程，但面向大规模数据采用分块写入。
-    表达矩阵默认统一保存为 count 尺度；如果输入 ``X`` 被检测为 log 尺度，会在写入前转回 count。
+    该函数是 h5ad 导入 Atlas 的统一入口。它可以读取单个 ``.h5ad`` 文件，也可以
+    读取多个 ``.h5ad`` 文件组成的列表，并把细胞元数据、基因元数据和表达矩阵
+    写入 Atlas 的 DuckDB 数据库。
+
+    导入时会根据 ``load_type`` 和 ``h5ad_path`` 的类型自动分派到对应实现：
+
+    - 单文件 + ``"order"``：按原始细胞顺序导入；
+    - 单文件 + ``"random"``：按 shuffle-window 方式随机导入；
+    - 多文件 + ``"order"``：按文件列表顺序和文件内细胞顺序导入；
+    - 多文件 + ``"random"``：把多个文件切成 block 后全局随机导入。
+
+    表达矩阵会统一保存为 count 尺度，写入 ``X_HyS_data.data_count`` 字段。
+    如果输入 ``X`` 被检测为 log 尺度，会在写入前转换回 count。
 
     Parameters
     ----------
     h5ad_path
         输入 ``.h5ad`` 文件路径，或多个 ``.h5ad`` 文件路径组成的列表。
     atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
+        Atlas 对象。函数会通过 ``atlas.connect("r+")`` 获取 DuckDB 连接，并把
+        数据写入该 Atlas 数据库。
     load_type
         导入方式，只支持 ``"order"`` 和 ``"random"``。
         当 ``h5ad_path`` 是单个路径时，分别执行单文件顺序或随机导入；
         当 ``h5ad_path`` 是列表时，分别执行多文件顺序或随机导入。
     cells_per_block
-        写入稀疏表达矩阵时每个细胞块包含的细胞数。
+        读取和写入表达矩阵时每个连续 cell block 包含的细胞数量。
+        为 ``None`` 时会根据细胞总数自动估算一个默认值。
 
     Returns
     -------
     Any
-        函数返回底层实现产生的结果。
+        返回所调用底层导入函数的结果。当前主要用于执行导入副作用，通常不依赖
+        返回值。
+
+    Notes
+    -----
+    ``random`` 导入会重排细胞顺序，因此单文件随机导入默认不会导入 ``obsm``，
+    以避免 embedding 与重排后的 ``obs`` 错位；
+    ``order`` 导入会保留原始顺序，因此可以安全导入 ``obsm`` 和 ``varm``。
 
     Examples
     --------
@@ -161,7 +181,239 @@ def load_h5ad(
     return None
 
 
-''' 方法1 ： 随机读取 , 多个大文件, 只支持 h5ad格式 '''
+# 将 AnnData 对象写入 Atlas 数据库
+def load_anndata(adata:AnnData, atlas:Atlas):
+
+    """将 AnnData 对象写入 Atlas 数据库。
+
+    该函数直接接收内存中的 AnnData 对象，并把其中的 ``obs``、``var``、
+    ``X``、``obsm`` 和 ``varm`` 写入 Atlas 数据库。适合已经用 Scanpy 或其他
+    工具完成读取、筛选或预处理后，再转入 Atlas 管理的场景。
+
+    与 ``load_h5ad`` 的 backed 分块导入不同，该函数要求 AnnData 已经在内存中，
+    因此更适合中小型数据或已经抽样后的数据。
+
+    Parameters
+    ----------
+    adata
+        AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
+    atlas
+        Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
+
+    Notes
+    -----
+    该路径会重建 ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data`` 表，并把
+    ``obsm``、``varm`` 中的二维数组写成 ``obsm_*``、``varm_*`` 表。
+
+    Examples
+    --------
+    从 Scanpy 读取并导入::
+
+        adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas.load_anndata(adata)
+    """
+
+    try:
+        logger.info("准备数据表...")
+
+        if hasattr(adata, 'obs'):
+            _add_obs(adata, atlas)  # 细胞表数据（对应obs）,
+        else:
+            logger.info("Skipping obs layer")
+
+        if hasattr(adata, 'var'):
+            _add_var(adata, atlas)  # 基因表数据（对应var）
+        else:
+            logger.info("Skipping var layer")
+
+        if hasattr(adata, 'X'):
+            start_time = time.time()
+            _add_x_hys_chunked(adata, atlas, chunk_size=500) # 分块导入X表数据
+            end_time = time.time()
+            logger.info(" X表的导入用时为： " + str(end_time - start_time))
+        else:
+            logger.info("Skipping X layer")
+
+        if hasattr(adata, 'obsm'):
+            _add_obsm(adata,atlas)
+        else:
+            logger.info("Skipping obsm layer")
+
+        if hasattr(adata, 'varm'):
+            _add_varm(adata,atlas)
+        else:
+            logger.info("Skipping varm layer")
+
+        # 显示表结构
+        logger.debug("数据库表结构:")
+        tables = atlas.connection.execute("SHOW TABLES")
+        if tables:
+            logger.debug(f"数据库中的表: {tables}")
+
+        logger.info("AnnData数据成功加载到数据库")
+
+    except Exception as e:
+        logger.error(f"加载数据失败: {str(e)}")
+        logger.exception("加载数据异常详情:")
+        raise
+
+
+# 顺序读取，小文件读取，支持多种数据格式的导入
+def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
+
+    """根据文件格式导入数据到 Atlas。
+
+    该函数是小型或通用格式数据的导入入口。它会先根据 ``file_path`` 的后缀
+    调用 ``_read_smart`` 读取为内存 AnnData，然后调用 ``load_anndata`` 写入
+    Atlas 数据库。
+
+    与 ``load_h5ad`` 的 backed 分块导入不同，该函数会先把数据完整读入内存，
+    因此更适合小文件、临时转换或非 h5ad 格式数据。
+
+    Parameters
+    ----------
+    file_path
+        输入文件路径。函数会根据文件格式选择合适的读取方式。
+    atlas
+        Atlas 对象。要求对象已经连接或可连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
+
+    Notes
+    -----
+    支持的读取格式由 ``_read_smart`` 决定，包括 h5ad、loom、Matrix Market、
+    csv、txt/tsv、Excel、10x h5 和 UMI-tools 等常见格式。
+
+    Examples
+    --------
+    自动识别并导入文件::
+
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
+    """
+
+    start_time = datetime.now()
+    adata = _read_smart(file_path)
+    load_anndata(adata, atlas)
+    logger.info(f"load_multi_format Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+
+
+# 检查 Atlas 数据库中的基因名是否重复
+def rename_duplicated_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+    """检查 Atlas 数据库中的基因名是否重复。
+
+    该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名，并为重复项
+    添加 ``_1``、``_2`` 等后缀。重复基因名可能影响按名称绘图、差异基因展示
+    和 AnnData 导出，因此导入后可以运行该函数进行清洗。
+
+    对每个重复基因名，第一次出现的名称保持不变，后续重复项按
+    ``原名_1``、``原名_2`` 的形式重命名。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库，并且数据库中存在``var`` 表。
+    gene_name_column
+        保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
+
+    Returns
+    -------
+    bool
+        成功检查或更新时返回 ``True``；如果 ``var`` 表不存在，返回 ``False``。
+
+    Notes
+    -----
+    只有检测到重复基因名时才会更新 ``var`` 表；没有重复时保持原表不变。
+
+    Examples
+    --------
+    检查默认基因名称列::
+
+        atlas.rename_duplicated_genes()
+    """
+    logger.info(f" 开始在数据库 var表 中清洗基因名 ")
+
+    # 检查表是否存在
+    tables = atlas.connection.execute("SHOW TABLES").df()
+    if 'var' not in tables['name'].values:
+        logger.error("var表 不存在，请先导入数据")
+        return False
+
+    logger.info("开始添加后缀模式...")
+
+    # 1. 构建带后缀的临时 var 表（var_with_suffix）
+    atlas.connection.execute(f"""
+        CREATE OR REPLACE TEMPORARY TABLE var_with_suffix AS
+        WITH ranked_genes AS (
+            SELECT *,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY {gene_name_column}
+                       ORDER BY atlas_gene_id
+                   ) AS rn
+            FROM var
+        )
+        SELECT
+            atlas_gene_id,
+            CASE
+                WHEN rn = 1 THEN {gene_name_column} -- 第一个出现的基因名保持不变
+                ELSE {gene_name_column} || '_' || (rn - 1)::VARCHAR -- 后续重复基因添加后缀：gene_1, gene_2, ...
+            END AS {gene_name_column}
+        FROM ranked_genes
+        ORDER BY atlas_gene_id
+    """)
+
+    # 创建带后缀的基因名临时表 var_with_suffix
+    # atlas_gene_id | atlas_gene_name
+    # ---|---------
+    # 1  | TP53     -- 第一个TP53保持原名
+    # 2  | EGFR     -- EGFR只有一个，保持原名
+    # 3  | TP53_1   -- 第二个TP53添加_1后缀
+    # 4  | BRAF     -- BRAF只有一个，保持原名
+    # 5  | TP53_2   -- 第三个TP53添加_2后缀
+
+    # 2. 记录 atlas_gene_name 实际发生变化的映射关系（仅用于日志）
+    gene_mapping = atlas.connection.execute(f"""
+        SELECT
+            v.{gene_name_column}  AS original_gene_name,
+            vs.{gene_name_column} AS new_gene_name
+        FROM var v
+        JOIN var_with_suffix vs
+            ON v.atlas_gene_id = vs.atlas_gene_id
+        WHERE v.{gene_name_column} != vs.{gene_name_column}
+    """).df()
+    # 获取基因名映射关系。gene_mapping数据框
+    #    original_gene_name  new_gene_name
+    # 0              TP53       TP53_1
+    # 1              TP53       TP53_2
+
+    # 3.  根据是否存在重复基因输出不同日志
+    if len(gene_mapping) > 0:
+        logger.info(
+            f"发现 {len(gene_mapping)} 个重复基因，已成功添加后缀"
+        )
+    else:
+        logger.info("未发现重复基因，var 表保持不变")
+
+    # 4. 更新var表
+    if(len(gene_mapping)>0):
+        atlas.connection.execute("DROP TABLE var")
+        atlas.connection.execute("ALTER TABLE var_with_suffix RENAME TO var")
+        atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+        logger.info("var表已更新")
+
+    logger.info("rename_duplicated_genes Done")
+    return True
+
+
 def _load_h5ad_list_random(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
@@ -172,12 +424,13 @@ def _load_h5ad_list_random(
 ):
     """随机导入多个 h5ad 文件到 Atlas 数据库。
 
-    该函数先把每个 h5ad 文件按 ``cells_per_block`` 切成连续 block，再把所有文件的 block 合并到全局 block pool
-    中随机打乱。
+    该内部函数用于多文件 ``load_type="random"`` 场景。它会先把每个 h5ad 文件
+    按 ``cells_per_block`` 切成连续 block，再把所有文件的 block 合并到全局
+    block pool 中随机打乱。
 
-    每次读取 ``blocks_per_pool`` 个 block 后，会合并为 cell pool，对 pool 内细胞整体随机一次，然后写入
-    ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data``。
-    表达矩阵会统一以 count 尺度写入。
+    每次读取 ``blocks_per_pool`` 个 block 后，会合并为 cell pool，对 pool 内
+    细胞整体随机一次，然后写入 ``obs``、``var``、``X_HyS_indptr`` 和
+    ``X_HyS_data``。表达矩阵会统一转换并保存为 count 尺度。
 
     该策略适合多个文件大小不一致的场景，既避免 round-robin 后期只剩大文件，也减少 h5ad cell-level 随机 IO。
 
@@ -187,8 +440,7 @@ def _load_h5ad_list_random(
         一个或多个 h5ad 文件路径。
 
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。函数会连接并写入对应 DuckDB 数据库。
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
@@ -199,18 +451,19 @@ def _load_h5ad_list_random(
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
 
     Notes
     -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    该函数会根据 Atlas 的 ``db_memory_limit`` 和样本估算的单细胞内存占用动态
+    估算 ``blocks_per_pool``，以控制 shuffle window 的内存峰值。
 
     Examples
     --------
-    调用该函数：::
+    内部随机导入多个文件::
 
-        _load_h5ad_fast_random(...)  # internal helper
+        _load_h5ad_list_random([path1, path2], atlas, cells_per_block=1000)
     """
 
 
@@ -367,33 +620,29 @@ def _load_h5ad_list_random(
         # 多个 block 读到的 batch 合并后写入数据库；随机模式会先整体打乱 cell 顺序。
         def _flush_cell_pool(cell_pool: list[AnnData], flush_i: int):
 
-            """执行 ``_flush_cell_pool`` 的核心功能。
+            """合并并写入当前多文件导入的 cell pool。
 
-            该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-            把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-            ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-            它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-            当前实现中会访问或生成的关键表包括：``obs``、``var``。
+            该嵌套 helper 用于 ``_load_h5ad_list_random`` 和
+            ``_load_h5ad_list_order`` 的共享主体。函数会把当前 pool 中多个
+            AnnData block 的 ``X``、``obs`` 和 ``var`` 合并起来；随机模式下会在
+            pool 内再次打乱细胞顺序；随后把结果写入 ``obs``、``var``、
+            ``X_HyS_indptr`` 和 ``X_HyS_data``。
 
             Parameters
             ----------
             cell_pool
                 当前 flush 中收集到的 AnnData block 列表。
-
             flush_i
                 当前 flush 的编号，用于日志输出。
 
             Returns
             -------
-            result
-                函数返回结果。具体类型取决于参数设置和内部执行路径。
+            tuple[int, int]
+                当前 pool 写入的细胞数量和非零表达记录数量。
 
             Notes
             -----
-            这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+            ``var`` 表只会在第一次 flush 时写入；后续 flush 只追加细胞和表达矩阵。
             """
             nonlocal global_cell_id
             nonlocal global_indptr_id
@@ -645,7 +894,6 @@ def _load_h5ad_list_random(
             pass
 
 
-''' 方法2 ： 顺序读取 , 多个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_list_order(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
@@ -656,6 +904,25 @@ def _load_h5ad_list_order(
     该函数复用多文件导入主体，但关闭全局 block 打乱和 cell pool 内部打乱，
     因此写入顺序与 ``h5ad_paths`` 的顺序以及每个文件内部的细胞顺序一致。
     表达矩阵会统一以 count 尺度写入。
+
+    Parameters
+    ----------
+    h5ad_paths
+        一个或多个 h5ad 文件路径。
+    atlas
+        Atlas 对象。函数会连接并写入对应 DuckDB 数据库。
+    cells_per_block
+        每个连续 cell block 的细胞数量。为 ``None`` 时根据总细胞数自动估算。
+
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
+
+    Notes
+    -----
+    该函数通过调用 ``_load_h5ad_list_random`` 并设置
+    ``shuffle_blocks=False``、``shuffle_cells=False`` 实现最小化重复逻辑。
     """
     return _load_h5ad_list_random(
         h5ad_paths=h5ad_paths,
@@ -666,7 +933,6 @@ def _load_h5ad_list_order(
     )
 
 
-''' 方法3 ： 随机读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
@@ -674,8 +940,9 @@ def _load_h5ad_random(
 ):
     """以 shuffle-window 方式随机导入单个 h5ad 文件。
 
-    该函数把 backed h5ad 文件切成连续 block，随机打乱 block 顺序，并把多个 block 合并成一个 shuffle
-    window。
+    该内部函数用于单文件 ``load_type="random"`` 场景。它以 backed 模式打开
+    h5ad 文件，将文件切成连续 block，随机打乱 block 顺序，并把多个 block
+    合并成一个 shuffle window。
 
     每个 window 内的细胞会整体随机打乱，再批量写入 Atlas 数据库，从而在控制内存占用的同时获得随机导入顺序。
     表达矩阵会统一以 count 尺度写入。
@@ -688,21 +955,26 @@ def _load_h5ad_random(
         h5ad 文件路径。
 
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。函数会连接并写入对应 DuckDB 数据库。
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
+
     Notes
     -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    随机导入会重排细胞顺序，因此该函数默认不导入 ``obsm``；``varm`` 与基因
+    维度对齐，不受细胞重排影响，会正常导入。
 
     Examples
     --------
-    调用该函数：::
+    内部随机导入单个文件::
 
-        _load_h5ad_random(...)  # internal helper
+        _load_h5ad_random(path, atlas, cells_per_block=1000)
     """
 
     h5ad_path = os.fspath(h5ad_path)
@@ -945,7 +1217,6 @@ def _load_h5ad_random(
     t_end = time.time()
 
 
-''' 方法4 ： 顺序读取 , 单个大文件, 只支持 h5ad格式 '''
 def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
@@ -954,8 +1225,9 @@ def _load_h5ad_order(
 
     """按原始细胞顺序导入单个 h5ad 文件。
 
-    该函数以 backed 模式顺序读取 h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
-    表达矩阵会统一以 count 尺度写入。
+    该内部函数用于单文件 ``load_type="order"`` 场景。它以 backed 模式顺序读取
+    h5ad，把数据按 mega-batch 载入内存，再拆成较小 batch 写入 Atlas。
+    表达矩阵会统一转换并保存为 count 尺度。
 
     与随机导入不同，它不会打乱细胞顺序，因此可以安全导入 ``obsm`` 和 ``varm``，适合需要保留原始 AnnData 行顺序的场景。
 
@@ -965,21 +1237,26 @@ def _load_h5ad_order(
         h5ad 文件路径。
 
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。函数会连接并写入对应 DuckDB 数据库。
 
     cells_per_block
         每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
 
+    Returns
+    -------
+    None
+        结果直接写入 Atlas 数据库，不返回对象。
+
     Notes
     -----
-    导入导出过程可能涉及较大的磁盘 IO 和内存占用，可根据数据规模调整 batch、chunk 或 worker 参数。
+    ``cells_per_block`` 会参与内存窗口估算。顺序导入中估算出的
+    ``window_cells`` 会作为 ``mega_batch_size`` 使用。
 
     Examples
     --------
-    调用该函数：::
+    内部顺序导入单个文件::
 
-        _load_h5ad_order(...)  # internal helper
+        _load_h5ad_order(path, atlas, cells_per_block=1000)
     """
     commit_every = 5
     gc_every = 5
@@ -1138,43 +1415,7 @@ def _load_h5ad_order(
         pass
 
 
-''' 方法5： 顺序读取，小文件读取，支持多种数据格式的导入 '''
-def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
-
-    """根据文件格式导入数据到 Atlas。
-
-    该函数是多格式输入入口，会根据 ``file_path`` 的后缀选择合适的读取方式。目前常用于把 h5ad 或未来扩展的矩阵格式导入同一个 Atlas 数据库。
-
-    Parameters
-    ----------
-    file_path
-        输入文件路径。函数会根据文件格式选择合适的读取方式。
-    atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
-
-    Returns
-    -------
-    None
-        结果直接写入 Atlas 数据库或当前图形窗口。
-
-    Examples
-    --------
-    自动识别并导入文件::
-
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
-        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
-
-    使用对象式 API::
-
-        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")"""
-
-    start_time = datetime.now()
-    adata = _read_smart(file_path)
-    load_anndata(adata, atlas)
-    logger.info(f"load_multi_format Done, 耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
-
-
-# 将计算结果写入数据库表
+# 将一个 shuffle window 合并并写入 DuckDB
 def _write_shuffle_window_to_duckdb(
     window_adatas: list[AnnData],
     conn: DuckDBPyConnection,
@@ -1185,49 +1426,46 @@ def _write_shuffle_window_to_duckdb(
     var_written: bool,
     source_x_scale: XScale,
 ):
-    """将计算结果写入数据库表。
+    """将一个 shuffle window 写入 Atlas 数据库。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+    该内部函数用于随机导入流程。它接收一个 window 中收集到的多个 AnnData
+    block，先合并为一个 AnnData，再在 window 内随机打乱细胞顺序，然后依次
+    写入 ``obs``、``var``、``X_HyS_indptr`` 和 ``X_HyS_data``。
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+    写入表达矩阵前，函数会根据 ``source_x_scale`` 把 ``adata.X`` 统一转换为
+    count 尺度，最终写入 ``X_HyS_data.data_count`` 字段。
 
     Parameters
     ----------
     window_adatas
         一个 shuffle window 中收集到的 AnnData block 列表。
-
     conn
         DuckDB 数据库连接。
-
     global_cell_id
         下一个待写入的全局 ``atlas_cell_id``。
-
     global_indptr_id
         下一个待写入的 indptr 行 ID。
-
     global_indptr_offset
         当前已经累计写入的非零值数量，用于重定位 indptr。
-
     global_data_id
         下一个待写入的 ``X_HyS_data.id``。
-
     var_written
         是否已经写入 ``var`` 表。
-
     source_x_scale
-        输入表达矩阵当前的尺度。
+        输入表达矩阵当前的尺度，通常为 ``"count"`` 或 ``"log"``。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    tuple
+        返回更新后的全局游标和 window 统计信息，顺序为：
+
+        ``global_cell_id``、``global_indptr_id``、``global_indptr_offset``、
+        ``global_data_id``、``var_written``、``window_cells``、``window_nnz``。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    ``var`` 表只在第一个 window 写入一次；后续 window 只追加 ``obs`` 和表达
+    矩阵相关表。
     """
 
     # 1. 合并 window 内的多个 batch
@@ -1299,9 +1537,6 @@ def _write_shuffle_window_to_duckdb(
     )
 
 
-# 读取 Atlas 对象中的内存限制参数。
-# 该函数主要用于 h5ad 导入时，根据 Atlas 初始化时设置的 db_memory_limit
-# 自动估算一次导入窗口 window_cells 和 blocks_per_pool。
 def _get_atlas_memory_limit(atlas: Atlas) -> str | int | None:
     """获取 Atlas 对象中保存的内存限制参数。
 
@@ -1454,7 +1689,6 @@ def _parse_memory_limit_to_bytes(memory_limit: str | int | None) -> int | None:
     return int(value * 1024 ** 3)
 
 
-# 读取部分细胞，同时判断 X 的尺度并估算每个细胞的内存占用
 def _inspect_x_from_backed(
     adata_backed: AnnData,
     sample_n: int = 5000,
@@ -1619,7 +1853,6 @@ def _inspect_x_from_backed(
     }
 
 
-# 根据内存限制估算导入窗口大小和 blocks_per_pool
 def _estimate_window_cells_and_blocks_per_pool(
     *,
     memory_limit: str | int | None,
@@ -1767,20 +2000,17 @@ def _detect_x_scale_from_backed(
 ) -> XScale:
     """检测输入表达矩阵的存储尺度。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+    该内部函数是 ``_inspect_x_from_backed`` 的轻量包装，只返回 X 的尺度判断
+    结果。它会从 backed AnnData 中预读取部分细胞，根据非零表达值的最大值、
+    分位数和低值比例判断输入更像 count 数据还是 log 数据。
 
     Parameters
     ----------
     adata_backed
         以 backed 模式打开的 AnnData 对象。
-
     sample_n
-        抽样细胞数量；为 ``None`` 时通常使用全部可用细胞。
+        用于预检测的细胞数量。实际读取数量为
+        ``min(sample_n, adata_backed.n_obs)``。
 
     Returns
     -------
@@ -1789,7 +2019,8 @@ def _detect_x_scale_from_backed(
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    该函数不修改 AnnData，也不写入数据库；真正的转换由
+    ``_convert_x_to_count_inplace`` 完成。
     """
 
     x_info = _inspect_x_from_backed(
@@ -1801,6 +2032,29 @@ def _detect_x_scale_from_backed(
 
 
 def _normalize_cells_per_block(cells_per_block, n_cells):
+    """规范化导入时的 cell block 大小。
+
+    该内部函数用于 ``load_h5ad`` 及其底层导入流程。用户没有显式指定
+    ``cells_per_block`` 时，函数会根据总细胞数估算默认值，并限制在
+    ``512`` 到 ``4096`` 之间。
+
+    Parameters
+    ----------
+    cells_per_block
+        用户传入的 block 大小，或 ``None``。
+    n_cells
+        当前导入数据集的总细胞数。
+
+    Returns
+    -------
+    int
+        规范化后的正整数 block 大小。
+
+    Notes
+    -----
+    该函数只负责生成 block 大小，不负责检查内存窗口；内存窗口由
+    ``_estimate_window_cells_and_blocks_per_pool`` 进一步估算。
+    """
 
     if cells_per_block is None:
         cells_per_block = int(0.001 * n_cells)
@@ -1817,29 +2071,28 @@ def _convert_x_to_count_inplace(
 ):
     """将表达矩阵转换为 count 尺度。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+    该内部函数用于导入前统一表达矩阵尺度。Atlas 导入流程默认把表达矩阵存储为
+    count，因此当输入 ``adata.X`` 被判断为 log 尺度时，函数会执行
+    ``expm1`` 转换并把负值截断为 0 , 默认以 e 为转换底数 。
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+    对稀疏矩阵，函数只转换非零值数组 ``X.data``，不破坏稀疏结构；对 dense
+    矩阵，函数会把整个矩阵转换为 ``float32`` 并原地处理。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        需要转换的 AnnData 对象。函数会更新其中的 ``adata.X``。
     source_x_scale
-        输入表达矩阵当前的尺度。
+        输入表达矩阵当前的尺度。支持 ``"count"`` 和 ``"log"``。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    AnnData
+        转换后的同一个 AnnData 对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    当 ``source_x_scale="count"`` 时，函数直接返回原对象，不做复制。
     """
 
     if source_x_scale == "count":
@@ -1880,14 +2133,11 @@ def _convert_x_to_count_inplace(
 
 # 简单判断 h5ad.X 的底层稀疏格式
 def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
-    """执行 ``_print_h5ad_x_format`` 的核心功能。
+    """检测并打印 h5ad 文件中 ``X`` 的底层存储格式。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+    该内部函数直接读取 h5ad 的 HDF5 结构，判断 ``X`` 是 dense dataset 还是
+    sparse matrix group，并根据 ``encoding-type`` 返回 ``csr``、``csc``、
+    ``coo`` 或其他格式名称。它只用于导入前日志和诊断，不会读取完整表达矩阵。
 
     Parameters
     ----------
@@ -1896,12 +2146,13 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    str or None
+        检测到的 ``X`` 存储格式。文件中没有 ``X`` 时返回 ``None``。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    该函数不判断表达值是 count 还是 log；表达尺度判断由
+    ``_inspect_x_from_backed`` 完成。
     """
 
     h5ad_path = os.fspath(h5ad_path)
@@ -1948,14 +2199,11 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
 # 推断数据类型
 def _infer_duckdb_type_from_series(series: pd.Series) -> str:
 
-    """执行 ``_infer_duckdb_type_from_series`` 的核心功能。
+    """根据 pandas Series 推断 DuckDB 字段类型。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+    该内部函数用于从 AnnData 的 ``obs`` 或 ``var`` 元数据创建 DuckDB 表结构。
+    它会把 pandas 整数、浮点和布尔类型分别映射到 DuckDB 的 ``BIGINT``、
+    ``DOUBLE`` 和 ``BOOLEAN``；其他类型统一按 ``VARCHAR`` 处理。
 
     Parameters
     ----------
@@ -1964,12 +2212,12 @@ def _infer_duckdb_type_from_series(series: pd.Series) -> str:
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    str
+        DuckDB 字段类型名称。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    字符串、分类变量、object 类型和无法精确映射的类型都会写成 ``VARCHAR``。
     """
     if pd.api.types.is_integer_dtype(series):
         return "BIGINT"
@@ -2003,6 +2251,11 @@ def _create_obs_table_from_adata(conn: DuckDBPyConnection, adata: AnnData):
     Notes
     -----
     该函数只创建表结构，不负责写入具体细胞元数据。写入过程由上游导入函数继续完成。
+
+    Returns
+    -------
+    None
+        表结构直接创建到 DuckDB 数据库中，不返回对象。
     """
 
     # 系统保留字段：由 scAtlasPy 统一创建
@@ -2054,6 +2307,11 @@ def _create_var_table_from_adata(conn: DuckDBPyConnection, adata: AnnData):
     Notes
     -----
     该函数只创建表结构，不负责写入具体基因元数据。写入过程由上游导入函数继续完成。
+
+    Returns
+    -------
+    None
+        表结构直接创建到 DuckDB 数据库中，不返回对象。
     """
 
     # 系统保留字段：由 scAtlasPy 统一创建
@@ -2085,25 +2343,30 @@ def _create_var_table_from_adata(conn: DuckDBPyConnection, adata: AnnData):
 # 建立 HyS 存储结构
 def _create_hys_tables(conn: DuckDBPyConnection):
 
-    """创建 Atlas 工作流所需的数据库表。
+    """创建 Atlas 表达矩阵的 HyS 存储表。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+    该内部函数创建 Atlas 表达矩阵使用的两张核心表：
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
+    - ``X_HyS_indptr``：保存 CSR ``indptr`` 的累计非零值位置；
+    - ``X_HyS_data``：保存非零表达记录，包括 ``id``、``atlas_cell_id``、
+      ``atlas_gene_id`` 和 ``data_count``。
 
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+    函数会使用 ``CREATE OR REPLACE TABLE``，因此会覆盖同名旧表。
 
     Parameters
     ----------
     conn
         DuckDB 数据库连接。
 
+    Returns
+    -------
+    None
+        表结构直接创建到 DuckDB 数据库中，不返回对象。
+
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    ``X_HyS_indptr`` 不存第一个 0，只存每个细胞结束位置的累计 indptr；
+    ``X_HyS_data.data_count`` 是导入后的 count 尺度表达值。
     """
     conn.execute(
         """ -- 不存第一个0值
@@ -2128,36 +2391,29 @@ def _create_hys_tables(conn: DuckDBPyConnection):
 # 导入 obs 表
 def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: int) -> int:
 
-    """将数据写入 Atlas 数据库。
+    """追加写入一个 AnnData block 的 ``obs`` 行。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obs``。
+    该内部函数用于 backed h5ad 分块导入。函数会复制 ``adata.obs``，移除来源中
+    可能已有的 Atlas 系统字段，然后重新生成当前数据库的 ``atlas_cell_id`` 和
+    ``atlas_cell_name``，最后追加写入 ``obs`` 表。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        当前待写入的 AnnData block。
     conn
         DuckDB 数据库连接。
-
     start_cell_id
         当前 obs block 写入时使用的起始 ``atlas_cell_id``。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    int
+        下一个 block 应使用的起始 ``atlas_cell_id``。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    ``atlas_cell_name`` 来自当前 block 的 ``adata.obs.index``。
     """
     n = adata.n_obs
 
@@ -2196,28 +2452,27 @@ def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: in
 # 导入 var 表
 def _append_var(adata: AnnData, conn: DuckDBPyConnection):
 
-    """将数据写入 Atlas 数据库。
+    """写入 AnnData 的 ``var`` 基因元数据。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``var``。
+    该内部函数用于 h5ad 分块导入流程。函数会复制 ``adata.var``，移除来源中
+    可能已有的 Atlas 系统字段，重新生成 ``atlas_gene_id`` 和
+    ``atlas_gene_name``，并插入 ``var`` 表。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        用于提供基因元数据的 AnnData 对象。
     conn
         DuckDB 数据库连接。
 
+    Returns
+    -------
+    None
+        基因元数据直接写入 ``var`` 表，不返回对象。
+
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    多 block 导入时 ``var`` 只需要写入一次。
     """
     var_df = adata.var.copy()
 
@@ -2259,45 +2514,36 @@ def _append_x_hys(
     global_data_id: int,
 ):
 
-    """将数据写入 Atlas 数据库。
+    """追加写入一个 AnnData block 的 HyS 稀疏表达矩阵。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+    该内部函数把 ``adata.X`` 转换为 CSR 矩阵，并追加写入 Atlas 的 HyS 表：
+    ``X_HyS_indptr`` 保存每个细胞的累计 indptr，``X_HyS_data`` 保存非零表达值
+    及其对应的 cell/gene ID。表达值会写入 ``data_count`` 字段。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        当前待写入的 AnnData block。要求 ``adata.X`` 已经是 count 尺度。
     conn
         DuckDB 数据库连接。
-
     base_cell_id
         当前 AnnData block 第一行对应的 Atlas 细胞 ID。
-
     global_indptr_id
         下一个待写入的 indptr 行 ID。
-
     global_indptr_offset
         当前已经累计写入的非零值数量，用于重定位 indptr。
-
     global_data_id
         下一个待写入的 ``X_HyS_data.id``。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    tuple[int, int, int]
+        更新后的 ``global_indptr_id``、``global_indptr_offset`` 和
+        ``global_data_id``。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    ``atlas_gene_id`` 使用 ``uint16`` 写入，对应数据库中的 ``USMALLINT``。
     """
     X = adata.X
 
@@ -2410,32 +2656,32 @@ def _append_x_hys(
 # 导入 obsm
 def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_block: int = 500):
 
-    """将数据写入 Atlas 数据库。
+    """从 h5ad 文件导入 ``obsm`` 到 Atlas 数据库。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+    该内部函数直接读取 h5ad 文件中的 ``obsm`` group，并为每个 ``obsm`` key
+    创建一张 ``obsm_{key}`` 表。每张表包含 ``atlas_cell_id`` 和若干
+    ``dim_0``、``dim_1`` 等维度列。
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obsm_df``、``obsm_grp``。
+    该函数适用于保留原始细胞顺序的导入模式；如果细胞顺序已经随机重排，
+    不应直接按 h5ad 原始顺序导入 ``obsm``。
 
     Parameters
     ----------
     h5ad_path
         h5ad 文件路径。
-
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
     cells_per_block
-        每批读取、写入或处理的细胞数量；较大值通常更快但占用更多内存。
+        分批读取 ``obsm`` 数组时每批包含的细胞数。
+
+    Returns
+    -------
+    None
+        ``obsm`` 结果直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    如果 h5ad 中不存在 ``obsm``，函数会记录日志并跳过。
     """
     h5ad_path = os.fspath(h5ad_path)
 
@@ -2485,29 +2731,30 @@ def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_
 # 导入 varm
 def _add_varm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas):
 
-    """将数据写入 Atlas 数据库。
+    """从 h5ad 文件导入 ``varm`` 到 Atlas 数据库。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
+    该内部函数直接读取 h5ad 文件中的 ``varm`` group，并为每个 ``varm`` key
+    创建一张 ``varm_{key}`` 表。每张表包含 ``atlas_gene_id`` 和若干
+    ``dim_0``、``dim_1`` 等维度列。
 
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``varm_df``、``varm_grp``。
+    ``varm`` 与基因维度对齐，不依赖细胞顺序，因此顺序导入和随机导入都可以
+    安全导入。
 
     Parameters
     ----------
     h5ad_path
         h5ad 文件路径。
-
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        ``varm`` 结果直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    如果 h5ad 中不存在 ``varm``，函数会记录日志并跳过。
     """
     h5ad_path = os.fspath(h5ad_path)
 
@@ -2611,110 +2858,31 @@ def _read_smart(file_path: PathLike[str] | str):
         return sc.read(file_path)
 
 
-''' 方法6： 顺序读取，anndata数据导入 '''
-def load_anndata(adata:AnnData, atlas:Atlas):
-
-    """将 AnnData 对象写入 Atlas 数据库。
-
-    该函数直接接收内存中的 AnnData 对象，并写入 Atlas 数据库。适合已经用 Scanpy 或其他工具完成读取、筛选或预处理后，再转入 Atlas 管理的场景。
-
-    Parameters
-    ----------
-    adata
-        AnnData 对象。函数会把其中的 ``obs``、``var``、表达矩阵和可支持的结果写入 Atlas 数据库。
-    atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
-
-    Returns
-    -------
-    None
-        结果直接写入 Atlas 数据库或当前图形窗口。
-
-    Examples
-    --------
-    从 Scanpy 读取并导入::
-
-        adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
-        atlas.load_anndata(adata)
-
-    先在 AnnData 中补充元数据再导入::
-
-        adata.obs["sample"] = "sample_1"
-        atlas.load_anndata(adata)"""
-
-    try:
-        logger.info("准备数据表...")
-
-        if hasattr(adata, 'obs'):
-            _add_obs(adata, atlas)  # 细胞表数据（对应obs）,
-        else:
-            logger.info("Skipping obs layer")
-
-        if hasattr(adata, 'var'):
-            _add_var(adata, atlas)  # 基因表数据（对应var）
-        else:
-            logger.info("Skipping var layer")
-
-        if hasattr(adata, 'X'):
-            start_time = time.time()
-            _add_x_hys_chunked(adata, atlas, chunk_size=500) # 分块导入X表数据
-            end_time = time.time()
-            logger.info(" X表的导入用时为： " + str(end_time - start_time))
-        else:
-            logger.info("Skipping X layer")
-
-        if hasattr(adata, 'obsm'):
-            _add_obsm(adata,atlas)
-        else:
-            logger.info("Skipping obsm layer")
-
-        if hasattr(adata, 'varm'):
-            _add_varm(adata,atlas)
-        else:
-            logger.info("Skipping varm layer")
-
-        # 显示表结构
-        logger.debug("数据库表结构:")
-        tables = atlas.connection.execute("SHOW TABLES")
-        if tables:
-            logger.debug(f"数据库中的表: {tables}")
-
-        logger.info("AnnData数据成功加载到数据库")
-
-    except Exception as e:
-        logger.error(f"加载数据失败: {str(e)}")
-        logger.exception("加载数据异常详情:")
-        raise
-
-
 # 以下函数只在 load_anndata 中使用
 # 导入 obs
 def _add_obs(adata:AnnData, atlas:Atlas):
 
-    """将数据写入 Atlas 数据库。
+    """从内存 AnnData 创建并写入 ``obs`` 表。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obs``。
+    该内部函数用于 ``load_anndata``。它复制 ``adata.obs``，把 AnnData 的细胞
+    index 写入 ``atlas_cell_name``，并按当前行顺序生成 ``atlas_cell_id``，
+    最后创建或替换 Atlas 数据库中的 ``obs`` 表。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        输入 AnnData 对象。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        ``obs`` 表直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    写入后会为 ``obs.atlas_cell_id`` 添加主键。
     """
     logger.info("导入obs数据")
 
@@ -2736,29 +2904,27 @@ def _add_obs(adata:AnnData, atlas:Atlas):
 # 导入 var
 def _add_var(adata:AnnData, atlas:Atlas):
 
-    """将数据写入 Atlas 数据库。
+    """从内存 AnnData 创建并写入 ``var`` 表。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``var``。
+    该内部函数用于 ``load_anndata``。它把 AnnData 的基因 index 写入
+    ``atlas_gene_name``，按当前基因顺序生成 ``atlas_gene_id``，并创建或替换
+    Atlas 数据库中的 ``var`` 表。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        输入 AnnData 对象。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        ``var`` 表直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    写入后会为 ``var.atlas_gene_id`` 添加主键。
     """
     logger.info("导入var数据")
     var_df = adata.var.reset_index().rename(columns={'index': 'atlas_gene_name'})
@@ -2776,29 +2942,27 @@ def _add_var(adata:AnnData, atlas:Atlas):
 # 导入 obsm
 def _add_obsm(adata: AnnData, atlas: Atlas):
 
-    """将数据写入 Atlas 数据库。
+    """从内存 AnnData 导入 ``obsm`` 矩阵。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``obsm_df``。
+    该内部函数用于 ``load_anndata``。它遍历 ``adata.obsm`` 中的二维矩阵，
+    为每个 key 创建或替换一张 ``obsm_{key}`` 表，字段包括 ``atlas_cell_id``
+    和 ``dim_0``、``dim_1`` 等维度列。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        输入 AnnData 对象。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        ``obsm`` 结果直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    如果 ``adata.obsm`` 为空，函数会记录日志并跳过。
     """
     logger.info("导入 obsm ")
 
@@ -2835,29 +2999,27 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
 # 导入 varm
 def _add_varm(adata: AnnData, atlas: Atlas):
 
-    """将数据写入 Atlas 数据库。
+    """从内存 AnnData 导入 ``varm`` 矩阵。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``varm_df``。
+    该内部函数用于 ``load_anndata``。它遍历 ``adata.varm`` 中的二维矩阵，
+    为每个 key 创建或替换一张 ``varm_{key}`` 表，字段包括 ``atlas_gene_id``
+    和 ``dim_0``、``dim_1`` 等维度列。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        输入 AnnData 对象。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求对象已经连接到 DuckDB 数据库。
+
+    Returns
+    -------
+    None
+        ``varm`` 结果直接写入数据库，不返回对象。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    如果 ``adata.varm`` 为空，函数会记录日志并跳过。
     """
     logger.info("导入 varm（统一 schema）")
 
@@ -2893,37 +3055,29 @@ def _add_varm(adata: AnnData, atlas: Atlas):
 # 导入 x_hys
 def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
-    """将数据写入 Atlas 数据库。
+    """从内存 AnnData 分块写入 HyS 表达矩阵。
 
-    该内部函数属于数据导入模块，用于支撑同一模块中的公共 API。
-
-    把 h5ad、AnnData 或 Scanpy 支持的数据格式写入 Atlas 的
-    ``obs``、``var``、``X_HyS_*``、``obsm`` 和 ``varm`` 表。
-
-    它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
-
-    当前实现中会访问或生成的关键表包括：``X_HyS_data``、``X_HyS_indptr``。
+    该内部函数用于 ``load_anndata``。它把 ``adata.X`` 按细胞分块转换为 CSR，
+    并写入 ``X_HyS_indptr`` 和 ``X_HyS_data``。非零表达值写入
+    ``X_HyS_data.data_count`` 字段。
 
     Parameters
     ----------
     adata
-        AnnData 对象。函数会读取其中的 ``obs``、``var``、``X``、``obsm`` 或 ``varm``。
-
+        输入 AnnData 对象。函数会读取 ``adata.X``。
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
-
+        Atlas 对象。函数会连接并写入对应 DuckDB 数据库。
     chunk_size
-        分块处理大小，用于控制内存峰值和单次 SQL 更新规模。
+        每个 chunk 包含的细胞数量，用于控制内存峰值和单次写入规模。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    bool
+        成功写入时返回 ``True``。异常时回滚事务并重新抛出错误。
 
     Notes
     -----
-    这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+    该函数会重建 ``X_HyS_indptr`` 和 ``X_HyS_data`` 表。
     """
     logger.info("开始导入 X_HyS ")
 
@@ -3034,128 +3188,3 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         conn.execute("ROLLBACK")
         logger.error(f"CSR 导入失败: {e}")
         raise
-
-
-''' 基因名清洗 ：先导入，再清洗，var表 '''
-def rename_duplicated_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
-    """检查 Atlas 数据库中的基因名是否重复。
-
-    该函数读取 ``var`` 表中的基因名称列，判断是否存在重复基因名。重复基因名可能影响按名称绘图、差异基因展示和 AnnData 导出。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
-    gene_name_column
-        保存基因名称的 ``var`` 列名。通常为 ``"atlas_gene_name"``。
-
-    Returns
-    -------
-    bool 或 None
-        检查结果。无法完成检查时可能返回 ``None``。
-
-    Examples
-    --------
-    检查默认基因名称列::
-
-        atlas.rename_duplicated_genes()
-
-    检查自定义列，并在发现重复后定位重复名称::
-
-        if atlas.rename_duplicated_genes(gene_name_column="gene_symbol"):
-            atlas.query(
-                "SELECT gene_symbol, COUNT(*) FROM var "
-                "GROUP BY gene_symbol HAVING COUNT(*) > 1"
-            )"""
-    logger.info(f" 开始在数据库 var表 中清洗基因名 ")
-
-    # 检查表是否存在
-    tables = atlas.connection.execute("SHOW TABLES").df()
-    if 'var' not in tables['name'].values:
-        logger.error("var表 不存在，请先导入数据")
-        return False
-
-    logger.info("开始添加后缀模式...")
-
-    # 1. 构建带后缀的临时 var 表（var_with_suffix）
-    atlas.connection.execute(f"""
-        CREATE OR REPLACE TEMPORARY TABLE var_with_suffix AS
-        WITH ranked_genes AS (
-            SELECT *,
-                   ROW_NUMBER() OVER (
-                       PARTITION BY {gene_name_column}
-                       ORDER BY atlas_gene_id
-                   ) AS rn
-            FROM var
-        )
-        SELECT
-            atlas_gene_id,
-            CASE
-                WHEN rn = 1 THEN {gene_name_column} -- 第一个出现的基因名保持不变
-                ELSE {gene_name_column} || '_' || (rn - 1)::VARCHAR -- 后续重复基因添加后缀：gene_1, gene_2, ...
-            END AS {gene_name_column}
-        FROM ranked_genes
-        ORDER BY atlas_gene_id
-    """)
-
-    # 创建带后缀的基因名临时表 var_with_suffix
-    # atlas_gene_id | atlas_gene_name
-    # ---|---------
-    # 1  | TP53     -- 第一个TP53保持原名
-    # 2  | EGFR     -- EGFR只有一个，保持原名
-    # 3  | TP53_1   -- 第二个TP53添加_1后缀
-    # 4  | BRAF     -- BRAF只有一个，保持原名
-    # 5  | TP53_2   -- 第三个TP53添加_2后缀
-
-    # 2. 记录 atlas_gene_name 实际发生变化的映射关系（仅用于日志）
-    gene_mapping = atlas.connection.execute(f"""
-        SELECT
-            v.{gene_name_column}  AS original_gene_name,
-            vs.{gene_name_column} AS new_gene_name
-        FROM var v
-        JOIN var_with_suffix vs
-            ON v.atlas_gene_id = vs.atlas_gene_id
-        WHERE v.{gene_name_column} != vs.{gene_name_column}
-    """).df()
-    # 获取基因名映射关系。gene_mapping数据框
-    #    original_gene_name  new_gene_name
-    # 0              TP53       TP53_1
-    # 1              TP53       TP53_2
-
-    # 3.  根据是否存在重复基因输出不同日志
-    if len(gene_mapping) > 0:
-        logger.info(
-            f"发现 {len(gene_mapping)} 个重复基因，已成功添加后缀"
-        )
-    else:
-        logger.info("未发现重复基因，var 表保持不变")
-
-    # 4. 更新var表
-    if(len(gene_mapping)>0):
-        atlas.connection.execute("DROP TABLE var")
-        atlas.connection.execute("ALTER TABLE var_with_suffix RENAME TO var")
-        atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-        logger.info("var表已更新")
-
-    logger.info("rename_duplicated_genes Done")
-    return True
-
-# 示例
-# var 表
-# atlas_gene_id | atlas_gene_name
-# ---|--------
-# 1  | TP53
-# 2  | EGFR
-# 3  | TP53    -- 重复基因
-# 4  | BRAF
-# 5  | TP53    -- 重复基因
-
-# 添加后缀模式：为重复基因添加 _1, _2, _3 等后缀
-# 更新后的var表：
-# atlas_gene_id | atlas_gene_name
-# ---|---------
-# 1  | TP53
-# 2  | EGFR
-# 3  | TP53_1
-# 4  | BRAF
-# 5  | TP53_2

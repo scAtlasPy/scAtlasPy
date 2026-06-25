@@ -7,7 +7,134 @@ from os import PathLike
 from typing import Literal
 
 
-# 高变基因（HVG, Highly Variable Genes）选择图
+def highly_variable_genes(
+        atlas: Atlas,
+        flavor: Literal["seurat", "cv", "var"] = "seurat",
+
+        # 通用参数：两个底层函数都支持
+        hvg_key: str = "highly_variable_genes",
+        sample_other: int | None = 20000,
+
+        # cv / var 版本参数：只传给 highly_variable_genes_plot()
+        mean_key: str = "hvg_mean",
+        var_key: str = "hvg_var",
+        std_key: str = "hvg_std",
+        score_key: str = "hvg_score",
+        figsize: tuple[float, float] | None = None,
+        point_size_hvg: float = 8,
+        point_size_other: float = 6,
+        alpha_hvg: float = 0.9,
+        alpha_other: float = 0.6,
+
+        save_path: PathLike[str] | str | None = None,
+):
+    """绘制高变基因筛选结果诊断图。
+
+    该函数是 HVG 绘图的公开入口，会根据 ``flavor`` 调用对应的底层绘图逻辑：
+    ``"seurat"`` 读取 ``means``、``dispersions`` 和 ``dispersions_norm``；
+    ``"cv"`` 或 ``"var"`` 读取 ``hvg_mean``、``hvg_var``、``hvg_std`` 和``hvg_score``。
+    所有风格都会根据 ``hvg_key`` 高亮已经标记为高变的基因。
+
+    该图类似 Scanpy 的 ``sc.pl.highly_variable_genes``，主要用于确认高变基因筛选
+    结果是否合理，而不是重新计算高变基因。
+
+    Parameters
+    ----------
+    atlas
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中已经包含对应
+        ``flavor`` 所需的 HVG 统计列。
+    flavor
+        绘图风格。``"seurat"`` 使用 Seurat 风格 dispersion 结果；
+        ``"cv"`` 和 ``"var"`` 使用均值、方差、标准差和高变得分结果。
+    hvg_key
+        ``var`` 中标记高变基因的列名。
+    sample_other
+        从非高变基因中抽样展示的数量。为 ``None`` 时绘制全部非高变基因。
+    mean_key
+        ``var`` 中保存均值的列名。
+    var_key
+        ``var`` 中保存方差的列名。
+    std_key
+        ``var`` 中保存标准差的列名。
+    score_key
+        ``var`` 中保存高变基因评分的列名。
+    figsize
+        CV/方差风格图的 Matplotlib 图像大小；Seurat 风格使用底层函数固定尺寸。
+    point_size_hvg
+        高变基因散点大小。
+    point_size_other
+        非高变基因散点大小。
+    alpha_hvg
+        高变基因散点透明度。
+    alpha_other
+        非高变基因散点透明度。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
+
+    Returns
+    -------
+    None
+
+    Examples
+    --------
+    绘制默认高变基因结果::
+
+        sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+        sap.pl.highly_variable_genes(atlas)
+
+    绘制 CV 风格结果::
+
+        sap.pl.highly_variable_genes(
+            atlas,
+            flavor="cv",
+            hvg_key="highly_variable_genes",
+        )
+
+    保存 Seurat 风格图::
+
+        sap.pl.highly_variable_genes(
+            atlas,
+            flavor="seurat",
+            hvg_key="highly_variable_genes",
+            sample_other=50000,
+            save_path=r"F:\\figures\\hvg.png",
+        )"""
+
+    flavor = str(flavor).lower().strip()
+
+    if flavor == "seurat":
+        return _highly_variable_genes_plot_seurat(
+            atlas=atlas,
+            hvg_key=hvg_key,
+            sample_other=sample_other,
+            save_path=save_path,
+        )
+
+    elif flavor in ["cv", "var"]:
+        return _highly_variable_genes_plot(
+            atlas=atlas,
+            hvg_key=hvg_key,
+            mean_key=mean_key,
+            var_key=var_key,
+            std_key=std_key,
+            score_key=score_key,
+            sample_other=sample_other,
+            figsize=figsize,
+            point_size_hvg=point_size_hvg,
+            point_size_other=point_size_other,
+            alpha_hvg=alpha_hvg,
+            alpha_other=alpha_other,
+            save_path=save_path,
+        )
+
+    else:
+        raise ValueError(
+            f"不支持的 flavor: {flavor}. "
+            "可选值为: 'seurat', 'cv', 'var'"
+        )
+
+
+# HVG： cv / var 版本
 def _highly_variable_genes_plot(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
@@ -20,20 +147,24 @@ def _highly_variable_genes_plot(
         point_size_hvg: float = 8,
         point_size_other: float = 6,
         alpha_hvg: float = 0.9,
-        alpha_other: float = 0.6
+        alpha_other: float = 0.6,
+        save_path: PathLike[str] | str | None = None
 ):
 
-    """绘制高变基因筛选结果。
+    """绘制 cv/var风格的高变基因筛选诊断图。
 
-    该函数读取 ``var`` 中的均值、方差、标准差、高变得分和 HVG 标记，绘制高变基因诊断散点图。
+    该内部绘图函数从 ``var`` 表读取每个基因的均值、方差、标准差、高变得分和
+    HVG 标记，并绘制两张诊断散点图：左图展示归一化后的高变得分与平均表达的
+    关系，右图展示原始方差与平均表达的关系。高变基因会被单独高亮显示。
 
-    它用于检查 HVG 选择是否合理，以及高变基因是否覆盖预期的表达均值范围。
+    该图用于检查 CV 或方差风格的 HVG 选择是否合理，例如高变基因是否集中在
+    期望的表达区间、非高变基因背景是否过密，以及 ``score_key`` 是否能有效区分
+    高变和非高变基因。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中包含 HVG 统计列。
 
     hvg_key
         ``var`` 中表示高变基因的布尔列名。
@@ -51,10 +182,10 @@ def _highly_variable_genes_plot(
         ``var`` 中保存得分的列名。
 
     sample_other
-        从非目标点中抽样用于绘图的数量。
+        从非高变基因中抽样用于绘图的数量。为 ``None`` 时绘制全部非高变基因。
 
     figsize
-        matplotlib 图像大小。
+        Matplotlib 图像大小。为 ``None`` 时使用 Matplotlib 默认尺寸。
 
     point_size_hvg
         高变基因点大小。
@@ -67,16 +198,19 @@ def _highly_variable_genes_plot(
 
     alpha_other
         非高变基因点透明度。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不保存。
 
     Notes
     -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    绘图前需要先运行会写入 ``hvg_mean``、``hvg_var``、``hvg_std``、``hvg_score`` 和
+    ``hvg_key`` 的高变基因计算流程。该函数只负责读取结果并绘图，不会重新计算 HVG。
 
     Examples
     --------
-    调用该函数：::
+    绘制 CV/方差风格 HVG 结果::
 
-        sap.pl.highly_variable_genes_plot(...)
+        sap.pl.highly_variable_genes(atlas, flavor="cv")
     """
 
     start = datetime.now()
@@ -207,52 +341,59 @@ def _highly_variable_genes_plot(
     ax.tick_params(axis="both", labelsize=12, width=1.0, length=4)
 
     plt.tight_layout(pad=1.0)
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+
     plt.show()
 
-
-# 高变基因（HVG, Highly Variable Genes）选择图 ： seurat 版本
+# HVG： seurat 版本
 def _highly_variable_genes_plot_seurat(
         atlas: Atlas,
         hvg_key: str = "highly_variable_genes",
         sample_other: int | None = 20000,
-        save: PathLike[str] | str | None = None,
+        save_path: PathLike[str] | str | None = None,
 ):
 
-    """绘制 Seurat 风格高变基因筛选结果。
+    """绘制 Seurat 风格的高变基因筛选诊断图。
 
-    该函数读取 Seurat 风格 HVG 统计字段，展示 normalized dispersion 与 mean 的关系。
+    该内部绘图函数从 ``var`` 表读取 Seurat 风格 HVG 结果，包括 ``means``、
+    ``dispersions``、``dispersions_norm`` 和 ``hvg_key``。函数会绘制两张散点图：
+    左图展示 normalized dispersion 与平均表达的关系，
+    右图展示原始 dispersion与平均表达的关系，并高亮 ``hvg_key`` 标记的高变基因。
 
-    它适合检查 ``highly_variable_genes_seurat`` 的分箱和筛选结果。
+    该图适合检查 Seurat 风格分箱归一化后的 dispersion 是否合理，以及最终选出的
+    高变基因是否分布在预期的表达范围内。
 
     Parameters
     ----------
     atlas
-        Atlas 对象。通常要求已经连接数据库，并包含该函数所需的 ``obs``、``var``、``X_HyS_data`` 或
-        embedding 结果表。
+        Atlas 对象。要求已经连接 DuckDB 数据库，并且 ``var`` 表中包含 Seurat 风格
+        HVG 统计列。
 
     hvg_key
         ``var`` 中表示高变基因的布尔列名。
 
     sample_other
-        从非目标点中抽样用于绘图的数量。
+        从非高变基因中抽样用于绘图的数量。为 ``None`` 时绘制全部非高变基因。
 
-    save
-        图像保存设置，可为布尔值、扩展名或文件名。
+    save_path
+        图片保存路径。为 ``None`` 时只显示图片，不写入文件。
 
     Returns
     -------
-    result
-        函数返回结果。具体类型取决于参数设置和内部执行路径。
+    None
+        函数直接绘图，并在 ``save_path`` 不为 ``None`` 时保存图片。
 
     Notes
     -----
-    绘图前通常需要先运行对应的 ``sap.tl`` 或 ``sap.pp`` 计算步骤，确保结果表和统计列已经存在。
+    绘图前需要先运行 Seurat 风格的高变基因计算流程，确保 ``var`` 表中已经存在
+    ``means``、``dispersions`` 和 ``dispersions_norm``。
 
     Examples
     --------
-    调用该函数：::
+    绘制默认 Seurat 风格 HVG 结果::
 
-        sap.pl.highly_variable_genes_plot_seurat(...)
+        sap.pl.highly_variable_genes(atlas, flavor="seurat")
     """
 
     start = datetime.now()
@@ -264,27 +405,20 @@ def _highly_variable_genes_plot_seurat(
 
     # DuckDB 字段安全引用
     def _q(name: str) -> str:
-        """为 SQL 标识符添加安全引用。
+        """为 DuckDB SQL 标识符添加双引号引用。
 
-        该内部函数属于QC 可视化模块，用于支撑同一模块中的公共 API。
-
-        读取 QC 指标和表达矩阵，绘制最高表达基因、violin、scatter 和 HVG 诊断图。
-
-        它通常不会作为用户入口直接调用；直接调用时需要保证输入对象、数据库连接和相关临时表已经由上游步骤准备好。
+        该内部 helper 用于安全拼接 ``var`` 表列名，避免列名中包含特殊字符或与 SQL
+        关键字冲突。函数只处理标识符引用，不处理 SQL 值的转义。
 
         Parameters
         ----------
         name
-            对象名称、列名或 SQL 标识符，具体含义由调用位置决定。
+            需要作为 SQL 标识符使用的列名。
 
         Returns
         -------
-        quoted_name
-            加双引号后的 SQL 标识符。
-
-        Notes
-        -----
-        这是内部 helper；除非需要扩展 scAtlasPy 内部流程，一般不建议在用户代码中直接调用。
+        str
+            已加双引号并转义内部双引号的 SQL 标识符。
         """
         return '"' + name.replace('"', '""') + '"'
 
@@ -453,118 +587,7 @@ def _highly_variable_genes_plot_seurat(
 
     plt.tight_layout(pad=1.0)
 
-    if save is not None:
-        plt.savefig(save, dpi=300, bbox_inches="tight")
+    if save_path is not None:
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
     plt.show()
-
-
-# 高变基因（HVG, Highly Variable Genes）选择图
-def highly_variable_genes(
-        atlas: Atlas,
-        flavor: Literal["seurat", "cv", "var"] = "seurat",
-
-        # 通用参数：两个底层函数都支持
-        hvg_key: str = "highly_variable_genes",
-        sample_other: int | None = 20000,
-
-        # cv / var 版本参数：只传给 highly_variable_genes_plot()
-        mean_key: str = "hvg_mean",
-        var_key: str = "hvg_var",
-        std_key: str = "hvg_std",
-        score_key: str = "hvg_score",
-        figsize: tuple[float, float] | None = None,
-        point_size_hvg: float = 8,
-        point_size_other: float = 6,
-        alpha_hvg: float = 0.9,
-        alpha_other: float = 0.6,
-
-        # seurat 版本参数：只传给 highly_variable_genes_plot_seurat()
-        save: PathLike[str] | str | None = None,
-):
-    """绘制高变基因筛选结果。
-
-    该函数读取 ``var`` 中的高变基因统计列，绘制基因平均表达、方差或评分分布，并高亮已经标记的高变基因。它类似 Scanpy 的 ``sc.pl.highly_variable_genes``。
-
-    Parameters
-    ----------
-    atlas
-        Atlas 对象。通常需要已经连接到 DuckDB 数据库，并包含该函数读取或写入所需的 ``obs``、``var``、表达矩阵或结果表。
-    flavor
-        算法风格或统计方法。不同函数中可用于选择 Seurat 风格、CV 风格或方差风格等。
-    hvg_key
-        ``var`` 中标记高变基因的列名。
-    sample_other
-        绘制高变基因图时，从非高变基因中抽样展示的数量。
-    mean_key
-        ``var`` 中保存均值的列名。
-    var_key
-        ``var`` 中保存方差的列名。
-    std_key
-        ``var`` 中保存标准差的列名。
-    score_key
-        ``var`` 中保存高变基因评分的列名。
-    figsize
-        图形大小。为 ``None`` 时使用函数默认尺寸。
-    point_size_hvg
-        高变基因散点大小。
-    point_size_other
-        非高变基因散点大小。
-    alpha_hvg
-        高变基因散点透明度。
-    alpha_other
-        非高变基因散点透明度。
-    save
-        图片保存路径。为 ``None`` 时不保存。
-
-    Returns
-    -------
-    None
-
-    Examples
-    --------
-    绘制默认高变基因结果::
-
-        sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
-        sap.pl.highly_variable_genes(atlas)
-
-    使用自定义高变基因列并保存图片::
-
-        sap.pl.highly_variable_genes(
-            atlas,
-            hvg_key="highly_variable_genes",
-            sample_other=50000,
-            save=r"F:\\figures\\hvg.png",
-        )"""
-
-    flavor = str(flavor).lower().strip()
-
-    if flavor == "seurat":
-        return _highly_variable_genes_plot_seurat(
-            atlas=atlas,
-            hvg_key=hvg_key,
-            sample_other=sample_other,
-            save=save,
-        )
-
-    elif flavor in ["cv", "var"]:
-        return _highly_variable_genes_plot(
-            atlas=atlas,
-            hvg_key=hvg_key,
-            mean_key=mean_key,
-            var_key=var_key,
-            std_key=std_key,
-            score_key=score_key,
-            sample_other=sample_other,
-            figsize=figsize,
-            point_size_hvg=point_size_hvg,
-            point_size_other=point_size_other,
-            alpha_hvg=alpha_hvg,
-            alpha_other=alpha_other,
-        )
-
-    else:
-        raise ValueError(
-            f"不支持的 flavor: {flavor}. "
-            "可选值为: 'seurat', 'cv', 'var'"
-        )

@@ -3,16 +3,10 @@ import pandas as pd
 from ..data import Atlas
 
 
-def _quote_identifier(name: str) -> str:
-    """给 SQL 字段名或表名加双引号，避免特殊字符或关键字导致 SQL 报错。"""
-    return '"' + str(name).replace('"', '""') + '"'
-
-
-# 手动 cluster 注释接口
 def manual_annotate_clusters(
         atlas: Atlas,
         cluster_to_cell_type: Mapping[str, str] | Sequence[str],
-        groupby: str = "leiden",
+        groupby: str = "kmeans",
         obs_col: str = "cell_type_manual",
         table_name: str | None = "manual_cluster_annotation",
         unknown_label: str | None = None,
@@ -24,13 +18,10 @@ def manual_annotate_clusters(
     在查看 marker genes、rank genes 图和 UMAP 图之后，由用户手动指定
     每个 cluster 对应的细胞类型名称，并将这些标签写回 ``obs`` 表。
 
-    注意：
-    该函数不会自动推断细胞类型，也不会根据 marker gene 自动打分。
-    它只负责把用户提供的 cluster 与 cell type 的对应关系写入数据库。
-
-    每次运行该函数时，都会先清空 ``obs_col`` 中已有的旧注释结果，
-    然后重新写入新的手动注释。因此，下一次注释会覆盖上一次注释，
-    不会保留旧标签。
+    函数支持两种输入方式：一种是显式字典，直接指定每个 cluster ID 对应的
+    细胞类型；另一种是 Scanpy 风格的有序列表，按 ``obs[groupby]`` 中真实
+    cluster 的排序顺序依次写入标签。运行时会检查 cluster 是否存在、是否
+    重复，以及列表长度是否与 cluster 数量一致。
 
     Parameters
     ----------
@@ -63,7 +54,7 @@ def manual_annotate_clusters(
     groupby
         ``obs`` 中保存聚类结果的列名。
 
-        如果使用 Leiden 聚类，通常是 ``"leiden"``。
+        如果使用 kmeans 聚类，通常是 ``"kmeans"``。
         如果当前数据库中使用的是 KMeans 聚类，则应设置为 ``"kmeans"``。
 
     obs_col
@@ -88,6 +79,17 @@ def manual_annotate_clusters(
     pandas.DataFrame or None
         如果 ``return_df=True``，返回每个 cluster 的手动注释结果和细胞数量。
         如果 ``return_df=False``，返回 ``None``。
+
+    Notes
+    -----
+    该函数会修改 ``obs`` 表：如果 ``obs_col`` 不存在，会自动新增文本列；
+    如果已经存在，会先清空旧值，再写入本次提供的手动注释。
+
+    当 ``table_name`` 不为 ``None`` 时，函数还会保存一张 cluster 到 cell type
+    的映射表，便于追踪本次手动注释使用的标签。
+
+    未提供标签的 cluster 会根据 ``unknown_label`` 写成 ``NULL`` 或指定的未知
+    标签；提供了但在 ``obs[groupby]`` 中不存在的 cluster 会直接报错。
 
     Examples
     --------
@@ -131,23 +133,16 @@ def manual_annotate_clusters(
         )
 
     绘制手动注释后的 UMAP 图::
-
         sap.pl.umap(atlas, color="cell_type_manual")
     """
 
-    # ============================================================
-    # 1. 获取数据库连接
-    # ============================================================
-
+    # 获取数据库连接
     conn = atlas.connection
     if conn is None:
         atlas.connect("r+")
         conn = atlas.connection
 
-    # ============================================================
-    # 2. 检查 obs 表中是否存在 groupby 列
-    # ============================================================
-
+    # 检查 obs 表中是否存在 groupby 列
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
 
     if groupby not in obs_cols:
@@ -156,11 +151,7 @@ def manual_annotate_clusters(
     group_col = _quote_identifier(groupby)
     obs_label_col = _quote_identifier(obs_col)
 
-    # ============================================================
-    # 3. 读取 obs 中真实存在的 cluster ID
-    #    排序方式尽量模拟 Scanpy：数字 cluster 按数字顺序排列
-    # ============================================================
-
+    # 读取 obs 中真实存在的 cluster ID：数字 cluster 按数字顺序排列
     cluster_df = conn.execute(
         f"""
         SELECT CAST({group_col} AS TEXT) AS cluster_id
@@ -177,7 +168,7 @@ def manual_annotate_clusters(
     cluster_ids = cluster_df["cluster_id"].astype(str).tolist()
 
     # ============================================================
-    # 4. 整理用户传入的手动注释
+    # 整理用户传入的手动注释
     #    支持两种形式：
     #    1）字典：{"0": "CD4 T cells", "1": "B cells"}
     #    2）列表：["CD4 T cells", "B cells", ...]
@@ -211,19 +202,13 @@ def manual_annotate_clusters(
             "cell_type": labels,
         })
 
-    # ============================================================
-    # 5. 检查是否有重复的 cluster ID
-    # ============================================================
-
+    # 检查是否有重复的 cluster ID
     duplicated = mapping_df["cluster_id"][mapping_df["cluster_id"].duplicated()].tolist()
 
     if duplicated:
         raise ValueError(f"手动注释中存在重复的 cluster ID: {duplicated}")
 
-    # ============================================================
-    # 6. 检查用户提供的 cluster 是否真的存在于 obs[groupby]
-    # ============================================================
-
+    # 检查用户提供的 cluster 是否真的存在于 obs[groupby]
     unknown_clusters = sorted(set(mapping_df["cluster_id"]) - set(cluster_ids))
 
     if unknown_clusters:
@@ -231,11 +216,8 @@ def manual_annotate_clusters(
             f"手动注释中包含 obs.{groupby} 中不存在的 cluster: {unknown_clusters}"
         )
 
-    # ============================================================
-    # 7. 提示哪些 cluster 没有被手动注释
+    # 提示哪些 cluster 没有被手动注释
     #    这些 cluster 会被写成 NULL 或 unknown_label
-    # ============================================================
-
     missing_clusters = sorted(set(cluster_ids) - set(mapping_df["cluster_id"]))
 
     if missing_clusters:
@@ -250,27 +232,18 @@ def manual_annotate_clusters(
                 f"将被写为 {unknown_label!r}: {missing_clusters}"
             )
 
-    # ============================================================
-    # 8. 如果 obs_col 不存在，则创建该列
-    # ============================================================
-
+    # 如果 obs_col 不存在，则创建该列
     if obs_col not in obs_cols:
         conn.execute(f"ALTER TABLE obs ADD COLUMN {obs_label_col} TEXT")
 
-    # ============================================================
-    # 9. 每次运行都先清空旧注释
+    # 每次运行都先清空旧注释
     #    这样下一次运行会覆盖上一次，不会保留旧标签
-    # ============================================================
-
     if unknown_label is None:
         conn.execute(f"UPDATE obs SET {obs_label_col} = NULL")
     else:
         conn.execute(f"UPDATE obs SET {obs_label_col} = ?", [str(unknown_label)])
 
-    # ============================================================
-    # 10. 注册临时映射表，并把手动注释写回 obs
-    # ============================================================
-
+    # 注册临时映射表，并把手动注释写回 obs
     conn.register("_manual_annotation_tmp", mapping_df)
 
     try:
@@ -283,10 +256,7 @@ def manual_annotate_clusters(
             """
         )
 
-        # ========================================================
-        # 11. 可选：保存 cluster -> cell type 的映射表
-        # ========================================================
-
+        # 保存 cluster -> cell type 的映射表
         if table_name is not None:
             table = _quote_identifier(table_name)
 
@@ -305,16 +275,10 @@ def manual_annotate_clusters(
     finally:
         conn.unregister("_manual_annotation_tmp")
 
-    # ============================================================
-    # 12. 保存数据库状态
-    # ============================================================
-
+    # 保存数据库状态
     conn.execute("CHECKPOINT")
 
-    # ============================================================
-    # 13. 是否返回汇总结果
-    # ============================================================
-
+    # 是否返回汇总结果
     if not return_df:
         return None
 
@@ -330,3 +294,27 @@ def manual_annotate_clusters(
         """
     ).df()
 
+
+def _quote_identifier(name: str) -> str:
+    """为 DuckDB SQL 标识符添加安全引用。
+
+    该内部 helper 用于引用动态传入的表名或字段名，例如 ``groupby``、
+    ``obs_col`` 和 ``table_name``。函数会转义名称中已有的双引号，并在外层
+    添加双引号，避免字段名包含特殊字符、空格或 DuckDB 关键字时 SQL 解析失败。
+
+    Parameters
+    ----------
+    name
+        需要引用的 SQL 表名、列名或其他标识符。
+
+    Returns
+    -------
+    str
+        加双引号后的 SQL 标识符。
+
+    Notes
+    -----
+    该函数只用于 SQL 标识符，不用于引用普通字符串值。字符串值应使用 DuckDB
+    参数绑定传入。
+    """
+    return '"' + str(name).replace('"', '""') + '"'
