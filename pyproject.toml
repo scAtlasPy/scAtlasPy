@@ -74,3 +74,8 @@ markers = [
     "realdata: opt-in tests against user-provided real datasets",
     "import_benchmark: opt-in import time and RSS benchmark tests",
 ]
+
+[project.urls]
+Homepage = "https://github.com/GaoLabXDU/scatlaspy"
+Repository = "https://github.com/GaoLabXDU/scatlaspy"
+Issues = "https://github.com/GaoLabXDU/scatlaspy/issues"

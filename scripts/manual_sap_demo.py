@@ -1,3 +1,11 @@
+"""Manual PBMC3K workflow demo.
+
+This file is intentionally kept outside ``tests/`` because it downloads data,
+writes h5ad/database files, and runs a full analysis workflow. Importing this
+module does not execute the workflow; run it explicitly as a script instead.
+"""
+
+SCRIPT = r'''
 import scanpy as sc
 import scatlaspy as sap
 
@@ -210,3 +218,12 @@ sap.pl.stacked_violin(
 )
 
 print(atlas)
+'''
+
+
+def main() -> None:
+    exec(compile(SCRIPT, __file__, "exec"), globals(), globals())
+
+
+if __name__ == "__main__":
+    main()

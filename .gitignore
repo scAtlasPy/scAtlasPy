@@ -1,6 +1,7 @@
 # testing related folders and files
 /bug_reproduce
-/scripts
+/scripts/*
+!/scripts/manual_sap_demo.py
 /tmp
 /.coverage
 
