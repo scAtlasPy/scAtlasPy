@@ -729,23 +729,8 @@ class Atlas:
         result = self.connection.execute(query)
         return result
 
-
-    def describe(self) -> str:
-        """Summarize the table structure in the Atlas database.
-        This method scans database tables and selected key fields to generate a readable database summary.
-        It is useful for checking what an Atlas object contains after importing data or completing analysis.
-
-        Returns
-        -------
-        str
-            Summary of database path, memory limit, tables, cell count, and gene count.
-
-        Examples
-        --------
-        Print a database summary::
-
-            atlas.describe()
-        """
+    def _describe_text(self) -> str:
+        """Build and return a summary string for the Atlas database."""
 
         if self.__connection is None:
             self.connect("r+")
@@ -800,15 +785,35 @@ class Atlas:
 
         return text
 
+    def describe(self) -> None:
+        """Print a summary of the table structure in the Atlas database.
+
+        This method scans database tables and selected key fields to generate and
+        print a readable database summary. It is useful for checking what an Atlas
+        object contains after importing data or completing analysis.
+
+        Returns
+        -------
+        None
+            The summary is printed directly and no object is returned.
+
+        Examples
+        --------
+        Print a database summary::
+
+            atlas.describe()
+        """
+
+        print(self._describe_text())
+        return None
 
     def __repr__(self) -> str:
         """Return a database summary string for the Atlas object."""
-        return self.describe()
-
+        return self._describe_text()
 
     def __str__(self) -> str:
         """Return a readable summary string for the Atlas object."""
-        return self.describe()
+        return self._describe_text()
 
 
     def head(self, table_name: str, n: int = 5):
