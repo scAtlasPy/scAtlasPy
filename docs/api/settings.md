@@ -23,6 +23,8 @@ sap.set_verbosity("info")
 
    set_progress
    set_verbosity
+   io.set_progress
+   io.progress
 ```
 
 ## Common Uses
@@ -30,3 +32,5 @@ sap.set_verbosity("info")
 - `set_progress(...)`: enable, disable, or restore automatic progress-bar
   behavior.
 - `set_verbosity(...)`: control scAtlasPy logging output.
+- `sap.io.progress(...)`: create a progress bar using scAtlasPy's default
+  progress-display policy.

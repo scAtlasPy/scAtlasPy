@@ -61,11 +61,11 @@ and supported combinations.
    :toctree: generated/
    :nosignatures:
 
-   io.gene_names_duplicated
+   io.rename_duplicated_genes
 ```
 
-Use `gene_names_duplicated()` to inspect duplicated gene names when validating
-imported data or preparing an export.
+Use `rename_duplicated_genes()` to make duplicated gene names unique when
+validating imported data or preparing an export.
 
 ## Retrieve and Export Data
 
@@ -156,7 +156,7 @@ The following forms are equivalent:
 | `atlas.get_obs_df()` | `sap.io.get_obs_df(atlas)` |
 | `atlas.get_anndata(cell_ids)` | `sap.io.get_anndata(atlas, cell_ids)` |
 | `atlas.write_h5ad(path)` | `sap.io.write_h5ad(atlas, path)` |
-| `atlas.gene_names_duplicated()` | `sap.io.gene_names_duplicated(atlas)` |
+| `atlas.rename_duplicated_genes()` | `sap.io.rename_duplicated_genes(atlas)` |
 
 The Atlas-method form is generally preferred in tutorials and interactive
 analysis. The module-level form can be useful for functional APIs and

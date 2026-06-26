@@ -144,7 +144,7 @@ documentation workflow, and current implementation limits.
 :::
 
 :::{grid-item-card} Release Notes
-:link: release-notes/index
+:link: release-notes
 :link-type: doc
 
 Review new features, fixes, compatibility changes, and known limitations across
@@ -181,7 +181,7 @@ cross-platform-workflows/index
 api/index
 architecture-and-development/index
 community-and-contributions
-release-notes/index
+release-notes
 citation
 ```
 

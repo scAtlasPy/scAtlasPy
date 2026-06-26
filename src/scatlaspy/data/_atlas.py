@@ -120,7 +120,7 @@ class Atlas:
     --------
     Create or connect to an Atlas database::
 
-    atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas = sap.Atlas(r"F:\\data\\pbmc")
 
     Import an h5ad file through the object API::
 
@@ -605,11 +605,13 @@ class Atlas:
         Examples
         --------
         Add a boolean filter column::
+
             atlas.execute_sql(
                 "ALTER TABLE obs ADD COLUMN IF NOT EXISTS filter_custom BOOLEAN"
             )
 
         Fill missing values in an existing column::
+
             atlas.execute_sql(
                 "UPDATE obs SET filter_custom = FALSE WHERE filter_custom IS NULL"
             )
@@ -677,9 +679,11 @@ class Atlas:
         Examples
         --------
         Inspect the number of cells::
+
             atlas.query("SELECT COUNT(*) AS n_cells FROM obs")
 
         Count cells by cluster::
+
             atlas.query(
                 "SELECT kmeans, COUNT(*) AS n_cells FROM obs GROUP BY kmeans ORDER BY kmeans"
             )
@@ -1107,6 +1111,7 @@ class Atlas:
 
         max_batches
             Maximum number of minibatches to read or output. If ``None``:
+
             - in ``single-pass`` mode, all batches in the current read index are traversed;
             - in ``multi-pass`` mode, the number of passes is not actively limited,
               so it is usually recommended to pass this parameter explicitly.

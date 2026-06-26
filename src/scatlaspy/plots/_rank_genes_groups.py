@@ -324,7 +324,8 @@ def rank_genes_groups_volcano(
         Field name in the result table storing log fold change.
 
     pval_key
-        Field name in the result table storing adjusted p-values. Defaults to``"pvals_adj"``.
+        Field name in the result table storing adjusted p-values. Defaults to
+        ``"pvals_adj"``.
 
     gene_label
         Field name in the result table used to display gene names.
@@ -343,7 +344,8 @@ def rank_genes_groups_volcano(
         Figure size. If ``None``, the function default size is used.
 
     y_cap
-        Display clipping upper limit for the y-axis ``-log10(padj)``. If ``None``,no clipping is applied.
+        Display clipping upper limit for the y-axis ``-log10(padj)``. If
+        ``None``, no clipping is applied.
 
     xlim_abs
         Absolute value of the symmetric x-axis display range. If ``None``, it is
@@ -380,7 +382,8 @@ def rank_genes_groups_volcano(
             group="0",
             top_n=20,
             save_path=r"F:\\figures\\rank_volcano.png",
-        )"""
+        )
+    """
 
     conn = atlas.connection
     if conn is None:

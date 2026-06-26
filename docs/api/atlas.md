@@ -74,12 +74,9 @@ analysis results.
    :nosignatures:
 
    Atlas.query
+   Atlas.query_raw
    Atlas.execute_sql
    Atlas.head
-   Atlas.table_names
-   Atlas.table_info
-   Atlas.has_table
-   Atlas.has_column
 ```
 
 Use `query()` when a SQL statement should return a pandas DataFrame:
@@ -98,30 +95,19 @@ cell_counts = atlas.query("""
 Use `execute_sql()` for statements that modify database state or do not need to
 return a DataFrame.
 
+Use SQL introspection commands when you need to inspect available tables or
+columns:
+
+```python
+tables = atlas.query("SHOW TABLES")
+obs_schema = atlas.query("PRAGMA table_info(obs)")
+```
+
 ```{note}
 Prefer documented Atlas methods and public result interfaces when they are
 available. Internal tables and undocumented storage details should not be
 treated as stable public APIs.
 ```
-
-## Workflow State
-
-These interfaces summarize the preprocessing and analysis state of the Atlas,
-including the currently configured expression-data view.
-
-```{eval-rst}
-.. currentmodule:: scatlaspy
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   Atlas.workflow_state
-   Atlas.read_index_info
-```
-
-They can be used to check whether required preprocessing steps or a read index
-are available before running downstream analyses.
 
 ## Data Movement
 
@@ -141,7 +127,7 @@ other formats or in-memory objects.
    Atlas.write_h5ad
    Atlas.get_obs_df
    Atlas.get_anndata
-   Atlas.gene_names_duplicated
+   Atlas.rename_duplicated_genes
 ```
 
 For example, retrieve selected metadata columns as a pandas DataFrame:
@@ -191,6 +177,7 @@ access to the resulting matrix.
    :nosignatures:
 
    Atlas.build_read_index
+   Atlas.get_minibatch_csr
    Atlas.get_minibatch_dense
 ```
 
@@ -221,6 +208,7 @@ Rebuilding the read index changes the cells, genes, or expression
 representation used by subsequent minibatch and analysis operations.
 ```
 
+`get_minibatch_csr()` provides sparse CSR batches, while
 `get_minibatch_dense()` provides dense batches from the active read-index view
 for streaming statistics, model training, and inference.
 

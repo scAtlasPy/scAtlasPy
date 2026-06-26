@@ -2367,7 +2367,8 @@ def sqrt(
     use_data
         Name of the expression field read from the ``X_HyS_data`` table. The
         default value is ``"data_count"``. Common values include
-        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and``"data_scale"``.
+        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
+        ``"data_scale"``.
 
     chunk_ids
         Number of record IDs covered by each chunk when processing by
@@ -2395,7 +2396,8 @@ def sqrt(
 
     Adjust the chunk size for large data::
 
-        sap.pp.sqrt(atlas, chunk_ids=50000000)"""
+        sap.pp.sqrt(atlas, chunk_ids=50000000)
+    """
 
     start_time = datetime.now()
 
