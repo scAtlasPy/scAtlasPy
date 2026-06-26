@@ -37,3 +37,23 @@ from ._violin import (
     violin,
     stacked_violin,
 )
+
+
+__all__ = [
+    "dotplot",
+    "highly_variable_genes",
+    "kmeans_cluster_size",
+    "pca",
+    "pca_loadings",
+    "pca_variance_ratio",
+    "pca_variance_ratio_cumsum",
+    "highest_expr_genes",
+    "violin_qc_metrics",
+    "scatter_qc_metrics",
+    "rank_genes_groups",
+    "rank_genes_groups_volcano",
+    "rank_genes_groups_violin",
+    "umap",
+    "violin",
+    "stacked_violin",
+]

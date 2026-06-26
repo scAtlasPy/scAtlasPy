@@ -54,8 +54,8 @@ pip install scatlaspy
 To install the latest development version directly from GitHub:
 
 ```bash
-git clone https://github.com/scAtlasAnalysis/scAtlaspy.git
-cd scAtlaspy
+git clone https://github.com/GaoLabXDU/scatlaspy.git
+cd scatlaspy
 pip install -e .
 ```
 
@@ -68,8 +68,8 @@ python -c "import scatlaspy as sap; print(sap.Atlas)"
 ## Documentation
 
 - Documentation: https://scatlaspy.readthedocs.io
-- API reference: https://scatlaspy.readthedocs.io/en/latest/api.html
-- Tutorials and examples: https://scatlaspy.readthedocs.io/en/latest/tutorials.html
+- API reference: https://scatlaspy.readthedocs.io/en/latest/api/
+- Tutorials and examples: https://scatlaspy.readthedocs.io/en/latest/tutorials/
 
 ## Quick Start
 
@@ -78,7 +78,8 @@ Create or open an Atlas database:
 ```python
 import scatlaspy as sap
 
-atlas = sap.Atlas("data/pbmc.sasql", verbosity="info", memory_limit="8GB")
+sap.set_verbosity("info")
+atlas = sap.Atlas("data/pbmc.sasql", db_memory_limit="8GB")
 ```
 
 Import a single `.h5ad` file:
@@ -87,7 +88,6 @@ Import a single `.h5ad` file:
 atlas.load_h5ad(
     "data/pbmc.h5ad",
     load_type="order",
-    store_type="count",
     cells_per_block=1000,  # number of cells processed per import block
 )
 ```
@@ -97,9 +97,8 @@ Import multiple `.h5ad` files with randomized block loading:
 ```python
 atlas.load_h5ad(
     ["data/batch1.h5ad", "data/batch2.h5ad"],
-    load_type="list_random",
+    load_type="random",
     cells_per_block=1000,  # number of cells in each source block
-    blocks_per_pool=20,    # number of blocks shuffled and flushed together
 )
 ```
 
@@ -181,7 +180,8 @@ df = atlas.query("""
 
 ### Core
 
-- `sap.Atlas(file_name, verbosity=None, memory_limit=None)`: create or open a `.sasql` database.
+- `sap.set_verbosity(...)`: configure scAtlasPy logging output.
+- `sap.Atlas(file_name, db_memory_limit=None)`: create or open a `.sasql` database.
 - `atlas.load_h5ad(...)`: import one or more `.h5ad` files.
 - `atlas.load_anndata(adata)`: import an in-memory `AnnData` object.
 - `atlas.load_multi_format(...)`: import supported source formats into an Atlas database.
@@ -203,7 +203,7 @@ df = atlas.query("""
 - Dimensionality reduction: `pca`, `umap`
 - Clustering: `kmeans`
 - Marker analysis: `rank_genes_groups`
-- Annotation: `annotate_clusters`
+- Annotation: `manual_annotate_clusters`
 
 ### Plotting: `sap.pl`
 
@@ -218,14 +218,14 @@ scAtlasPy is designed around chunked reads and writes. For large `.h5ad` files:
 
 - Increase `cells_per_block` for faster import when memory allows.
 - Decrease `cells_per_block` or `batch_cells` to reduce peak memory.
-- Use `memory_limit` when creating `Atlas` to limit DuckDB query memory.
+- Use `db_memory_limit` when creating `Atlas` to limit DuckDB query memory.
 - Build a read index after filtering before running PCA, UMAP, or minibatch workflows.
 - Prefer database-side SQL summaries when you only need metadata or aggregated results.
 
 Example:
 
 ```python
-atlas = sap.Atlas("large_dataset.sasql", memory_limit="16GB")
+atlas = sap.Atlas("large_dataset.sasql", db_memory_limit="16GB")
 atlas.load_h5ad("large_dataset.h5ad", cells_per_block=2000)
 
 sap.pp.filter_cells(atlas, min_genes=200)
@@ -241,8 +241,8 @@ sap.tl.pca(atlas, n_components=50, fit_batches=1000)
 Clone the repository and install in editable mode:
 
 ```bash
-git clone https://github.com/scAtlasAnalysis/scAtlaspy.git
-cd scAtlaspy
+git clone https://github.com/GaoLabXDU/scatlaspy.git
+cd scatlaspy
 pip install -e ".[test]"
 ```
 

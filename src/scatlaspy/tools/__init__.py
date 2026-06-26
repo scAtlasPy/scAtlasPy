@@ -17,3 +17,12 @@ from ._annotation import (
 from ._rank_genes_groups import (
     rank_genes_groups,
 )
+
+
+__all__ = [
+    "pca",
+    "kmeans",
+    "umap",
+    "manual_annotate_clusters",
+    "rank_genes_groups",
+]

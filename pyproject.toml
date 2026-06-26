@@ -6,7 +6,33 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "scatlaspy"
 version = "0.1.0"
+description = "A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits."
+readme = "README.md"
+requires-python = ">=3.10"
 license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Han Xu" },
+    { name = "Yangzhan Ye" },
+    { name = "Senpeng Zhang" },
+]
+maintainers = [
+    { name = "scAtlasPy development team" },
+]
+keywords = [
+    "single-cell",
+    "cell atlas",
+    "bioinformatics",
+    "omics",
+    "out-of-core"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
 
 dependencies = [
     "numpy>=2.2.6",
@@ -77,5 +103,6 @@ markers = [
 
 [project.urls]
 Homepage = "https://github.com/GaoLabXDU/scatlaspy"
+Documentation = "https://scatlaspy.readthedocs.io"
 Repository = "https://github.com/GaoLabXDU/scatlaspy"
 Issues = "https://github.com/GaoLabXDU/scatlaspy/issues"
