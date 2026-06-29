@@ -32,6 +32,7 @@ def load_h5ad(
     *,
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
+    commit_every: int = 1,
 ) -> Any:
     """Import h5ad files into an Atlas database.
 
@@ -63,6 +64,8 @@ def load_h5ad(
     cells_per_block
         Number of cells contained in each contiguous cell block when reading and writing the expression matrix.
         If ``None``, a default value is automatically estimated based on the total number of cells.
+    commit_every
+        Commit the active DuckDB transaction once every N import windows or mini-batches.
 
     Returns
     -------
@@ -115,6 +118,14 @@ def load_h5ad(
     if cells_per_block is not None and cells_per_block <= 0:
         raise ValueError("cells_per_block must be > 0")
 
+    if not isinstance(commit_every, int):
+        raise TypeError(
+            f"commit_every must be int, current type: {type(commit_every)}"
+        )
+
+    if commit_every <= 0:
+        raise ValueError("commit_every must be > 0")
+
 
     # =====================================================
     # 2. Multi-file import: automatically select ordered or random logic based on load_type
@@ -126,6 +137,7 @@ def load_h5ad(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
+                commit_every=commit_every,
             )
 
         logger.info("[INFO] load_type = random, multi-file random import")
@@ -133,6 +145,7 @@ def load_h5ad(
             h5ad_paths=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
+            commit_every=commit_every,
         )
 
     # =====================================================
@@ -162,6 +175,7 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
+            commit_every=commit_every,
         )
 
     # =====================================================
@@ -175,6 +189,7 @@ def load_h5ad(
             h5ad_path=h5ad_path,
             atlas=atlas,
             cells_per_block=cells_per_block,
+            commit_every=commit_every,
         )
 
     logger.info(f"load_h5ad Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
@@ -419,6 +434,7 @@ def _load_h5ad_list_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     *,
+    commit_every: int = 1,
     shuffle_blocks: bool = True,
     shuffle_cells: bool = True,
 ):
@@ -444,6 +460,8 @@ def _load_h5ad_list_random(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
+    commit_every
+        Commit the active DuckDB transaction once every N cell-pool flushes.
     shuffle_blocks
         Whether to shuffle the global block order. Enabled for multi-file random import and disabled for multi-file ordered import.
     shuffle_cells
@@ -489,9 +507,6 @@ def _load_h5ad_list_random(
 
     # ===== Compute global cells_per_block  =====
     cells_per_block = _normalize_cells_per_block(cells_per_block, total_n_cells)
-
-    commit_every = 5  # Commit once every N pool flushes
-    gc_every = 5    # Run gc once every N pool flushes
 
     file_num = len(h5ad_paths)
 
@@ -819,10 +834,6 @@ def _load_h5ad_list_random(
                         conn.execute("COMMIT")
                         conn.execute("BEGIN TRANSACTION")
 
-                    # Run gc once every gc_every flushes
-                    if flush_counter % gc_every == 0:
-                        gc.collect()
-
             pbar.close()
 
             # Final commit
@@ -898,6 +909,7 @@ def _load_h5ad_list_order(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     cells_per_block: int | None = None,
+    commit_every: int = 1,
 ):
     """Import multiple h5ad files into an Atlas database in file-list order.
 
@@ -913,6 +925,8 @@ def _load_h5ad_list_order(
         Atlas object. The function connects to and writes into the corresponding DuckDB database.
     cells_per_block
         Number of cells in each contiguous cell block. If ``None``, it is automatically estimated based on the total number of cells.
+    commit_every
+        Commit the active DuckDB transaction once every N cell-pool flushes.
 
     Returns
     -------
@@ -928,6 +942,7 @@ def _load_h5ad_list_order(
         h5ad_paths=h5ad_paths,
         atlas=atlas,
         cells_per_block=cells_per_block,
+        commit_every=commit_every,
         shuffle_blocks=False,
         shuffle_cells=False,
     )
@@ -937,6 +952,7 @@ def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
+    commit_every: int = 1,
 ):
     """Randomly import a single h5ad file using a shuffle-window strategy.
 
@@ -961,6 +977,8 @@ def _load_h5ad_random(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
+    commit_every
+        Commit the active DuckDB transaction once every N shuffle windows.
 
     Returns
     -------
@@ -984,9 +1002,6 @@ def _load_h5ad_random(
     t_start= time.time()
 
     h5ad_path = os.fspath(h5ad_path)
-
-    commit_every = 5
-    gc_every = 10
 
     # Connect to the database
     conn = atlas.connect("r+")
@@ -1121,14 +1136,6 @@ def _load_h5ad_random(
                         f"processed_batches={total_batch_counter:,}"
                     )
 
-                # Run gc every gc_every batches
-                if window_counter % gc_every == 0:
-                    gc.collect()
-                    logger.info(
-                        f"[GC] processed_windows={window_counter:,}, "
-                        f"processed_batches={total_batch_counter:,}"
-                    )
-
         # Process the remaining window with fewer than 5 batches
         if window_batch_count > 0:
             t1 = time.time()
@@ -1223,6 +1230,7 @@ def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
+    commit_every: int = 1,
 ):
 
     """Import a single h5ad file in the original cell order.
@@ -1244,6 +1252,8 @@ def _load_h5ad_order(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
+    commit_every
+        Commit the active DuckDB transaction once every N mini-batches.
 
     Returns
     -------
@@ -1261,9 +1271,6 @@ def _load_h5ad_order(
 
         _load_h5ad_order(path, atlas, cells_per_block=1000)
     """
-    commit_every = 5
-    gc_every = 5
-
     conn = atlas.connect("r+")
     atlas.connection = conn
 
@@ -1389,9 +1396,6 @@ def _load_h5ad_order(
                 del adata
 
             del mega
-
-            if (mega_i + 1) % gc_every == 0:
-                gc.collect()
 
         # Final commit
         conn.execute("COMMIT")
@@ -1862,9 +1866,10 @@ def _estimate_window_cells_and_blocks_per_pool(
     memory_limit: str | int | None,
     cells_per_block: int,
     estimated_bytes_per_cell: float,
-    memory_fraction: float = 0.25,      #
+    memory_fraction: float = 0.05,      #
     default_blocks_per_pool: int = 20,  #
-    max_blocks_per_pool: int = 100,     # min = 5
+    min_blocks_per_pool: int = 5,       #
+    max_blocks_per_pool: int = 100,     #
 ) -> tuple[int, int]:
     """Estimate the import window size and blocks_per_pool based on the memory limit.
 
@@ -1917,6 +1922,9 @@ def _estimate_window_cells_and_blocks_per_pool(
 
         ``window_cells = cells_per_block * 20``
 
+    min_blocks_per_pool
+        Minimum lower limit of ``blocks_per_pool`` when ``memory_limit`` is set.
+
     max_blocks_per_pool
         Maximum upper limit of ``blocks_per_pool``.
 
@@ -1956,6 +1964,15 @@ def _estimate_window_cells_and_blocks_per_pool(
     if estimated_bytes_per_cell <= 0:
         raise ValueError("estimated_bytes_per_cell must be > 0")
 
+    if min_blocks_per_pool <= 0:
+        raise ValueError("min_blocks_per_pool must be > 0")
+
+    if max_blocks_per_pool <= 0:
+        raise ValueError("max_blocks_per_pool must be > 0")
+
+    if min_blocks_per_pool > max_blocks_per_pool:
+        raise ValueError("min_blocks_per_pool must be <= max_blocks_per_pool")
+
     memory_limit_bytes = _parse_memory_limit_to_bytes(memory_limit)
 
     # When no memory limit is set, keep the old default behavior.
@@ -1978,7 +1995,7 @@ def _estimate_window_cells_and_blocks_per_pool(
 
     # Calculate blocks_per_pool from window_cells and cells_per_block.
     blocks_per_pool = window_cells // cells_per_block
-    blocks_per_pool = max(1, blocks_per_pool)
+    blocks_per_pool = max(min_blocks_per_pool, blocks_per_pool)
 
     # Set an upper limit to avoid an overly large window.
     blocks_per_pool = min(blocks_per_pool, max_blocks_per_pool)

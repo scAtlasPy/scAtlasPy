@@ -1347,6 +1347,7 @@ class Atlas:
             *,
             load_type: Literal["order", "random"] = "random",
             cells_per_block: int | None = None,
+            commit_every: int = 1,
     ) -> Any:
         """Import h5ad files into an Atlas database.
 
@@ -1391,6 +1392,9 @@ class Atlas:
             writing the expression matrix.
             If ``None``, a default value is automatically estimated based on the total
             number of cells.
+        commit_every
+            Commit the active DuckDB transaction once every N import windows or
+            mini-batches.
 
         Returns
         -------
@@ -1427,6 +1431,7 @@ class Atlas:
             self,
             load_type=load_type,
             cells_per_block=cells_per_block,
+            commit_every=commit_every,
         )
 
     def load_anndata(self, adata: AnnData) -> None:
@@ -1925,4 +1930,3 @@ class Atlas:
         ]
 
         return pd.DataFrame(rows)
-
