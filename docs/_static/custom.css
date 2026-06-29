@@ -80,3 +80,47 @@ a:hover {
 .bd-sidebar-primary li.toctree-l1 > a[href$="api/index.html"] + details li.toctree-l2 > details {
   display: none;
 }
+
+/* ===== 侧边栏三级目录不同颜色 ===== */
+
+/* ---- 浅色模式 ---- */
+html[data-theme="light"] .bd-sidebar-primary li.toctree-l1 > a,
+.bd-sidebar-primary li.toctree-l1 > a {
+  color: #18212f;
+  font-weight: 700;
+}
+
+html[data-theme="light"] .bd-sidebar-primary li.toctree-l2 > a,
+.bd-sidebar-primary li.toctree-l2 > a {
+  color: #247f76;
+  font-weight: 600;
+}
+
+html[data-theme="light"] .bd-sidebar-primary li.toctree-l3 > a,
+.bd-sidebar-primary li.toctree-l3 > a {
+  color: #6b7280;
+  font-weight: 400;
+}
+
+/* ---- 深色模式 ---- */
+html[data-theme="dark"] .bd-sidebar-primary li.toctree-l1 > a {
+  color: #e2e8f0;
+  font-weight: 700;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary li.toctree-l2 > a {
+  color: #4fd1c5;
+  font-weight: 600;
+}
+
+html[data-theme="dark"] .bd-sidebar-primary li.toctree-l3 > a {
+  color: #9ca3af;
+  font-weight: 400;
+}
+
+/* hover 效果（深浅通用） */
+.bd-sidebar-primary li.toctree-l1 > a:hover,
+.bd-sidebar-primary li.toctree-l2 > a:hover,
+.bd-sidebar-primary li.toctree-l3 > a:hover {
+  text-decoration: underline;
+}
