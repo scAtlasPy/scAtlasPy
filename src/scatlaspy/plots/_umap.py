@@ -279,7 +279,7 @@ def umap(
 
 
 
-# umap() ─ if color is an obs column → plot_umap_obs()
+# umap() - if color is an obs column -> plot_umap_obs()
 def _plot_umap_obs(
         atlas: Atlas,
         color: str = "kmeans",
@@ -603,8 +603,8 @@ def _plot_umap_obs(
     return None
 
 
-# umap() ─ if color is an obs column → plot_umap_obs()
-#          sample_n == None → _draw_umap_obs_streaming()
+# umap() - if color is an obs column -> plot_umap_obs()
+#          sample_n == None -> _draw_umap_obs_streaming()
 def _draw_umap_obs_streaming(
         atlas: Atlas,
         color: str,
@@ -880,7 +880,7 @@ def _draw_umap_obs_streaming(
 
 
 
-# umap() ─ if color is a gene name → plot_umap_features()
+# umap() - if color is a gene name -> plot_umap_features()
 def _plot_umap_features(
         atlas: Atlas,
         genes: str | list[str],
@@ -1202,7 +1202,7 @@ def _plot_umap_features(
     return None
 
 
-# umap() ─ mixed mode: obs categorical variables + gene feature variables in the same Figure
+# umap() - mixed mode: obs categorical variables + gene feature variables in the same Figure
 def _plot_umap_mixed(
         atlas: Atlas,
         obs_colors: list[str],

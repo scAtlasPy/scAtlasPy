@@ -827,7 +827,7 @@ def _write_dataframe(f: h5py.File, key: str, df: pd.DataFrame):
         colnames.append(col)
         series = df[col]
 
-        # pandas categorical → string
+        # pandas categorical -> string
         if pd.api.types.is_categorical_dtype(series):
             series = series.astype(str)
 

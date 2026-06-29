@@ -34,7 +34,7 @@ def rank_genes_groups(
     results.
 
     The function first aggregates the expression sum, squared sum, and nonzero
-    expression record count for each ``group × gene`` in SQL. It then calculates
+    expression record count for each ``group x gene`` in SQL. It then calculates
     Welch's t-test, log fold change, expression percentages, and multiple-testing
     adjusted p-values in pandas/numpy. The results can be written to a database
     table or returned as a ``pandas.DataFrame``.
@@ -298,7 +298,7 @@ def rank_genes_groups(
                 raise ValueError("groups is empty after removing the reference group")
 
         # -------------------------------------------------
-        # 3. Aggregate group × gene statistics in one pass
+        # 3. Aggregate group x gene statistics in one pass
         # -------------------------------------------------
         conn.execute(f"""
             CREATE TEMP TABLE _rgg_group_stats AS

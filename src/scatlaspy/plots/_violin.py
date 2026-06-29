@@ -401,7 +401,7 @@ def stacked_violin(
     """Plot a stacked violin plot for multiple marker genes.
 
     This function reads expression values for multiple genes from ``X_HyS_data`` and groups by ``obs[groupby]`` to draw
-    a stacked violin plot: each cell corresponds to a ``group × gene`` combination, the violin shape shows the expression distribution,
+    a stacked violin plot: each cell corresponds to a ``group x gene`` combination, the violin shape shows the expression distribution,
     and color intensity represents the median expression level of that combination.
 
     This plot is suitable for comparing expression patterns of multiple marker genes across different clusters, cell types, or sample groups.

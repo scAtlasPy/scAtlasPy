@@ -311,7 +311,7 @@ def umap(
     # Evaluate UMAP embedding quality after training
     X_fit_umap = reducer.transform(X_fit).astype(np.float32)
 
-    # Evaluate only on a subsample to avoid eval_n × eval_n distance matrices from exploding memory
+    # Evaluate only on a subsample to avoid eval_n x eval_n distance matrices from exploding memory
     eval_n = min(eval_sample_n, X_fit.shape[0])
 
     rng = np.random.default_rng(random_state)

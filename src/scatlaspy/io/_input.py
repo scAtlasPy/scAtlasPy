@@ -42,10 +42,10 @@ def load_h5ad(
 
     During import, it automatically dispatches to the corresponding implementation based on ``load_type`` and the type of ``h5ad_path``:
 
-    - single file + ``"order"``：import in the original cell order；
-    - single file + ``"random"``：import randomly using a shuffle-window strategy；
-    - multiple files + ``"order"``：import according to the file list order and the original cell order within each file；
-    - multiple files + ``"random"``：split multiple files into blocks and import them with global randomization。
+    - single file + ``"order"``: import in the original cell order;
+    - single file + ``"random"``: import randomly using a shuffle-window strategy;
+    - multiple files + ``"order"``: import according to the file list order and the original cell order within each file;
+    - multiple files + ``"random"``: split multiple files into blocks and import them with global randomization.
 
     The expression matrix is stored uniformly on the count scale and written to the ``X_HyS_data.data_count`` field.
     If the input ``X`` is detected to be on the log scale, it is converted back to counts before writing.
@@ -544,7 +544,7 @@ def _load_h5ad_list_random(
             n_cells = adata_backed.n_obs
             n_genes = adata_backed.n_vars
 
-            logger.info(f"[INFO] current file dimensions: {n_cells:,} × {n_genes:,}")
+            logger.info(f"[INFO] current file dimensions: {n_cells:,} x {n_genes:,}")
 
             # Detect X scale and estimate memory usage separately for each file
             x_info = _inspect_x_from_backed(
@@ -884,7 +884,7 @@ def _load_h5ad_list_random(
                 s["adata_backed"].file.close()
             except Exception:
                 pass
-        # ：On exception or successful exit, try to clear references to large objects
+        # On exception or successful exit, try to clear references to large objects
         try:
             file_states.clear()
         except Exception:
@@ -1050,7 +1050,7 @@ def _load_h5ad_random(
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
     # Window cache: collect blocks_per_pool batches each time before unified random writing
     window_adatas = []
@@ -1316,7 +1316,7 @@ def _load_h5ad_order(
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} × {adata_backed.n_vars:,}")
+    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
     mini_batch_counter = 0
 
@@ -1467,8 +1467,8 @@ def _write_shuffle_window_to_duckdb(
     tuple
         Returns the updated global cursors and window statistics, in the following order:
 
-        ``global_cell_id``、``global_indptr_id``、``global_indptr_offset``、
-        ``global_data_id``、``var_written``、``window_cells``、``window_nnz``。
+        ``global_cell_id``, ``global_indptr_id``, ``global_indptr_offset``,
+        ``global_data_id``, ``var_written``, ``window_cells``, ``window_nnz``.
 
     Notes
     -----
@@ -1581,7 +1581,7 @@ def _get_atlas_memory_limit(atlas: Atlas) -> str | int | None:
 
     The value returned here is mainly used later to estimate the Python import window size, for example:
 
-    ``memory_limit -> memory_limit_bytes -> window_cells -> blocks_per_pool``。
+    ``memory_limit -> memory_limit_bytes -> window_cells -> blocks_per_pool``.
     """
 
     # 1. First try to read private attributes.
@@ -2031,7 +2031,7 @@ def _detect_x_scale_from_backed(
         AnnData object opened in backed mode.
     sample_n
         Number of cells used for pre-detection. The actual number read is
-        ``min(sample_n, adata_backed.n_obs)``。
+        ``min(sample_n, adata_backed.n_obs)``.
 
     Returns
     -------
@@ -2560,7 +2560,7 @@ def _append_x_hys(
     -------
     tuple[int, int, int]
         Updated ``global_indptr_id``, ``global_indptr_offset``, and
-        ``global_data_id``。
+        ``global_data_id``.
 
     Notes
     -----
@@ -2836,7 +2836,7 @@ def _read_smart(file_path: PathLike[str] | str):
     Notes
     -----
     This function is only responsible for reading files and does not directly write to the Atlas database. To import into the database, continue by calling ``load_anndata`` or
-    ``load_multi_format``。
+    ``load_multi_format``.
 
     Examples
     --------
@@ -3173,7 +3173,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
                     dtype=np.int64
                 )
 
-                # Construct cell_index directly within the chunk (CSR → COO)
+                # Construct cell_index directly within the chunk (CSR -> COO)
                 row_lengths = np.diff(indptr)
                 cell_index = np.repeat(
                     np.arange(start, end, dtype=np.int32),
