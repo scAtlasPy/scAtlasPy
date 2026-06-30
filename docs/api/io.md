@@ -35,7 +35,7 @@ Choose an import function according to the source data:
 | Input | Recommended interface |
 |---|---|
 | One h5ad file | `atlas.load_h5ad(path)` |
-| Multiple h5ad files | `atlas.load_h5ad(paths, load_type="list_random")` |
+| Multiple h5ad files | `atlas.load_h5ad(paths, load_type="random")` |
 | An in-memory `AnnData` object | `atlas.load_anndata(adata)` |
 | Another supported format | `atlas.load_multi_format(path)` |
 
@@ -45,9 +45,10 @@ Choose an import function according to the source data:
 
 | `load_type` | Description |
 |---|---|
-| `"order"` | Read a single h5ad file in its existing cell order |
-| `"random"` | Read a single h5ad file through randomized windows |
-| `"list_random"` | Read and mix cells from multiple h5ad files |
+| `"order"` | Read a single h5ad file in its existing cell order (or multiple files in list order) |
+| `"random"` | Read a single h5ad file through randomized windows (or multiple files with global randomization) |
+
+Use the same `load_type` for single or multiple files — the code automatically detects whether ``h5ad_path`` is a list.
 
 Consult {meth}`scatlaspy.io.load_h5ad` for the complete parameters, defaults,
 and supported combinations.

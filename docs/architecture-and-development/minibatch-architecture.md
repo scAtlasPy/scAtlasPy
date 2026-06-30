@@ -364,31 +364,33 @@ definition.
 
 ## Labels and Identifier Alignment
 
-The current dense minibatch interface returns only expression arrays:
+By default, the dense minibatch interface returns expression arrays:
 
 ```python
 X_batch
 ```
 
-It does not return the corresponding `atlas_cell_id` values with each batch.
+Use the `get_obs_col` parameter to return labels, cell identifiers, or other
+`obs` columns together with each batch:
 
-For deterministic single-pass workflows, labels can be aligned through
-`filter_cell_id` order.
-
-For randomized multi-pass workflows, a separately ordered label vector cannot
-be assumed to follow the same shuffle order.
-
-```{important}
-Do not pair randomized multi-pass expression batches with labels retrieved
-independently from `obs` unless the integration explicitly applies the same
-permutation.
-
-Supervised randomized training requires an identifier-aware or label-aware
-batch interface.
+```python
+for batch in atlas.get_minibatch_dense(
+    batch_size=4096,
+    get_obs_col="kmeans",
+):
+    X_batch = batch["X"]
+    labels = batch["kmeans"]
+    filter_cell_ids = batch["filter_cell_ids"]
 ```
 
-The same consideration applies when a method produces cell-level predictions
-that must later be written back to the Atlas.
+This is useful for supervised training, cluster-aware statistics, and workflows
+that need to write cell-level results back to the Atlas.
+
+For deterministic single-pass workflows, labels can also be aligned through
+`filter_cell_id` order.
+
+For randomized multi-pass workflows, rely on `get_obs_col` rather than assuming
+that an independently ordered label vector follows the same shuffle order.
 
 ## Choosing Minibatch Parameters
 

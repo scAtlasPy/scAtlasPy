@@ -139,7 +139,9 @@ sap.pl.dotplot(atlas, genes=["MS4A1", "CD3D", "LYZ"], groupby="kmeans")
 Export data back to AnnData or `.h5ad`:
 
 ```python
-adata = atlas.get_anndata(None, use_data="data_log1p")
+# Export specific cells by atlas_cell_id
+cell_ids = atlas.query("SELECT atlas_cell_id FROM obs WHERE filter_cells = TRUE LIMIT 5000")["atlas_cell_id"].tolist()
+adata = atlas.get_anndata(cell_ids, use_data="data_log1p")
 atlas.write_h5ad("data/pbmc_processed.h5ad")
 ```
 

@@ -49,10 +49,19 @@ for X_batch in atlas.get_minibatch_dense(
     ...
 ```
 
-Use `pass_mode="multi-pass"` for iterative training. Current minibatch
-interfaces primarily return expression matrices, so supervised methods or
-write-back workflows that require cell identifiers should use a documented
-deterministic order or maintain identifier alignment explicitly.
+Use `pass_mode="multi-pass"` for iterative training. To return cell identifiers
+or `obs` columns together with each batch, pass `get_obs_col`:
+
+```python
+for batch in atlas.get_minibatch_dense(
+    pass_mode="multi-pass",
+    batch_size=4096,
+    get_obs_col="kmeans",
+):
+    X_batch = batch["X"]
+    labels = batch["kmeans"]
+    filter_cell_ids = batch["filter_cell_ids"]
+```
 
 Worked examples are available in the
 {doc}`../tutorials/advanced/index`, including:

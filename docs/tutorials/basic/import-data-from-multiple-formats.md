@@ -31,9 +31,10 @@ scAtlasPy stores imported expression data, cell and gene metadata, embeddings,
 and supported analysis results in a persistent `.sasql` Atlas database.
 
 ```{important}
-Decide the target expression representation before import. If the source matrix
-does not match the requested `store_type`, scAtlasPy will convert it during
-import when it can identify the source scale.
+scAtlasPy automatically detects whether the source matrix contains count-scale
+or log-transformed values and always stores expression data on the count scale
+in the Atlas. Normalization and log transformation should be performed after
+import using the `sap.pp` preprocessing functions.
 ```
 
 ## Choose an Import Method
@@ -43,7 +44,7 @@ Use the source object or file format to select an import path.
 | Your data | Recommended method |
 |---|---|
 | One `.h5ad` file | `atlas.load_h5ad()` |
-| Several `.h5ad` files forming one Atlas | `atlas.load_h5ad(..., load_type="list_random")` |
+| Several `.h5ad` files forming one Atlas | `atlas.load_h5ad(paths, load_type="random")` |
 | An `AnnData` object already loaded in Python | `atlas.load_anndata()` |
 | A smaller file supported by `load_multi_format()` | `atlas.load_multi_format()` |
 | A format requiring reader-specific arguments | Read it with Scanpy, then use `atlas.load_anndata()` |
@@ -51,54 +52,6 @@ Use the source object or file format to select an import path.
 For large `.h5ad` files, prefer `load_h5ad()` because it can import the
 expression matrix in blocks without requiring the complete dataset to remain in
 memory.
-
-## Choose the Expression Representation
-
-The `store_type` argument specifies the expression representation used during
-`.h5ad` import.
-
-| `store_type` | Target representation | Typical use |
-|---|---|---|
-| `"count"` | Count-scale expression values | Run normalization and `log1p` transformation with scAtlasPy |
-| `"log"` | Values already transformed with `log1p` | Continue an analysis that uses an existing log-transformed representation |
-
-During `.h5ad` import, scAtlasPy inspects the source matrix and converts it to
-the requested target representation when needed. For example, if the source
-matrix appears to contain count-scale values and `store_type="log"` is requested,
-scAtlasPy writes log-transformed values into the Atlas. Conversely, if the source
-matrix appears to contain log-transformed values and `store_type="count"` is
-requested, scAtlasPy applies the inverse transformation before writing the data.
-
-```{note}
-scAtlasPy uses the natural logarithm for these conversions: `log1p(x)` means
-`ln(1 + x)`, and the inverse conversion uses `expm1(x)`. If the source matrix is
-already on a log scale, the original logarithm base may be unknown. In that case,
-`expm1` produces count-scale values rather than the exact original count matrix.
-This does not affect downstream analysis in practice, because the difference is
-absorbed as a library-size normalization factor.
-```
-
-For a standard workflow containing:
-
-```python
-sap.pp.normalize_total(atlas)
-sap.pp.log1p(atlas)
-```
-
-store count-scale values in the Atlas with:
-
-```python
-store_type="count"
-```
-
-```{warning}
-Do not label normalized and log-transformed values as counts. Applying an
-inverse transformation to log-normalized data does not recover the original
-count matrix.
-
-If raw counts and processed values are both present in an `AnnData` object,
-confirm which matrix or layer should be imported before creating the Atlas.
-```
 
 ## Create an Atlas
 
@@ -148,7 +101,6 @@ atlas = sap.Atlas(
 atlas.load_h5ad(
     "./data/pbmc3k.h5ad",
     load_type="order",
-    store_type="count",
 )
 ```
 
@@ -170,7 +122,6 @@ atlas = sap.Atlas(
 atlas.load_h5ad(
     "./data/large_dataset.h5ad",
     load_type="random",
-    store_type="count",
     cells_per_block=2000,
 )
 ```
@@ -193,7 +144,7 @@ order is more useful for inspection or comparison.
 
 ## Import Multiple h5ad Files
 
-Use `load_type="list_random"` to combine several `.h5ad` files into one Atlas:
+Use `load_type="random"` to combine several `.h5ad` files into one Atlas:
 
 ```python
 atlas = sap.Atlas(
@@ -207,8 +158,7 @@ atlas.load_h5ad(
         "./data/sample_2.h5ad",
         "./data/sample_3.h5ad",
     ],
-    load_type="list_random",
-    store_type="count",
+    load_type="random",
 )
 ```
 
@@ -391,7 +341,7 @@ Confirm that:
 Normalize duplicated gene names early:
 
 ```python
-atlas.gene_names_duplicated()
+atlas.rename_duplicated_genes()
 ```
 
 This call keeps the first occurrence unchanged and adds suffixes to later

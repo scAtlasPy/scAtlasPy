@@ -14,10 +14,7 @@ passing the object to functions in `sap.pp`, `sap.tl`, and `sap.pl`.
 import scatlaspy as sap
 
 # Create or open ./data/run01.sasql
-atlas = sap.Atlas(
-    "run01",
-    "./data",
-)
+atlas = sap.Atlas("run01")
 ```
 
 Many scAtlasPy operations modify the current Atlas and persist their outputs in
@@ -107,6 +104,50 @@ obs_schema = atlas.query("PRAGMA table_info(obs)")
 Prefer documented Atlas methods and public result interfaces when they are
 available. Internal tables and undocumented storage details should not be
 treated as stable public APIs.
+```
+
+## Database Inspection
+
+These convenience methods support interactive exploration of the Atlas data
+model and are useful in notebooks, tutorials, and development workflows.
+
+```{eval-rst}
+.. currentmodule:: scatlaspy
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   Atlas.table_names
+   Atlas.has_table
+   Atlas.table_info
+   Atlas.has_column
+   Atlas.read_index_info
+   Atlas.workflow_state
+```
+
+List all tables in the Atlas:
+
+```python
+atlas.table_names()
+```
+
+Inspect column metadata for a specific table:
+
+```python
+atlas.table_info("obs")
+```
+
+Check which workflow steps have been completed:
+
+```python
+atlas.workflow_state()
+```
+
+Inspect the active read-index configuration:
+
+```python
+atlas.read_index_info()
 ```
 
 ## Data Movement
@@ -211,6 +252,22 @@ representation used by subsequent minibatch and analysis operations.
 `get_minibatch_csr()` provides sparse CSR batches, while
 `get_minibatch_dense()` provides dense batches from the active read-index view
 for streaming statistics, model training, and inference.
+
+To return `obs` column values (such as cluster labels) together with each
+expression batch, use the `get_obs_col` parameter:
+
+```python
+for batch in atlas.get_minibatch_dense(
+    batch_size=4096,
+    get_obs_col="kmeans",
+):
+    X_batch = batch["X"]
+    labels = batch["kmeans"]
+    filter_cell_ids = batch["filter_cell_ids"]
+```
+
+This is useful for supervised training, label-aware statistics, and workflows
+that need to align expression data with cell-level metadata during streaming.
 
 Worked examples are available in the
 {doc}`../tutorials/advanced/index`.

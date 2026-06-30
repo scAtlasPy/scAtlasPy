@@ -271,7 +271,7 @@ runtime and resource use.
 | Workflow | Parameters to inspect | Typical trade-off |
 |---|---|---|
 | PCA | `batch_size`, `fit_batches` | More fitting batches increase runtime and the amount of data used for fitting |
-| KMeans | `batch_size`, `fit_batches`, `buffer_batch_num` | More updates may improve stability but increase computation |
+| KMeans | `batch_size`, `fit_batches` | More updates may improve stability but increase computation |
 | UMAP | `fit_sample_n`, `transform_batch_size` | A smaller fitting sample is faster; smaller transform batches reduce memory |
 | Large embedding plots | sampling and filtering parameters | Fewer displayed cells improve rendering speed and readability |
 | External in-memory analysis | selected cells, genes, and expression field | Smaller focused subsets reduce materialization and downstream memory |
