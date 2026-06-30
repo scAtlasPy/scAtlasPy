@@ -327,15 +327,15 @@ quality control or preprocessing:
 
 ```python
 atlas.describe()
+atlas.head("obs", n=5)
+atlas.head("var", n=5)
 ```
 
 Confirm that:
 
-- the number of cells matches the source data;
-- the number of genes matches the intended feature space;
-- expected `obs` columns are present;
-- expected `var` columns are present;
-- sample, donor, batch, condition, or technology labels were retained;
+- the number of cells and genes matches the source data;
+- expected `obs` columns are present (sample, donor, batch, condition, etc.);
+- expected `var` columns are present (gene names, IDs, etc.);
 - the imported expression representation matches the intended analysis.
 
 Normalize duplicated gene names early:

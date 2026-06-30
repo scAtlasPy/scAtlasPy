@@ -143,14 +143,6 @@ Understand the atlas data model, streaming architecture, performance behavior,
 documentation workflow, and current implementation limits.
 :::
 
-:::{grid-item-card} Release Notes
-:link: release-notes
-:link-type: doc
-
-Review new features, fixes, compatibility changes, and known limitations across
-scAtlasPy releases.
-:::
-
 ::::
 
 ## Built for Atlas-scale Computation

@@ -23,7 +23,6 @@ sap.set_verbosity("info")
 
    set_progress
    set_verbosity
-   io.set_progress
    io.progress
 ```
 
