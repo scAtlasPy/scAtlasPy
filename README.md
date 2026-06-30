@@ -155,20 +155,6 @@ An Atlas database is a DuckDB file with the `.sasql` extension. scAtlasPy stores
 | `varm_*` | tables | Gene loadings such as PCA loadings |
 | `uns_*` | tables | Analysis summaries and parameters |
 
-Because the database is queryable, you can inspect or extend it with SQL:
-
-```python
-atlas.head("obs", n=5)
-atlas.describe()
-
-df = atlas.query("""
-    SELECT kmeans, COUNT(*) AS n_cells
-    FROM obs
-    GROUP BY kmeans
-    ORDER BY n_cells DESC
-""")
-```
-
 ## API Overview
 
 ### Core
