@@ -75,7 +75,7 @@ def umap(
         # Large-data / output parameters
         plot_batch_size: int = 200000,
         save_path: PathLike[str] | str | None = None,
-):
+) -> None:
 
     """Plot cell UMAP embeddings.
 

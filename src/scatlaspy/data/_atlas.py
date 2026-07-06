@@ -549,7 +549,7 @@ class Atlas:
             raise RuntimeError(f"Failed to connect to database: {str(e)}")
 
 
-    def close(self):
+    def close(self) -> None:
         """Close the current database connection.
 
         The method closes ``atlas.connection`` and releases DuckDB connection resources.
@@ -661,7 +661,7 @@ class Atlas:
         return exists
 
 
-    def query(self, query: str):
+    def query(self, query: str) -> pd.DataFrame:
         """Execute a SQL query and return a DataFrame.
         The query is executed on the active DuckDB connection and converted to ``pandas.DataFrame``.
         This is convenient for interactive inspection of ``obs``, ``var``, and result tables.
@@ -698,7 +698,7 @@ class Atlas:
         return df
 
 
-    def query_raw(self, query: str):
+    def query_raw(self, query: str) -> DuckDBPyConnection:
         """Execute a SQL query and return the raw DuckDB result.
         Unlike ``atlas.query``, this method keeps the original DuckDB result object,
         making it suitable for subsequent calls such as ``fetchone``, ``fetchall``, or other DuckDB-native methods.
@@ -770,7 +770,7 @@ class Atlas:
             n_genes = None
 
         # 5. Format output.
-        def fmt(x: Any):
+        def fmt(x: Any) -> str:
             """Format a count value with thousands separators."""
             return "NA" if x is None else f"{int(x):,}"
 
@@ -816,11 +816,11 @@ class Atlas:
         return self._describe_text()
 
 
-    def head(self, table_name: str, n: int = 5):
+    def head(self, table_name: str, n: int = 5) -> None:
         """Print the first rows of a database table.
 
         This method checks whether the table exists, reads its columns,
-        queries the first ``n`` rows, prints the result, and also returns it as a DataFrame.
+        queries the first ``n`` rows, and prints the result.
 
         Parameters
         ----------
@@ -970,11 +970,11 @@ class Atlas:
 
     def build_read_index(
             self,
-            cell_condition: str = "filter_cells",
-            gene_condition: str = "filter_genes",
+            cell_condition: str | None = "filter_cells",
+            gene_condition: str | None = "filter_genes",
             use_hvg: bool = True,
             use_data: str = "data_log1p",
-    ):
+    ) -> None:
         """Build the expression matrix read index.
 
         This method constructs the index tables required for subsequent minibatch
@@ -1037,7 +1037,7 @@ class Atlas:
             use_data=use_data,
         )
 
-    def get_minibatch_csr(self, x_type: str = "CSR"):
+    def get_minibatch_csr(self, x_type: str = "CSR") -> Iterator[Any]:
         """Read the expression matrix in sparse CSR minibatches.
 
         This method returns sparse matrices batch by batch from the database based on
@@ -1073,7 +1073,7 @@ class Atlas:
             max_batches: int | None = None,
             buffer_batch_num: int = 5,
             get_obs_col: str | None = None,
-    ):
+    ) -> Iterator[np.ndarray | dict[str, Any]]:
         """Read the expression matrix in dense minibatches.
 
         This method restores expression matrices batch by batch from
@@ -1211,7 +1211,7 @@ class Atlas:
         def _quote_identifier(name: str) -> str:
             return '"' + name.replace('"', '""') + '"'
 
-        def _attach_obs_col(batch):
+        def _attach_obs_col(batch: dict[str, Any]) -> dict[str, Any]:
 
             if get_obs_col is None:
                 return batch
@@ -1477,7 +1477,7 @@ class Atlas:
             atlas.load_anndata(adata)
         """
 
-        return _io_load_anndata(adata, self)
+        _io_load_anndata(adata, self)
 
     def load_multi_format(self, file_path: PathLike[str] | str) -> None:
 
@@ -1520,12 +1520,12 @@ class Atlas:
             atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
         """
 
-        return _io_load_multi_format(file_path, self)
+        _io_load_multi_format(file_path, self)
 
     def rename_duplicated_genes(
             self,
             gene_name_column: str = "atlas_gene_name",
-    ) -> bool | None:
+    ) -> bool:
 
         """Check whether gene names in the Atlas database are duplicated.
 
@@ -1640,7 +1640,7 @@ class Atlas:
 
             atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
 
-        return _io_write_h5ad(
+        _io_write_h5ad(
             self,
             out_h5ad_path,
             batch_cells=batch_cells,

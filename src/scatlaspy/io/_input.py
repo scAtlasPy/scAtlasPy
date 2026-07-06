@@ -197,7 +197,7 @@ def load_h5ad(
 
 
 # Write an AnnData object into an Atlas database
-def load_anndata(adata:AnnData, atlas:Atlas):
+def load_anndata(adata: AnnData, atlas: Atlas) -> None:
 
     """Write an AnnData object into an Atlas database.
 
@@ -280,7 +280,7 @@ def load_anndata(adata:AnnData, atlas:Atlas):
 
 
 # Ordered reading, small-file reading, and import support for multiple data formats
-def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
+def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas) -> None:
 
     """Import data into Atlas according to the file format.
 
@@ -323,7 +323,7 @@ def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas):
 
 
 # Check whether gene names in the Atlas database are duplicated
-def rename_duplicated_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name"):
+def rename_duplicated_genes(atlas: Atlas, gene_name_column: str = "atlas_gene_name") -> bool:
     """Check whether gene names in the Atlas database are duplicated.
 
     This function reads the gene name column in the ``var`` table, checks whether duplicate gene names exist, and for duplicated entries
@@ -2052,7 +2052,7 @@ def _detect_x_scale_from_backed(
     return x_info["x_scale"]
 
 
-def _normalize_cells_per_block(cells_per_block, n_cells):
+def _normalize_cells_per_block(cells_per_block: int | None, n_cells: int) -> int:
     """Normalize the cell block size used during import.
 
     This internal function is used by ``load_h5ad`` and its underlying import workflows. When the user does not explicitly specify

@@ -21,7 +21,7 @@ def write_h5ad(
     *,
     batch_cells: int = 1_000_000,
     use_data: str = "data_count",
-):
+) -> None:
     """Export an Atlas database to an h5ad file.
 
     This function reads ``obs``, ``var``, the sparse expression matrix,
@@ -332,7 +332,7 @@ def write_h5ad(
 def get_obs_df(
     atlas: Atlas,
     columns: list[str] | str | None = None,
-):
+) -> pd.DataFrame:
     """Read the obs table from the Atlas database.
 
     This function reads all columns or selected columns from the ``obs`` table
@@ -446,7 +446,7 @@ def get_anndata(
     use_data: str = "data_count",
     include_obsm: bool = True,
     include_varm: bool = True,
-):
+) -> AnnData:
     """Construct an AnnData object from the Atlas database.
 
     This function exports an in-memory AnnData object from the Atlas database

@@ -2025,7 +2025,7 @@ def scale(
         use_hvg: bool = True,
         hvg_key: str = "highly_variable_genes",
         chunk_ids: int = 20_000_000,
-        ):
+        ) -> None:
     """Center and standardize the expression matrix by gene.
 
     This function centers and standardizes the expression matrix by gene in the
@@ -2490,8 +2490,8 @@ def sqrt(
 
 def _cleanup_transform_after_step(
         conn: DuckDBPyConnection,
-        temp_tables: list[str]=None,
-        unregister_tables: list[str]=None,
+        temp_tables: list[str] | None = None,
+        unregister_tables: list[str] | None = None,
         checkpoint: bool = False,
         collect: bool = True,
 ):

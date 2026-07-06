@@ -21,7 +21,7 @@ def filter_cells(
         max_genes: Optional[int] = None,
         add_data: str = "filter_cells",
         chunk_cells: int = 500_000,   # Chunk size
-):
+) -> None:
     """Filter cells based on expression counts and the number of detected genes.
 
     This function computes each cell's total expression and number of detected genes from the expression matrix in chunks,
@@ -726,7 +726,7 @@ def calculate_qc_metrics(
     atlas: Atlas,
     qc_vars: dict[str, Any] | None=None,
     chunk_cells: int=100_000
-):
+) -> None:
     """Calculate commonly used single-cell QC metrics.
 
     This function is used to calculate cell-level and gene-level quality-control metrics in the Atlas database,
@@ -1053,7 +1053,7 @@ def calculate_qc_metrics(
 
 def _cleanup_qc_after_step(
         conn: DuckDBPyConnection,
-        temp_tables: list[str]=None,
+        temp_tables: list[str] | None = None,
         checkpoint: bool = False,
         collect: bool = True,
 ):
@@ -1072,7 +1072,13 @@ def _cleanup_qc_after_step(
         DuckDB database connection.
 
     temp_tables
-        List of temporary table names to clean up.
+        List of DuckDB temporary table names to drop. The default value is
+        ``None``, which is treated as an empty list.
+
+        When ``temp_tables=None``, this function does not attempt to drop any
+        temporary tables. It still performs the optional ``CHECKPOINT`` and
+        Python garbage collection steps controlled by ``checkpoint`` and
+        ``collect``.
 
     checkpoint
         Whether to execute DuckDB ``CHECKPOINT`` after cleanup.

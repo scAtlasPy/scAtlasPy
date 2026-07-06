@@ -17,7 +17,7 @@ def highest_expr_genes(
         approx_quantile: bool = True,
         sample_cells: int | None = None,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot a QC figure showing the percentage of total counts occupied by the highest expressed genes.
 
@@ -627,7 +627,7 @@ def highest_expr_genes(
 
 def violin_qc_metrics(
         atlas: Atlas,
-        keys: str | list[str]=None,
+        keys: str | list[str] | None = None,
         jitter: float = 0.4,
         multi_panel: bool = True,
         figsize: tuple[float, float] | None=None,
@@ -636,7 +636,7 @@ def violin_qc_metrics(
         sample_n: int | None = 50000,
         random_state: int = 0,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot violin plots for QC metrics in ``obs``.
 
@@ -864,7 +864,7 @@ def scatter_qc_metrics(
         point_size: float = 8,
         alpha: float = 0.7,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot scatter plots for pairwise relationships between QC metrics in ``obs``.
 

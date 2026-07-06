@@ -6,6 +6,7 @@ import time
 from os import PathLike, fspath
 import scipy.sparse as sp
 import logging
+from collections.abc import Iterator
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
@@ -119,7 +120,7 @@ class ShuffleBuffer:
             self,
             X_batch: np.ndarray,
             filter_cell_ids: np.ndarray,
-    ):
+    ) -> None:
         """Write a dense minibatch into the shuffle buffer.
 
         This method appends the current dense expression matrix to the buffer. When the
@@ -200,7 +201,7 @@ class ShuffleBuffer:
 
 
     # Output one batch
-    def sample_batch(self):
+    def sample_batch(self) -> tuple[np.ndarray, np.ndarray] | None:
 
         """Execute the core functionality of ``sample_batch``.
 
@@ -255,7 +256,7 @@ class ShuffleBuffer:
 
     # Output remaining batches that did not fill the buffer,
     # preventing zero output when the dataset has fewer batches than buffer_batch_num
-    def flush_remaining(self):
+    def flush_remaining(self) -> list[tuple[np.ndarray, np.ndarray]]:
 
         """Execute the core functionality of ``flush_remaining``.
 
@@ -1059,7 +1060,7 @@ class MultiThreadedMinibatchFetcher:
         self.out_queue.put(None)
 
 
-    def run(self):
+    def run(self) -> Iterator[sp.csr_matrix | np.ndarray | dict[str, np.ndarray]]:
         """Execute the core functionality of ``run``.
 
         Restore CSR or dense minibatches from filtered HyS sparse tables and serve PCA,
@@ -1189,7 +1190,7 @@ class MultiThreadedMinibatchFetcher:
     # Helper function 3: unified batch output
     def _put_output(
             self,
-            X_batch,
+            X_batch: sp.csr_matrix | np.ndarray,
             filter_cell_ids: np.ndarray,
     ):
 

@@ -218,7 +218,7 @@ class StreamingKMeans:
 
 
     # Transform with PCA + train minibatch KMeans clustering
-    def fit_kmeans(self, atlas: Atlas):
+    def fit_kmeans(self, atlas: Atlas) -> "StreamingKMeans":
 
         """Train the MiniBatchKMeans model in batches.
 
@@ -303,10 +303,10 @@ class StreamingKMeans:
     def predict_kmeans(
             self,
             atlas: Atlas,
-            use_cluster_table: str="obs_cluster",
+            use_cluster_table: str = "obs_cluster",
             write_to_obs: bool = True,
             add_obs_col: str = "kmeans"
-    ):
+    ) -> "StreamingKMeans":
 
         """Predict KMeans cluster labels for all cells and write them to the database.
 
@@ -439,7 +439,7 @@ class StreamingKMeans:
 
 
     # Read PCA components from the database and restore them to self.components_
-    def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
+    def load_components(self, atlas: Atlas, table_name: str = "varm_PCs") -> np.ndarray:
 
         """Read PCA loadings from the database for KMeans projection.
 
@@ -493,10 +493,10 @@ class StreamingKMeans:
     def run(
             self,
             atlas: Atlas,
-            use_cluster_table: str="obs_cluster",
+            use_cluster_table: str = "obs_cluster",
             write_to_obs: bool = True,
             add_obs_col: str = "kmeans"
-    ):
+    ) -> "StreamingKMeans":
         """Train and write streaming KMeans clustering results.
 
         This method is the main workflow entry point of ``StreamingKMeans``.
@@ -560,7 +560,7 @@ def kmeans(
         fit_batches: int = 1000,
         add_obs_col: str = "kmeans",
         use_cluster_table: str = "obs_cluster",
-):
+) -> None:
 
     """Perform MiniBatch K-means clustering based on PCA embeddings.
 

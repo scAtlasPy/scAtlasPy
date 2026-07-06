@@ -153,7 +153,7 @@ class FilterIndexBuilder:
 
 
     # External entry point
-    def run(self):
+    def run(self) -> None:
 
         """Execute the complete read index construction workflow.
 

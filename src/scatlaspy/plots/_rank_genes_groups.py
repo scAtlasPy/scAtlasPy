@@ -18,7 +18,7 @@ def rank_genes_groups(
         figsize: tuple | None = None,
         save_path: PathLike[str] | str | None = None,
         show: bool = True,
-):
+) -> None:
     """Plot the top marker gene ranking for each group.
 
     This function reads the differential gene result table written by
@@ -293,7 +293,7 @@ def rank_genes_groups_volcano(
         show: bool = True,
         label_fontsize: int = 7,
         label_offset_step: int = 12,
-):
+) -> None:
     """Plot a volcano plot for differential genes in a single group.
 
     This function reads the results of the specified ``group`` from the differential
@@ -611,7 +611,7 @@ def rank_genes_groups_violin(
         use_expr_field: str = "data_log1p",
         sample_cells_per_group: int = 2000,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot violin plots of marker gene expression across different groups.
 

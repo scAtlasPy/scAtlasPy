@@ -27,7 +27,7 @@ def highly_variable_genes(
         alpha_other: float = 0.6,
 
         save_path: PathLike[str] | str | None = None,
-):
+) -> None:
     """Plot diagnostic figures for highly variable gene selection results.
 
     This function is the public entry point for HVG plotting. It calls the corresponding
@@ -123,15 +123,16 @@ def highly_variable_genes(
     flavor = str(flavor).lower().strip()
 
     if flavor == "seurat":
-        return _highly_variable_genes_plot_seurat(
+        _highly_variable_genes_plot_seurat(
             atlas=atlas,
             hvg_key=hvg_key,
             sample_other=sample_other,
             save_path=save_path,
         )
+        return None
 
     elif flavor in ["cv", "var"]:
-        return _highly_variable_genes_plot(
+        _highly_variable_genes_plot(
             atlas=atlas,
             hvg_key=hvg_key,
             mean_key=mean_key,
@@ -146,6 +147,7 @@ def highly_variable_genes(
             alpha_other=alpha_other,
             save_path=save_path,
         )
+        return None
 
     else:
         raise ValueError(

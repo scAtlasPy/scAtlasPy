@@ -58,7 +58,7 @@ def violin(
         where: str | None = None,
         order: list | None = None,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot violin plots of gene expression across different cell groups.
 
@@ -396,7 +396,7 @@ def stacked_violin(
         color_vmax: float | None = 5.0,
         font_size: int = 14,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot a stacked violin plot for multiple marker genes.
 

@@ -380,7 +380,7 @@ class StreamingPCA:
 
 
     # Train PCA
-    def fit(self, atlas: Atlas):
+    def fit(self, atlas: Atlas) -> "StreamingPCA":
 
         """Fit the IncrementalPCA model in batches.
 
@@ -465,7 +465,7 @@ class StreamingPCA:
         return self
 
 
-    def transform(self, atlas: Atlas):
+    def transform(self, atlas: Atlas) -> None:
         """Project all cells into PCA space in batches.
 
         This method reads the full expression matrix through
@@ -509,7 +509,7 @@ class StreamingPCA:
 
 
     # Main function
-    def fit_transform(self, atlas: Atlas):
+    def fit_transform(self, atlas: Atlas) -> "StreamingPCA":
 
         """Train the PCA model and write all PCA results.
 
@@ -549,7 +549,7 @@ class StreamingPCA:
 
 
     # Get results
-    def get_results(self):
+    def get_results(self) -> dict[str, np.ndarray | None]:
         """Get the results currently stored in memory by the PCA model.
 
         This method returns the PCA principal components, variance, and variance
@@ -587,7 +587,7 @@ class StreamingPCA:
 
 
     # Read PCA components from the database and restore them to self.components_
-    def load_components(self, atlas: Atlas, table_name: str="varm_PCs"):
+    def load_components(self, atlas: Atlas, table_name: str = "varm_PCs") -> np.ndarray:
 
         """Read PCA loadings from the database.
 
@@ -641,7 +641,7 @@ class StreamingPCA:
         return components_
 
 
-    def run(self, atlas: Atlas):
+    def run(self, atlas: Atlas) -> None:
         """Execute the complete streaming PCA computation workflow.
 
         This method first creates the PCA coordinate table, PC loadings table,
@@ -700,7 +700,7 @@ def pca(
         n_components: int = 50,
         fit_batches: int = 1000,
         batch_size: int = 2048,
-):
+) -> None:
     """Calculate PCA based on the Atlas expression matrix.
 
     This function is the public PCA entry point of scAtlasPy. It reads the

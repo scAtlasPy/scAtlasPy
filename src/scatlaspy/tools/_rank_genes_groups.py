@@ -25,7 +25,7 @@ def rank_genes_groups(
         lfc_eps: float = 1e-9,
         inplace: bool = True,
         return_df: bool = True,
-):
+) -> pd.DataFrame | None:
     """Rank marker genes by cell groups.
 
     This function groups cells according to the column specified by ``groupby``

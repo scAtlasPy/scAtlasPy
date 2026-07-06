@@ -4,12 +4,13 @@ from sklearn.neighbors import NearestNeighbors
 from datetime import datetime
 import numpy as np
 import pandas as pd
+from typing import Any
 from ..data import Atlas
 import logging
 logger = logging.getLogger('Atlas')
 
 
-def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int=15):
+def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int = 15) -> float:
 
     """Calculate the nearest-neighbor overlap between high-dimensional and low-dimensional spaces.
 
@@ -98,7 +99,7 @@ def umap(
         save_params_table: str = "uns_umap_params",
         eval_sample_n: int = 5000,
         save_eval_table: str = "uns_umap_eval"
-):
+) -> Any:
     """Calculate UMAP based on PCA embeddings.
 
     This function reads PCA coordinates from the ``obsm_X_pca`` table in the

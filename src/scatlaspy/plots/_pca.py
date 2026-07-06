@@ -62,7 +62,7 @@ def pca(
         legend_loc: str | None = None,
         frameon: bool = True,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot a cell PCA embedding scatter plot.
 
@@ -592,7 +592,7 @@ def pca_variance_ratio(
         show: bool | None = None,
         figsize: tuple[float, float] | None = (7, 6),
         save_path: PathLike[str] | str | None = None,
-):
+) -> None:
     """Plot the variance explained ratio of each PCA component.
 
     This function reads ``variance_ratio`` for each principal component from the
@@ -751,7 +751,7 @@ def pca_variance_ratio_cumsum(
         show: bool | None = None,
         figsize: tuple[float, float] | None=(16, 8),
         save_path: PathLike[str] | str | None = None,
-):
+) -> None:
     """Plot the cumulative PCA variance explained ratio.
 
     This function reads ``variance_ratio`` for each principal component from the
@@ -874,7 +874,7 @@ def pca_loadings(
         figsize: tuple[float, float] | None = (14, 8),
         show: bool | None = None,
         save_path: PathLike[str] | str | None = None,
-):
+) -> None:
     """Plot PCA loadings.
 
     This function reads each gene's loading on the specified principal components

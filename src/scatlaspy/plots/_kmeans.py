@@ -11,7 +11,7 @@ def kmeans_cluster_size(
         show_percent: bool = True,
         title: str | None = None,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot the cell count distribution of K-means or another grouping column.
 

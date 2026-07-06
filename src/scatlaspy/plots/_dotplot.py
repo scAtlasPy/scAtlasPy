@@ -62,7 +62,7 @@ def dotplot(
         colorbar_vmax: float | None = 5.0,
         font_size: int = 14,
         save_path: PathLike[str] | str | None = None
-):
+) -> None:
 
     """Plot a dotplot of gene expression across different cell groups.
 
