@@ -180,9 +180,9 @@ cluster_annotations = {
 
 sap.tl.manual_annotate_clusters(
     atlas,
-    annotations=cluster_annotations,
-    cluster_key="kmeans",
-    annotation_key="cell_type_manual",
+    cluster_to_cell_type=cluster_annotations,
+    groupby="kmeans",
+    obs_col="cell_type_manual",
 )
 ```
 
@@ -226,9 +226,9 @@ manual annotations:
 ```python
 sap.tl.manual_annotate_clusters(
     atlas,
-    annotations=cluster_annotations,
-    cluster_key="kmeans",
-    annotation_key="cell_type_manual",
+    cluster_to_cell_type=cluster_annotations,
+    groupby="kmeans",
+    obs_col="cell_type_manual",
 )
 ```
 

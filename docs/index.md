@@ -9,13 +9,6 @@ clustering, visualization, statistical analysis, and machine learning within a
 unified environment. It also provides an extensible computational foundation
 for developing, integrating, and applying new methods to large cell atlases.
 
-To support these workflows, scAtlasPy organizes expression matrices, cell and
-gene metadata, embeddings, and analysis results in a persistent `.sasql` atlas.
-Analysis routines can retrieve selected cells, genes, data blocks, or
-minibatches through query-based and high-throughput streaming interfaces, without
-requiring the complete expression matrix to reside in memory. The same interfaces
-are available to both built-in workflows and newly developed computational methods.
-
 ## Quick Start
 
 Install scAtlasPy in the Python environment used for your analysis:
@@ -30,7 +23,10 @@ preprocessing, clustering, and visualization workflow:
 ```python
 import scatlaspy as sap
 
+# Create a persistent atlas database on disk.
 atlas = sap.Atlas("pbmc.sasql", db_memory_limit=None)
+
+# Import data from an h5ad file into the atlas.
 atlas.load_h5ad("pbmc.h5ad", load_type="random")
 
 # Quality control and preprocessing
@@ -41,12 +37,8 @@ sap.pp.normalize_total(atlas)
 sap.pp.log1p(atlas)
 sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
 
-# Prepare an analysis view using filtered cells and highly variable genes
-atlas.build_read_index(
-    cell_condition="filter_cells",
-    gene_condition="filter_genes",
-    use_hvg=True,
-)
+# Prepare the default analysis view: filtered cells, filtered HVGs, and log1p data.
+atlas.build_read_index()
 
 # Dimensionality reduction, clustering, and visualization
 sap.tl.pca(atlas, n_components=50)
@@ -147,17 +139,15 @@ documentation workflow, and current implementation limits.
 
 ## Built for Atlas-scale Computation
 
-Each scAtlasPy atlas is maintained as a persistent `.sasql` file containing
-expression data, cell and gene metadata, embeddings, and analysis results.
-Rather than requiring the complete atlas to be materialized in memory,
-computations can retrieve the cells, genes, or data blocks needed for a
-particular analysis.
+scAtlasPy is built around a persistent `.sasql` atlas that keeps expression
+matrices, metadata, embeddings, and analysis results together on disk. Instead
+of materializing the full atlas in memory, workflows operate through filtered
+analysis views, metadata queries, and ordered or randomized data streams.
 
-The atlas can be accessed through metadata queries, filtered analysis views, and
-ordered or randomized expression-data streams. These interfaces support both
-standard single-cell workflows and custom methods through the same Python
-environment, allowing analysis code to operate directly on atlas-scale data
-under practical memory constraints.
+This design gives built-in analyses and custom methods the same controlled
+access pattern: read only the cells, genes, or minibatches needed for the current
+step, then write results back to the atlas for later exploration, visualization,
+or export.
 
 See {doc}`architecture-and-development/data-model` for the atlas representation
 and {doc}`architecture-and-development/index` for architecture and development

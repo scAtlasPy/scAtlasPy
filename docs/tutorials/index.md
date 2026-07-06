@@ -38,14 +38,17 @@ statistics, SQL queries, custom algorithms, and model training workflows.
 
 ## Choosing a Tutorial
 
-Use the Basic path when you want to learn the main scAtlasPy workflow on a
-small or moderate dataset. These pages are written as a guided sequence and are
-best read from top to bottom.
+Start with the Basic path if you want to see how scAtlasPy fits into a
+complete single-cell analysis. It is the best entry point for learning the
+main workflow: create an Atlas, import data, run preprocessing, build an
+analysis view, compute embeddings and clusters, inspect markers, and assign
+cell-type labels.
 
-Use the Advanced path when you need a specific capability: reconnecting an
-existing `.sasql` atlas, querying the database, streaming minibatches, or
-integrating a custom method that cannot load the full expression matrix into
-memory.
+Move to the Advanced path when the basic workflow is already familiar, or when
+you need a focused capability from scAtlasPy's atlas-scale data layer. These
+tutorials show how to reopen an existing `.sasql` Atlas, query stored tables
+with SQL, stream expression data in bounded-memory batches, and use Atlas data
+access inside custom statistical or machine-learning methods.
 
 ```{tip}
 Tutorials are designed as guided learning workflows. For instructions on moving
