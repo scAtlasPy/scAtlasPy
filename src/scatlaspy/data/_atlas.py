@@ -13,6 +13,7 @@ from ..io import (
     rename_duplicated_genes as _io_rename_duplicated_genes,
     get_anndata as _io_get_anndata,
     get_obs_df as _io_get_obs_df,
+    get_var_df as _io_get_var_df,
     load_anndata as _io_load_anndata,
     load_h5ad as _io_load_h5ad,
     load_multi_format as _io_load_multi_format,
@@ -816,11 +817,11 @@ class Atlas:
         return self._describe_text()
 
 
-    def head(self, table_name: str, n: int = 5) -> None:
-        """Print the first rows of a database table.
+    def head(self, table_name: str, n: int = 5) -> pd.DataFrame:
+        """Return the first rows of a database table.
 
         This method checks whether the table exists, reads its columns,
-        queries the first ``n`` rows, and prints the result.
+        and returns the first ``n`` rows as a DataFrame.
 
         Parameters
         ----------
@@ -831,7 +832,8 @@ class Atlas:
 
         Returns
         -------
-        None
+        pandas.DataFrame
+            The first ``n`` rows of the requested table.
 
         Examples
         --------
@@ -859,36 +861,14 @@ class Atlas:
         # 2. Safely quote the table name.
         table_sql = '"' + table_name.replace('"', '""') + '"'
 
-        # 3. Get field names.
-        columns = [
-            r[0]
-            for r in conn.execute("""
-                SELECT column_name
-                FROM information_schema.columns
-                WHERE table_name = ?
-                ORDER BY ordinal_position
-            """, [table_name]).fetchall()
-        ]
-
-        # 4. Query the first n rows.
+        # 3. Query the first n rows.
         df = conn.execute(f"""
             SELECT *
             FROM {table_sql}
             LIMIT {int(n)}
         """).df()
 
-        # 5. Print the result.
-        print(f"table   : {table_name}")
-        print(f"columns : {', '.join(columns)}")
-        print(f"rows    : first {int(n)}")
-
-        with pd.option_context(
-                "display.max_columns", None,
-                "display.max_rows", int(n),
-                "display.width", 0,
-                "display.max_colwidth", None,
-        ):
-            print(df.to_string(index=True))
+        return df
 
 
     def _save_read_index_meta(
@@ -1693,6 +1673,50 @@ class Atlas:
             obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
 
         return _io_get_obs_df(self, columns=columns)
+
+    def get_var_df(
+            self,
+            columns: list[str] | str | None = None,
+    ) -> pd.DataFrame:
+
+        """Read the var table from the Atlas database.
+
+        This function reads all columns or selected columns from the ``var`` table
+        into a pandas DataFrame. It is suitable for checking gene metadata,
+        exporting gene-level statistics, or aligning external gene-level results.
+        The returned result uses ``atlas_gene_id`` as the pandas index while also
+        preserving the ``atlas_gene_id`` column itself.
+
+        Parameters
+        ----------
+        columns
+            Column names to read from ``var``. This can be a single string, a list of
+            strings, or ``None``.
+            If ``None``, all columns are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Query result from ``var``. The default index is ``atlas_gene_id``.
+
+        Notes
+        -----
+        Even if ``atlas_gene_id`` is not explicitly included in ``columns``, the
+        function automatically places ``atlas_gene_id`` as the first column to set
+        the DataFrame index.
+
+        Examples
+        --------
+        Read all var information::
+
+            var = atlas.get_var_df()
+
+        Read only selected gene-level columns::
+
+            var = atlas.get_var_df(columns=["atlas_gene_name", "highly_variable_genes"])
+        """
+
+        return _io_get_var_df(self, columns=columns)
 
     def get_anndata(
             self,

@@ -78,6 +78,7 @@ validating imported data or preparing an export.
    :nosignatures:
 
    io.get_obs_df
+   io.get_var_df
    io.get_anndata
    io.write_h5ad
 ```
@@ -85,6 +86,7 @@ validating imported data or preparing an export.
 | Goal | Recommended interface |
 |---|---|
 | Retrieve cell metadata as a pandas DataFrame | `atlas.get_obs_df()` |
+| Retrieve gene metadata as a pandas DataFrame | `atlas.get_var_df()` |
 | Create an in-memory AnnData object | `atlas.get_anndata(...)` |
 | Write Atlas data to an h5ad file | `atlas.write_h5ad(path)` |
 
@@ -98,6 +100,20 @@ obs = atlas.get_obs_df(
         "atlas_cell_id",
         "sample",
         "cell_type_manual",
+    ]
+)
+```
+
+### Retrieve Gene Metadata
+
+Use `get_var_df()` to retrieve all or selected columns from `var`:
+
+```python
+var = atlas.get_var_df(
+    columns=[
+        "atlas_gene_id",
+        "atlas_gene_name",
+        "highly_variable_genes",
     ]
 )
 ```
@@ -155,6 +171,7 @@ The following forms are equivalent:
 | `atlas.load_anndata(adata)` | `sap.io.load_anndata(adata, atlas)` |
 | `atlas.load_multi_format(path)` | `sap.io.load_multi_format(path, atlas)` |
 | `atlas.get_obs_df()` | `sap.io.get_obs_df(atlas)` |
+| `atlas.get_var_df()` | `sap.io.get_var_df(atlas)` |
 | `atlas.get_anndata(cell_ids)` | `sap.io.get_anndata(atlas, cell_ids)` |
 | `atlas.write_h5ad(path)` | `sap.io.write_h5ad(atlas, path)` |
 | `atlas.rename_duplicated_genes()` | `sap.io.rename_duplicated_genes(atlas)` |

@@ -167,6 +167,7 @@ other formats or in-memory objects.
    Atlas.load_multi_format
    Atlas.write_h5ad
    Atlas.get_obs_df
+   Atlas.get_var_df
    Atlas.get_anndata
    Atlas.rename_duplicated_genes
 ```
@@ -179,6 +180,18 @@ obs = atlas.get_obs_df(
         "atlas_cell_id",
         "sample",
         "cell_type_manual",
+    ]
+)
+```
+
+Retrieve selected gene metadata columns in the same way:
+
+```python
+var = atlas.get_var_df(
+    columns=[
+        "atlas_gene_id",
+        "atlas_gene_name",
+        "highly_variable_genes",
     ]
 )
 ```

@@ -15,6 +15,70 @@ logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
 
 
+def _get_axis_df(
+    atlas: Atlas,
+    table_name: str,
+    id_column: str,
+    columns: list[str] | str | None = None,
+) -> pd.DataFrame:
+    """Read a cell or gene metadata table and index it by the Atlas identifier."""
+
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection is None. Please connect to the database first")
+
+    table_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = ?
+    """, [table_name]).fetchone()[0]
+
+    if table_exists == 0:
+        raise ValueError(f"The {table_name} table does not exist in the database")
+
+    table_columns = [
+        row[0]
+        for row in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = ?
+            ORDER BY ordinal_position
+        """, [table_name]).fetchall()
+    ]
+
+    if id_column not in table_columns:
+        raise ValueError(
+            f"The {id_column} field does not exist in the {table_name} table, "
+            "so the pandas index cannot be set"
+        )
+
+    if columns is None:
+        select_columns = table_columns
+    else:
+        if isinstance(columns, str):
+            columns = [columns]
+
+        missing = [c for c in columns if c not in table_columns]
+        if missing:
+            raise ValueError(f"These fields do not exist in the {table_name} table: {missing}")
+
+        select_columns = [id_column] + [
+            c for c in columns
+            if c != id_column
+        ]
+
+    select_sql = ", ".join([f'"{c}"' for c in select_columns])
+    table_sql = '"' + table_name.replace('"', '""') + '"'
+
+    df = conn.execute(f"""
+        SELECT {select_sql}
+        FROM {table_sql}
+    """).df()
+
+    return df.set_index(id_column, drop=False)
+
+
 def write_h5ad(
     atlas: Atlas,
     out_h5ad_path: PathLike[str] | str,
@@ -374,67 +438,73 @@ def get_obs_df(
 
     start_time = datetime.now()
 
-    conn = atlas.connection
-
-    if conn is None:
-        raise ValueError("atlas.connection is None. Please connect to the database first")
-
-    # 1. Check whether the obs table exists
-    obs_exists = conn.execute("""
-        SELECT COUNT(*)
-        FROM information_schema.tables
-        WHERE table_name = 'obs'
-    """).fetchone()[0]
-
-    if obs_exists == 0:
-        raise ValueError("The obs table does not exist in the database")
-
-    # 2. Get all fields in obs
-    obs_columns = [
-        row[0]
-        for row in conn.execute("""
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = 'obs'
-            ORDER BY ordinal_position
-        """).fetchall()
-    ]
-
-    if "atlas_cell_id" not in obs_columns:
-        raise ValueError("The atlas_cell_id field does not exist in the obs table, so the pandas index cannot be set")
-
-    # 3. Process columns
-    if columns is None:
-        select_columns = obs_columns
-    else:
-        if isinstance(columns, str):
-            columns = [columns]
-
-        # Check whether fields exist
-        missing = [c for c in columns if c not in obs_columns]
-        if missing:
-            raise ValueError(f"These fields do not exist in the obs table: {missing}")
-
-        # atlas_cell_id must be included and placed as the first column
-        select_columns = ["atlas_cell_id"] + [
-            c for c in columns
-            if c != "atlas_cell_id"
-        ]
-
-    # 4. Query obs
-    select_sql = ", ".join([f'"{c}"' for c in select_columns])
-
-    sql = f"""
-        SELECT {select_sql}
-        FROM obs
-    """
-
-    df = conn.execute(sql).df()
-
-    # 5. Use atlas_cell_id as the pandas index by default
-    df = df.set_index("atlas_cell_id", drop=False)
+    df = _get_axis_df(
+        atlas=atlas,
+        table_name="obs",
+        id_column="atlas_cell_id",
+        columns=columns,
+    )
 
     logger.info(f" get_obs_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+
+    return df
+
+
+# Export the var table in DuckDB as a pandas DataFrame
+def get_var_df(
+    atlas: Atlas,
+    columns: list[str] | str | None = None,
+) -> pd.DataFrame:
+    """Read the var table from the Atlas database.
+
+    This function reads all columns or selected columns from the ``var`` table
+    into a pandas DataFrame. It is suitable for checking gene metadata,
+    exporting gene-level statistics, or aligning external gene-level results.
+    The returned result uses ``atlas_gene_id`` as the pandas index while also
+    preserving the ``atlas_gene_id`` column itself.
+
+    Parameters
+    ----------
+    atlas
+        Atlas object. The object must already be connected to a DuckDB database,
+        and the database must contain the ``var`` table.
+    columns
+        Column names to read from ``var``. This can be a single string, a list of
+        strings, or ``None``.
+        If ``None``, all columns are read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Query result from ``var``. The default index is ``atlas_gene_id``.
+
+    Notes
+    -----
+    Even if ``atlas_gene_id`` is not explicitly included in ``columns``, the
+    function automatically places ``atlas_gene_id`` as the first column to set
+    the DataFrame index.
+
+    Examples
+    --------
+    Read all var information::
+
+        var = atlas.get_var_df()
+
+    Read only selected gene-level columns::
+
+        var = atlas.get_var_df(columns=["atlas_gene_name", "highly_variable_genes"])
+    """
+
+    start_time = datetime.now()
+
+    df = _get_axis_df(
+        atlas=atlas,
+        table_name="var",
+        id_column="atlas_gene_id",
+        columns=columns,
+    )
+
+    logger.info(f" get_var_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df
 
