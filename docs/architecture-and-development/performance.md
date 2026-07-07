@@ -121,7 +121,9 @@ memory pressure when database operations and Python-side computations run at
 the same time.
 ```
 
-When `db_memory_limit=None`, DuckDB uses its default memory behavior.
+By default, scAtlasPy sets `db_memory_limit="3G"`. Passing
+`db_memory_limit=None` explicitly uses one quarter of the detected system memory,
+rounded down to an integer number of GB, as the DuckDB memory limit.
 
 ## Import Performance
 

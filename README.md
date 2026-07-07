@@ -160,7 +160,7 @@ An Atlas database is a DuckDB file with the `.sasql` extension. scAtlasPy stores
 ### Core
 
 - `sap.set_verbosity(...)`: configure scAtlasPy logging output.
-- `sap.Atlas(file_name, db_memory_limit=None)`: create or open a `.sasql` database.
+- `sap.Atlas(file_name, db_memory_limit="3G")`: create or open a `.sasql` database.
 - `atlas.load_h5ad(...)`: import one or more `.h5ad` files.
 - `atlas.load_anndata(adata)`: import an in-memory `AnnData` object.
 - `atlas.load_multi_format(...)`: import supported source formats into an Atlas database.

@@ -24,7 +24,7 @@ preprocessing, clustering, and visualization workflow:
 import scatlaspy as sap
 
 # Create a persistent atlas database on disk.
-atlas = sap.Atlas("pbmc.sasql", db_memory_limit=None)
+atlas = sap.Atlas("pbmc.sasql")
 
 # Import data from an h5ad file into the atlas.
 atlas.load_h5ad("pbmc.h5ad", load_type="random")

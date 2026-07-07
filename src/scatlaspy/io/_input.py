@@ -32,7 +32,7 @@ def load_h5ad(
     *,
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
-    commit_every: int = 1,
+    import_window_memory_factor: float = 1.0,
 ) -> None:
     """Import h5ad files into an Atlas database.
 
@@ -64,8 +64,9 @@ def load_h5ad(
     cells_per_block
         Number of cells contained in each contiguous cell block when reading and writing the expression matrix.
         If ``None``, a default value is automatically estimated based on the total number of cells.
-    commit_every
-        Commit the active DuckDB transaction once every N import windows or mini-batches.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the Python-side h5ad import window.
+        This controls the import window size only; it does not change DuckDB's own memory limit.
 
     Returns
     -------
@@ -118,13 +119,14 @@ def load_h5ad(
     if cells_per_block is not None and cells_per_block <= 0:
         raise ValueError("cells_per_block must be > 0")
 
-    if not isinstance(commit_every, int):
+    if not isinstance(import_window_memory_factor, (int, float)):
         raise TypeError(
-            f"commit_every must be int, current type: {type(commit_every)}"
+            "import_window_memory_factor must be int or float, "
+            f"current type: {type(import_window_memory_factor)}"
         )
 
-    if commit_every <= 0:
-        raise ValueError("commit_every must be > 0")
+    if import_window_memory_factor <= 0:
+        raise ValueError("import_window_memory_factor must be > 0")
 
 
     # =====================================================
@@ -137,7 +139,7 @@ def load_h5ad(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
-                commit_every=commit_every,
+                import_window_memory_factor=import_window_memory_factor,
             )
         else:
             logger.info("[INFO] load_type = random, multi-file random import")
@@ -145,7 +147,7 @@ def load_h5ad(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
-                commit_every=commit_every,
+                import_window_memory_factor=import_window_memory_factor,
             )
     else:
         # =====================================================
@@ -172,7 +174,7 @@ def load_h5ad(
                 h5ad_path=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
-                commit_every=commit_every,
+                import_window_memory_factor=import_window_memory_factor,
             )
         elif load_type == "random":
             # =====================================================
@@ -183,7 +185,7 @@ def load_h5ad(
                 h5ad_path=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
-                commit_every=commit_every,
+                import_window_memory_factor=import_window_memory_factor,
             )
 
     logger.info(f"load_h5ad Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
@@ -429,6 +431,7 @@ def _load_h5ad_list_random(
     cells_per_block: int | None = None,
     *,
     commit_every: int = 1,
+    import_window_memory_factor: float = 1.0,
     shuffle_blocks: bool = True,
     shuffle_cells: bool = True,
 ):
@@ -456,6 +459,8 @@ def _load_h5ad_list_random(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     commit_every
         Commit the active DuckDB transaction once every N cell-pool flushes.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the Python-side import window size.
     shuffle_blocks
         Whether to shuffle the global block order. Enabled for multi-file random import and disabled for multi-file ordered import.
     shuffle_cells
@@ -611,9 +616,10 @@ def _load_h5ad_list_random(
             raise ValueError("All h5ad files have 0 cells and cannot be imported")
 
         estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
-            memory_limit=_get_atlas_memory_limit(atlas),
+            memory_limit=atlas.db_memory_limit,
             cells_per_block=cells_per_block,
             estimated_bytes_per_cell=max_estimated_bytes_per_cell,
+            import_window_memory_factor=import_window_memory_factor,
         )
 
         if shuffle_blocks:
@@ -904,6 +910,7 @@ def _load_h5ad_list_order(
     atlas: Atlas,
     cells_per_block: int | None = None,
     commit_every: int = 1,
+    import_window_memory_factor: float = 1.0,
 ):
     """Import multiple h5ad files into an Atlas database in file-list order.
 
@@ -921,6 +928,8 @@ def _load_h5ad_list_order(
         Number of cells in each contiguous cell block. If ``None``, it is automatically estimated based on the total number of cells.
     commit_every
         Commit the active DuckDB transaction once every N cell-pool flushes.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the Python-side import window size.
 
     Returns
     -------
@@ -937,6 +946,7 @@ def _load_h5ad_list_order(
         atlas=atlas,
         cells_per_block=cells_per_block,
         commit_every=commit_every,
+        import_window_memory_factor=import_window_memory_factor,
         shuffle_blocks=False,
         shuffle_cells=False,
     )
@@ -947,6 +957,7 @@ def _load_h5ad_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     commit_every: int = 1,
+    import_window_memory_factor: float = 1.0,
 ):
     """Randomly import a single h5ad file using a shuffle-window strategy.
 
@@ -973,6 +984,8 @@ def _load_h5ad_random(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     commit_every
         Commit the active DuckDB transaction once every N shuffle windows.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the Python-side import window size.
 
     Returns
     -------
@@ -1017,9 +1030,10 @@ def _load_h5ad_random(
     source_x_scale = x_info["x_scale"]
 
     estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
-        memory_limit=_get_atlas_memory_limit(atlas),
+        memory_limit=atlas.db_memory_limit,
         cells_per_block=cells_per_block,
         estimated_bytes_per_cell=x_info["estimated_bytes_per_cell"],
+        import_window_memory_factor=import_window_memory_factor,
     )
 
     logger.info(f"[INFO] X in the file detected as: {source_x_scale}")
@@ -1215,6 +1229,7 @@ def _load_h5ad_order(
     atlas: Atlas,
     cells_per_block: int | None = None,
     commit_every: int = 1,
+    import_window_memory_factor: float = 1.0,
 ):
 
     """Import a single h5ad file in the original cell order.
@@ -1238,6 +1253,8 @@ def _load_h5ad_order(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     commit_every
         Commit the active DuckDB transaction once every N mini-batches.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the Python-side import window size.
 
     Returns
     -------
@@ -1280,9 +1297,10 @@ def _load_h5ad_order(
     source_x_scale = x_info["x_scale"]
 
     estimated_window_cells, blocks_per_pool = _estimate_window_cells_and_blocks_per_pool(
-        memory_limit=_get_atlas_memory_limit(atlas),
+        memory_limit=atlas.db_memory_limit,
         cells_per_block=cells_per_block,
         estimated_bytes_per_cell=x_info["estimated_bytes_per_cell"],
+        import_window_memory_factor=import_window_memory_factor,
     )
 
     # In order mode, window_cells is the mega-batch size
@@ -1526,74 +1544,6 @@ def _write_shuffle_window_to_duckdb(
         window_cells,
         window_nnz,
     )
-
-
-def _get_atlas_memory_limit(atlas: Atlas) -> str | int | None:
-    """Get the memory limit parameter stored in the Atlas object.
-
-    This function reads the memory limit value from the Atlas object, such as ``"32GB"``, ``"8G"``,
-    ``16``, or ``None``.
-
-    This is written as a separate helper so that the import module can remain compatible with different versions of the Atlas class:
-    1. older versions may use ``__memory_limit``;
-    2. newer versions may use ``__db_memory_limit``;
-    3. some versions may provide the public attribute ``memory_limit``;
-    4. the currently recommended version uses the public attribute ``db_memory_limit``.
-
-    Parameters
-    ----------
-    atlas
-        Atlas object. It is usually passed in by ``load_h5ad(..., atlas=atlas)`` or
-        ``atlas.load_h5ad(...)``.
-
-    Returns
-    -------
-    memory_limit
-        Memory limit parameter stored in Atlas.
-
-        Possible return values:
-        - ``str``, such as ``"32GB"``, ``"8G"``, or ``"1024MB"``;
-        - ``int``, such as ``32``, meaning 32GB;
-        - ``None``, meaning no available memory limit is set.
-
-    Notes
-    -----
-    This function is only responsible for reading the memory limit and does not apply the memory limit to DuckDB.
-    The logic that actually executes DuckDB ``SET memory_limit`` should be implemented in the Atlas class
-    inside ``_apply_memory_limit()``.
-
-    The value returned here is mainly used later to estimate the Python import window size, for example:
-
-    ``memory_limit -> memory_limit_bytes -> window_cells -> blocks_per_pool``.
-    """
-
-    # 1. First try to read private attributes.
-    #    This makes it compatible with fields that may exist in older Atlas classes.
-    for attr_name in ("_Atlas__memory_limit", "_Atlas__db_memory_limit"):
-        try:
-            value = getattr(atlas, attr_name)
-        except Exception:
-            value = None
-
-        if value not in (None, "", "None"):
-            return value
-
-    # 2. Then try to read public attributes.
-    #    Currently, atlas.db_memory_limit is recommended.
-    for attr_name in ("memory_limit", "db_memory_limit"):
-        try:
-            value = getattr(atlas, attr_name)
-        except RecursionError:
-            # Prevent recursion errors caused by incorrectly implemented old properties.
-            value = None
-        except Exception:
-            value = None
-
-        if value not in (None, "", "None"):
-            return value
-
-    # 3. If none are found, assume no memory limit is set.
-    return None
 
 
 def _parse_memory_limit_to_bytes(memory_limit: str | int | None) -> int | None:
@@ -1849,10 +1799,10 @@ def _estimate_window_cells_and_blocks_per_pool(
     memory_limit: str | int | None,
     cells_per_block: int,
     estimated_bytes_per_cell: float,
-    memory_fraction: float = 0.2,       #
+    import_window_memory_factor: float = 1.0,  #
     default_blocks_per_pool: int = 20,  #
     min_blocks_per_pool: int = 5,       #
-    max_blocks_per_pool: int = 1000,     #
+    max_blocks_per_pool: int = 500,     #
 ) -> tuple[int, int]:
     """Estimate the import window size and blocks_per_pool based on the memory limit.
 
@@ -1889,17 +1839,16 @@ def _estimate_window_cells_and_blocks_per_pool(
 
         This value has already been multiplied by ``overhead_factor``, so it is more conservative than the memory of X alone.
 
-    memory_fraction
-        Memory fraction used to estimate the import window.
+    import_window_memory_factor
+        Empirical scaling factor used to estimate the import window.
 
-        For example, when ``memory_limit="32GB"`` and ``memory_fraction=0.25``,
-        it means that at most about 8GB is used to estimate the import window.
+        Larger values create larger import windows; smaller values create more conservative windows.
 
-        Using 1.0 is not recommended here because Python, NumPy, pandas, AnnData,
-        Arrow, and DuckDB all consume additional memory.
+        This factor controls the Python-side window estimate only. It does not change DuckDB's own memory limit.
 
     default_blocks_per_pool
-        Default number of window blocks used when ``memory_limit`` is ``None``.
+        Fallback number of window blocks used when no memory limit is available,
+        for example when system memory detection or memory-limit parsing fails.
 
         The default value is 20, equivalent to the default behavior of older versions:
 
@@ -1958,17 +1907,17 @@ def _estimate_window_cells_and_blocks_per_pool(
 
     memory_limit_bytes = _parse_memory_limit_to_bytes(memory_limit)
 
-    # When no memory limit is set, keep the old default behavior.
+    # Fall back to the old default behavior when no usable memory limit is available.
     if memory_limit_bytes is None:
         blocks_per_pool = default_blocks_per_pool
         window_cells = cells_per_block * blocks_per_pool
         return window_cells, blocks_per_pool
 
-    if not 0 < memory_fraction <= 1:
-        raise ValueError("memory_fraction must be in the range (0, 1]")
+    if import_window_memory_factor <= 0:
+        raise ValueError("import_window_memory_factor must be > 0")
 
-    # Use only a fraction of memory_limit to estimate the import window to avoid excessive memory peaks.
-    usable_memory_bytes = memory_limit_bytes * memory_fraction
+    # Apply an empirical factor to estimate the Python-side import window.
+    usable_memory_bytes = memory_limit_bytes * import_window_memory_factor
 
     # Infer how many cells can fit in one window based on the estimated memory per cell.
     window_cells = int(usable_memory_bytes // estimated_bytes_per_cell)
@@ -1989,7 +1938,7 @@ def _estimate_window_cells_and_blocks_per_pool(
     logger.info("[INFO] Automatically estimated h5ad import window parameters:")
     logger.info(f"  - memory_limit = {memory_limit}")
     logger.info(f"  - memory_limit_bytes = {memory_limit_bytes:,}")
-    logger.info(f"  - memory_fraction = {memory_fraction}")
+    logger.info(f"  - import_window_memory_factor = {import_window_memory_factor}")
     logger.info(f"  - cells_per_block = {cells_per_block:,}")
     logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
     logger.info(f"  - window_cells = {window_cells:,}")

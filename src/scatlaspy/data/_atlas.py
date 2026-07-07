@@ -138,7 +138,7 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            db_memory_limit: str | int | None = None,
+            db_memory_limit: str | int | None = "3G",
     ):
         """Initialize an Atlas database object.
 
@@ -158,9 +158,10 @@ class Atlas:
             This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
             for example ``4`` is equivalent to ``"4GB"``.
 
-            The default value is ``None``.
-            In that case, the current system physical memory is detected and rounded down to an integer number of GB,
-            then used as DuckDB's memory limit. For example, a system with about 31.8 GB of memory is configured as ``"31GB"``.
+            The default value is ``"3G"``.
+            If ``None`` is passed explicitly, one quarter of the current system physical memory is detected and rounded down
+            to an integer number of GB, then used as DuckDB's memory limit.
+            For example, a system with about 31.8 GB of memory is configured as ``"7GB"``.
 
             This parameter only limits memory used by DuckDB queries and intermediate computation.
             It does not limit memory allocated directly by Python, NumPy, or pandas.
@@ -310,14 +311,15 @@ class Atlas:
     ) -> str | int:
         """Resolve the DuckDB memory-limit argument.
 
-        When ``db_memory_limit`` is ``None``,
-        the current system physical memory is detected and rounded down to an integer number of GB.
-        For example, about 31.8 GB is resolved as ``"31GB"``.
+        When ``db_memory_limit`` is explicitly set to ``None``,
+        one quarter of the current system physical memory is detected and rounded down to an integer number of GB.
+        For example, about 31.8 GB is resolved as ``"7GB"``.
         """
 
         if db_memory_limit is None:
             memory_gb = Atlas._get_system_memory_gb_floor()
-            return f"{memory_gb}GB"
+            memory_limit_gb = max(memory_gb // 4, 1)
+            return f"{memory_limit_gb}GB"
 
         return db_memory_limit
 
@@ -1327,7 +1329,7 @@ class Atlas:
             *,
             load_type: Literal["order", "random"] = "random",
             cells_per_block: int | None = None,
-            commit_every: int = 1,
+            import_window_memory_factor: float = 1.0,
     ) -> Any:
         """Import h5ad files into an Atlas database.
 
@@ -1372,9 +1374,9 @@ class Atlas:
             writing the expression matrix.
             If ``None``, a default value is automatically estimated based on the total
             number of cells.
-        commit_every
-            Commit the active DuckDB transaction once every N import windows or
-            mini-batches.
+        import_window_memory_factor
+            Empirical scaling factor used to estimate the Python-side h5ad import
+            window size. This does not change DuckDB's own memory limit.
 
         Returns
         -------
@@ -1411,7 +1413,7 @@ class Atlas:
             self,
             load_type=load_type,
             cells_per_block=cells_per_block,
-            commit_every=commit_every,
+            import_window_memory_factor=import_window_memory_factor,
         )
 
     def load_anndata(self, adata: AnnData) -> None:
