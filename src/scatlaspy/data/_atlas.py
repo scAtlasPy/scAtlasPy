@@ -196,13 +196,13 @@ class Atlas:
         if not os.path.exists(self.file_path):
             logger.info(f"Database file does not exist; creating a new database: {self.file_path}")
             try:
-                self.__connection = self._create()
+                self._create()
                 logger.info(f"Database created successfully: {self.file_path}")
             except Exception as e:
                 logger.error(f"Database creation failed: {str(e)}")
                 raise
         else:
-            self.__connection = self.connect("r+")
+            self.connect("r+")
             logger.info(f"Database file already exists: {self.file_path}; connection created")
 
         logger.info("Atlas instance initialized")

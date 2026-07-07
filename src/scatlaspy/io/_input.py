@@ -33,7 +33,7 @@ def load_h5ad(
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
     commit_every: int = 1,
-) -> Any:
+) -> None:
     """Import h5ad files into an Atlas database.
 
     This function is the unified entry point for importing h5ad data into Atlas. It can read a single ``.h5ad`` file or
@@ -69,9 +69,9 @@ def load_h5ad(
 
     Returns
     -------
-    Any
-        Returns the result of the called underlying import function. Currently, this is mainly used to execute import side effects, and the return value is usually not relied upon.
-        return value.
+    None
+        The import is performed for its side effects: data are written into
+        the Atlas database, and no object is returned.
 
     Notes
     -----
@@ -133,64 +133,58 @@ def load_h5ad(
     if isinstance(h5ad_path, (list, tuple)):
         if load_type == "order":
             logger.info("[INFO] load_type = order, multi-file ordered import")
-            return _load_h5ad_list_order(
+            _load_h5ad_list_order(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
                 cells_per_block=cells_per_block,
                 commit_every=commit_every,
             )
+        else:
+            logger.info("[INFO] load_type = random, multi-file random import")
+            _load_h5ad_list_random(
+                h5ad_paths=h5ad_path,
+                atlas=atlas,
+                cells_per_block=cells_per_block,
+                commit_every=commit_every,
+            )
+    else:
+        # =====================================================
+        # 3. Single-file import: first read n_cells lightly, then enter the corresponding logic
+        # =====================================================
+        if not isinstance(h5ad_path, (str, PathLike)):
+            raise TypeError(
+                f"h5ad_path must be str, current type: {type(h5ad_path)}"
+            )
 
-        logger.info("[INFO] load_type = random, multi-file random import")
-        return _load_h5ad_list_random(
-            h5ad_paths=h5ad_path,
-            atlas=atlas,
-            cells_per_block=cells_per_block,
-            commit_every=commit_every,
-        )
+        h5ad_path = os.fspath(h5ad_path)
 
-    # =====================================================
-    # 3. Single-file import: first read n_cells lightly, then enter the corresponding logic
-    # =====================================================
+        # Lightly read n_cells to unify the default value of cells_per_block
+        adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+        n_cells = adata_backed.n_obs
+        cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
 
-    if not isinstance(h5ad_path, (str, PathLike)):
-        raise TypeError(
-            f"h5ad_path must be str, current type: {type(h5ad_path)}"
-        )
-
-    h5ad_path = os.fspath(h5ad_path)
-
-    # Lightly read n_cells to unify the default value of cells_per_block
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-    n_cells = adata_backed.n_obs
-    cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
-
-    # =====================================================
-    # 4. order: ordered import
-    # =====================================================
-    if load_type == "order":
-
-        logger.info("[INFO] load_type = order")
-
-        return _load_h5ad_order(
-            h5ad_path=h5ad_path,
-            atlas=atlas,
-            cells_per_block=cells_per_block,
-            commit_every=commit_every,
-        )
-
-    # =====================================================
-    # 5. random: regular random import
-    # =====================================================
-    if load_type == "random":
-
-        logger.info("[INFO] load_type = random")
-
-        return _load_h5ad_random(
-            h5ad_path=h5ad_path,
-            atlas=atlas,
-            cells_per_block=cells_per_block,
-            commit_every=commit_every,
-        )
+        # =====================================================
+        # order: ordered import
+        # =====================================================
+        if load_type == "order":
+            logger.info("[INFO] load_type = order")
+            _load_h5ad_order(
+                h5ad_path=h5ad_path,
+                atlas=atlas,
+                cells_per_block=cells_per_block,
+                commit_every=commit_every,
+            )
+        elif load_type == "random":
+            # =====================================================
+            # random: regular random import
+            # =====================================================
+            logger.info("[INFO] load_type = random")
+            _load_h5ad_random(
+                h5ad_path=h5ad_path,
+                atlas=atlas,
+                cells_per_block=cells_per_block,
+                commit_every=commit_every,
+            )
 
     logger.info(f"load_h5ad Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
     return None
@@ -999,13 +993,8 @@ def _load_h5ad_random(
 
     h5ad_path = os.fspath(h5ad_path)
 
-    t_start= time.time()
-
-    h5ad_path = os.fspath(h5ad_path)
-
     # Connect to the database
     conn = atlas.connect("r+")
-    atlas.connection = conn
 
     # Global cursor
     global_cell_id = 0
@@ -1120,11 +1109,6 @@ def _load_h5ad_random(
 
                 total_batch_counter += window_batch_count
                 window_counter += 1
-
-                # Clear the window
-                for x in window_adatas:
-                    del x
-                window_adatas.clear()
                 window_batch_count = 0
 
                 # Commit every commit_every batches; equivalent to committing every 2 windows when blocks_per_pool=5
@@ -1476,7 +1460,15 @@ def _write_shuffle_window_to_duckdb(
     matrix-related tables.
     """
 
-    # 1. Merge multiple batches within the window
+    # 1. Convert each block before concat so later shuffle does not need to
+    # modify a full-window AnnData object.
+    for i, adata in enumerate(window_adatas):
+        window_adatas[i] = _convert_x_to_count_inplace(
+            adata,
+            source_x_scale=source_x_scale,
+        )
+
+    # 2. Merge multiple batches within the window
     adata_window = sc.concat(
         window_adatas,
         axis=0,
@@ -1484,11 +1476,12 @@ def _write_shuffle_window_to_duckdb(
         merge="first",
         index_unique=None,
     )
+    window_adatas.clear()
 
-    # 2. Shuffle all cells within the window uniformly
+    # 3. Shuffle all cells within the window uniformly
     if adata_window.n_obs > 1:
         perm = np.random.permutation(adata_window.n_obs)
-        adata_window = adata_window[perm].copy()
+        adata_window = adata_window[perm]
 
     # Window statistics
     window_cells = adata_window.n_obs
@@ -1498,25 +1491,19 @@ def _write_shuffle_window_to_duckdb(
     else:
         window_nnz = np.count_nonzero(adata_window.X)
 
-    # 3. Write obs
+    # 4. Write obs
     global_cell_id = _append_obs_rows(
         adata_window,
         conn,
         start_cell_id=global_cell_id,
     )
 
-    # 4. Write var, only once
+    # 5. Write var, only once
     if not var_written:
         _append_var(adata_window, conn)
         var_written = True
 
-    # During import, uniformly convert the expression matrix to count before writing
-    adata_window = _convert_x_to_count_inplace(
-        adata_window,
-        source_x_scale=source_x_scale,
-    )
-
-    # 5. Write X_HyS_data / X_HyS_indptr
+    # 6. Write X_HyS_data / X_HyS_indptr
     (
         global_indptr_id,
         global_indptr_offset,
@@ -1524,15 +1511,11 @@ def _write_shuffle_window_to_duckdb(
     ) = _append_x_hys(
         adata_window,
         conn,
-        base_cell_id=global_cell_id - adata_window.n_obs,
+        base_cell_id= global_cell_id - adata_window.n_obs,
         global_indptr_id=global_indptr_id,
         global_indptr_offset=global_indptr_offset,
         global_data_id=global_data_id,
     )
-
-    del adata_window
-
-    gc.collect()
 
     return (
         global_cell_id,
@@ -1866,10 +1849,10 @@ def _estimate_window_cells_and_blocks_per_pool(
     memory_limit: str | int | None,
     cells_per_block: int,
     estimated_bytes_per_cell: float,
-    memory_fraction: float = 0.05,      #
+    memory_fraction: float = 0.2,       #
     default_blocks_per_pool: int = 20,  #
     min_blocks_per_pool: int = 5,       #
-    max_blocks_per_pool: int = 100,     #
+    max_blocks_per_pool: int = 1000,     #
 ) -> tuple[int, int]:
     """Estimate the import window size and blocks_per_pool based on the memory limit.
 
@@ -2085,15 +2068,15 @@ def _normalize_cells_per_block(cells_per_block: int | None, n_cells: int) -> int
     logger.info(f"cells_per_block = {cells_per_block}")
     return cells_per_block
 
-# Convert adata.X in place according to the input X scale; during import, write uniformly as count, with log conversion base e
+# Convert AnnData.X or a matrix to count scale; during import, write uniformly as count, with log conversion base e.
 def _convert_x_to_count_inplace(
-    adata: AnnData,
+    x_or_adata: AnnData | np.ndarray | sparse.spmatrix | sparse.sparray,
     source_x_scale: XScale,
 ):
     """Convert the expression matrix to the count scale.
 
-    This internal function is used to unify the expression matrix scale before import. The Atlas import workflow stores the expression matrix as
-    count by default, so when the input ``adata.X`` is determined to be on the log scale, the function performs
+    This internal function is used to unify the expression matrix scale before import. The Atlas import workflow stores
+    the expression matrix as count by default, so when the input expression matrix is determined to be on the log scale, the function performs
     ``expm1`` conversion and clips negative values to 0, using e as the default conversion base.
 
     For sparse matrices, the function only converts the nonzero value array ``X.data`` without breaking the sparse structure; for dense
@@ -2101,15 +2084,17 @@ def _convert_x_to_count_inplace(
 
     Parameters
     ----------
-    adata
-        AnnData object to convert. The function updates its ``adata.X``.
+    x_or_adata
+        AnnData object or expression matrix to convert. When an AnnData object is provided, the function updates
+        its ``.X`` field and returns the same AnnData object. When a sparse or dense matrix is provided, the
+        function returns the converted matrix.
     source_x_scale
         Current scale of the input expression matrix. Supports ``"count"`` and ``"log"``.
 
     Returns
     -------
-    AnnData
-        The same AnnData object after conversion.
+    AnnData or matrix
+        Converted object. The return type matches the input object type.
 
     Notes
     -----
@@ -2117,9 +2102,10 @@ def _convert_x_to_count_inplace(
     """
 
     if source_x_scale == "count":
-        return adata
+        return x_or_adata
 
-    X = adata.X
+    is_adata = isinstance(x_or_adata, AnnData)
+    X = x_or_adata.X if is_adata else x_or_adata
 
     # 1. sparse matrix: only modify nonzero values in X.data without breaking the sparse structure
     if sparse.issparse(X):
@@ -2135,8 +2121,10 @@ def _convert_x_to_count_inplace(
         else:
             raise ValueError(f"Unsupported X scale: {source_x_scale}")
 
-        adata.X = X
-        return adata
+        if is_adata:
+            x_or_adata.X = X
+            return x_or_adata
+        return X
 
     # 2. dense matrix: directly convert the entire matrix
     X = np.asarray(X, dtype=np.float32)
@@ -2148,8 +2136,10 @@ def _convert_x_to_count_inplace(
     else:
         raise ValueError(f"Unsupported X scale: {source_x_scale}")
 
-    adata.X = X
-    return adata
+    if is_adata:
+        x_or_adata.X = X
+        return x_or_adata
+    return X
 
 
 # Simply detect the underlying sparse format of h5ad.X
