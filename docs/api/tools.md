@@ -74,12 +74,25 @@ The default output is commonly stored in:
 obs.kmeans
 ```
 
+Key parameters:
+
+| Parameter | Description |
+|---|---|
+| `n_components` | Number of PCA dimensions used for clustering. Default ``30``. |
+| `n_clusters` | Number of clusters to find. Default ``10``. |
+| `batch_size` | Number of cells per minibatch. Default ``2048``. |
+| `fit_batches` | Number of minibatches used for fitting. Default ``1000``. |
+| `add_obs_col` | ``obs`` column name for the resulting cluster labels. Default ``"kmeans"``. |
+
 Example:
 
 ```python
 sap.tl.kmeans(
     atlas,
+    n_components=30,
     n_clusters=10,
+    batch_size=2048,
+    add_obs_col="kmeans",
 )
 ```
 

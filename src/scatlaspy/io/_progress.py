@@ -142,9 +142,9 @@ def progress(*args: Any, **kwargs: Any) -> Any:
 
     Parameters
     ----------
-    *args
+    args
         Positional arguments passed through to ``tqdm.auto.tqdm``.
-    **kwargs
+    kwargs
         Keyword arguments passed through to ``tqdm.auto.tqdm``.
 
     Returns

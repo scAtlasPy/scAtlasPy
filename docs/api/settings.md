@@ -33,3 +33,17 @@ sap.set_verbosity("info")
 - `set_verbosity(...)`: control scAtlasPy logging output.
 - `sap.io.progress(...)`: create a progress bar using scAtlasPy's default
   progress-display policy.
+
+### Verbosity Levels
+
+`set_verbosity()` accepts the following levels:
+
+| Level | Behavior |
+|---|---|
+| `"silence"` (default) | No scAtlasPy log output |
+| `"error"` | Only errors |
+| `"warning"` | Warnings and errors |
+| `"info"` | Workflow progress messages |
+| `"debug"` | Detailed per-step diagnostics |
+
+Pass `None` to restore the default level (`"silence"`).
