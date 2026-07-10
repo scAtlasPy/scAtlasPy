@@ -92,6 +92,14 @@ cell_counts = atlas.query("""
 Use `execute_sql()` for statements that modify database state or do not need to
 return a DataFrame.
 
+Use `query_raw()` when you need the raw DuckDB result object for native
+methods such as `fetchone()` or `fetchall()`:
+
+```python
+result = atlas.query_raw("SELECT COUNT(*) FROM obs")
+n_cells = result.fetchone()[0]
+```
+
 Use SQL introspection commands when you need to inspect available tables or
 columns:
 

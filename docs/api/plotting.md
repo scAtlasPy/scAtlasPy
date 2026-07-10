@@ -42,6 +42,11 @@ appropriate so that figures remain readable and practical to render.
 These functions visualize highly expressed genes and cell-level
 quality-control metrics.
 
+```python
+sap.pl.highest_expr_genes(atlas, n_top=20)
+sap.pl.scatter_qc_metrics(atlas, x="total_counts", y="n_genes_by_counts")
+```
+
 ## Highly Variable Genes
 
 ```{eval-rst}
@@ -56,6 +61,10 @@ quality-control metrics.
 
 Use this function to inspect the relationship between gene expression,
 dispersion, and highly variable gene selection.
+
+```python
+sap.pl.highly_variable_genes(atlas)
+```
 
 ## PCA
 
@@ -75,6 +84,12 @@ dispersion, and highly variable gene selection.
 These functions visualize PCA coordinates, component loadings, and explained
 variance.
 
+```python
+sap.pl.pca(atlas, color="sample")
+sap.pl.pca_loadings(atlas, components=[1, 2])
+sap.pl.pca_variance_ratio(atlas)
+```
+
 ## Clustering and UMAP
 
 ```{eval-rst}
@@ -90,6 +105,10 @@ variance.
 
 Use these functions to inspect cluster sizes and visualize stored UMAP
 coordinates.
+
+```python
+sap.pl.kmeans_cluster_size(atlas)
+```
 
 UMAP plots can commonly be colored by:
 
@@ -137,6 +156,11 @@ statistics, and expression distributions for ranked genes.
 The corresponding marker analysis must be completed before these functions are
 used.
 
+```python
+sap.pl.rank_genes_groups(atlas, group="0", n_genes=10)
+sap.pl.rank_genes_groups_volcano(atlas, group="0")
+```
+
 ## Gene-expression Comparison
 
 ```{eval-rst}
@@ -153,6 +177,11 @@ used.
 
 Use these functions to compare selected genes across clusters, annotations,
 conditions, or other cell groups.
+
+```python
+sap.pl.violin(atlas, keys=["NKG7", "CST3"], groupby="kmeans")
+sap.pl.dotplot(atlas, var_names=["NKG7", "CST3", "MS4A1"], groupby="kmeans")
+```
 
 For routine marker-expression visualization, a log-normalized expression field
 such as `data_log1p` is generally more interpretable than scaled values.

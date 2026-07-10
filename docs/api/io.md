@@ -68,6 +68,18 @@ and supported combinations.
 Use `rename_duplicated_genes()` to make duplicated gene names unique when
 validating imported data or preparing an export.
 
+**When to call:** after importing data and before exporting to AnnData.
+Duplicated gene names (for example, from merging multiple datasets) can cause
+issues in downstream tools that expect unique identifiers.
+
+**Renaming rule:** the first occurrence of a gene name is kept unchanged;
+subsequent duplicates receive a ``_1``, ``_2``, … suffix. Gene names that are
+already unique are not modified.
+
+```python
+atlas.rename_duplicated_genes()
+```
+
 ## Retrieve and Export Data
 
 ```{eval-rst}

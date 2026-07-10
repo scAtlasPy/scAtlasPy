@@ -987,7 +987,7 @@ class Atlas:
         Returns
         -------
         None
-            The result is written directly into the Atlas database or the current figure window.
+            The result is written directly into the Atlas database.
 
         Examples
         --------
@@ -1066,7 +1066,7 @@ class Atlas:
         ``IncrementalPCA``, ``MiniBatchKMeans``, streaming training, and large-scale
         batched inference.
 
-        The return value is a generator that ``yield``s minibatches one by one,
+        The return value is a generator that yields minibatches one by one,
         instead of loading all data into memory at once.
         By default, each iteration returns only one ``X_batch`` matrix.
         When ``get_obs_col`` is provided, the current batch's row-wise
@@ -1116,7 +1116,7 @@ class Atlas:
             Column name from the ``obs`` table to return together with each minibatch,
             for example ``"kmeans"``.
             Defaults to ``None``, meaning no ``obs`` column is queried and each
-            iteration only ``yield``s ``X_batch``.
+            iteration only yields ``X_batch``.
 
             When a column name is provided, such as ``get_obs_col="kmeans"``, this
             method automatically asks the underlying minibatch reader to return
@@ -1358,10 +1358,6 @@ class Atlas:
         h5ad_path
             Input ``.h5ad`` file path, or a list of multiple ``.h5ad`` file paths.
 
-        atlas
-            Atlas object. The function obtains a DuckDB connection through
-            ``atlas.connect("r+")`` and writes data into this Atlas database.
-
         load_type
             Import mode. Only ``"order"`` and ``"random"`` are supported.
             When ``h5ad_path`` is a single path, single-file ordered or random import
@@ -1435,10 +1431,6 @@ class Atlas:
         adata
             AnnData object. The function writes its ``obs``, ``var``, expression matrix,
             and supported results into the Atlas database.
-        atlas
-            Atlas object. The object must already be connected or be connectable to
-            a DuckDB database.
-
         Returns
         -------
         None
@@ -1479,10 +1471,6 @@ class Atlas:
         file_path
             Input file path. The function selects an appropriate reading method based
             on the file format.
-        atlas
-            Atlas object. The object must already be connected or be connectable to
-            a DuckDB database.
-
         Returns
         -------
         None
@@ -1523,9 +1511,6 @@ class Atlas:
 
         Parameters
         ----------
-        atlas
-            Atlas object. The object must already be connected to a DuckDB database,
-            and the database must contain the ``var`` table.
         gene_name_column
             The ``var`` column name that stores gene names. Usually
             ``"atlas_gene_name"``.
@@ -1572,11 +1557,6 @@ class Atlas:
 
         Parameters
         ----------
-        atlas
-            Atlas object. The object must already be connected to a DuckDB database,
-            and the database must contain at least the ``obs``, ``var``,
-            ``X_HyS_indptr``, and ``X_HyS_data`` tables.
-
         out_h5ad_path
             Output ``.h5ad`` file path.
 
@@ -1644,10 +1624,6 @@ class Atlas:
 
         Parameters
         ----------
-        atlas
-            Atlas object. The object must already be connected to a DuckDB database,
-            and the database must contain the ``obs`` table.
-
         columns
             Column names to read from ``obs``. This can be a single string, a list of
             strings, or ``None``.
@@ -1741,11 +1717,6 @@ class Atlas:
 
         Parameters
         ----------
-        atlas
-            Atlas object. The object must already be connected to a DuckDB database,
-            and the database must contain at least the ``obs``, ``var``, and
-            ``X_HyS_data`` tables.
-
         atlas_cell_ids
             List of Atlas cell IDs to export. It cannot be empty and cannot contain
             duplicate values.
