@@ -5,6 +5,7 @@ import logging
 import h5py
 import pyarrow as pa
 import time
+import math
 import zlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -25,6 +26,15 @@ XScale = Literal["count", "log"]
 # Get the logger
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
+
+
+def _convert_obs_categories_to_object_inplace(adata: AnnData) -> AnnData:
+    """Remove unused categories and convert categorical obs columns to object."""
+
+    category_columns = adata.obs.select_dtypes(["category"]).columns
+    for col in category_columns:
+        adata.obs[col] = adata.obs[col].cat.remove_unused_categories().astype(object)
+    return adata
 
 
 class FastH5adBlockReader:
@@ -678,7 +688,6 @@ def _load_h5ad_list_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     *,
-    commit_every: int = 1,
     import_window_memory_factor: float = 1.0,
     shuffle_blocks: bool = True,
     shuffle_cells: bool = True,
@@ -705,8 +714,6 @@ def _load_h5ad_list_random(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
-    commit_every
-        Commit the active DuckDB transaction once every N cell-pool flushes.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
     shuffle_blocks
@@ -927,6 +934,7 @@ def _load_h5ad_list_random(
             total_pool_nnz = 0
 
             for ad in cell_pool:
+                ad = _convert_obs_categories_to_object_inplace(ad)
                 X = ad.X
 
                 if sparse.issparse(X):
@@ -1078,10 +1086,8 @@ def _load_h5ad_list_random(
 
                     gc.collect()
 
-                    # Commit once every commit_every flushes
-                    if flush_counter % commit_every == 0:
-                        conn.execute("COMMIT")
-                        conn.execute("BEGIN TRANSACTION")
+                    conn.execute("COMMIT")
+                    conn.execute("BEGIN TRANSACTION")
 
             pbar.close()
 
@@ -1149,7 +1155,6 @@ def _load_h5ad_list_order(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     cells_per_block: int | None = None,
-    commit_every: int = 1,
     import_window_memory_factor: float = 1.0,
 ):
     """Import multiple h5ad files into an Atlas database in file-list order.
@@ -1166,8 +1171,6 @@ def _load_h5ad_list_order(
         Atlas object. The function connects to and writes into the corresponding DuckDB database.
     cells_per_block
         Number of cells in each contiguous cell block. If ``None``, it is automatically estimated based on the total number of cells.
-    commit_every
-        Commit the active DuckDB transaction once every N cell-pool flushes.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
 
@@ -1185,7 +1188,6 @@ def _load_h5ad_list_order(
         h5ad_paths=h5ad_paths,
         atlas=atlas,
         cells_per_block=cells_per_block,
-        commit_every=commit_every,
         import_window_memory_factor=import_window_memory_factor,
         shuffle_blocks=False,
         shuffle_cells=False,
@@ -1196,7 +1198,6 @@ def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    commit_every: int = 1,
     import_window_memory_factor: float = 1.0,
 ):
     """Randomly import a single h5ad file using a shuffle-window strategy.
@@ -1222,8 +1223,6 @@ def _load_h5ad_random(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
-    commit_every
-        Commit the active DuckDB transaction once every N shuffle windows.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
 
@@ -1289,6 +1288,7 @@ def _load_h5ad_random(
     # Merge 5 blocks and then shuffle them uniformly
     block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
     np.random.shuffle(block_starts)
+    total_windows = math.ceil(len(block_starts) / blocks_per_pool)
 
     # Create tables dynamically
     _create_obs_table_from_adata(conn, adata_backed[:1])
@@ -1299,7 +1299,6 @@ def _load_h5ad_random(
 
     # Window cache: collect blocks_per_pool batches each time before unified random writing
     window_adatas = []
-    total_batch_counter = 0
     window_counter = 0
     window_fill_start = time.time()
 
@@ -1347,10 +1346,9 @@ def _load_h5ad_random(
 
                 t_write = time.time() - t1
 
-                total_batch_counter += current_window_batches
                 window_counter += 1
                 logger.info(
-                    f"[window append] window={window_counter:,}, "
+                    f"[window append] [{window_counter:,}/{total_windows:,}], "
                     f"blocks={current_window_batches:,}/{blocks_per_pool:,}, "
                     f"cells={window_cells:,}, "
                     f"nnz={window_nnz:,}, "
@@ -1359,14 +1357,11 @@ def _load_h5ad_random(
                 )
                 window_fill_start = time.time()
 
-                # Commit every commit_every batches; equivalent to committing every 2 windows when blocks_per_pool=5
-                if window_counter % commit_every == 0:
-                    conn.execute("COMMIT")
-                    conn.execute("BEGIN TRANSACTION")
-                    logger.info(
-                        f"[COMMIT] processed_windows={window_counter:,}, "
-                        f"processed_batches={total_batch_counter:,}"
-                    )
+                conn.execute("COMMIT")
+                conn.execute("BEGIN TRANSACTION")
+                logger.info(
+                    f"[COMMIT] processed_windows={window_counter:,}"
+                )
 
         # Process the remaining window with fewer than 5 batches
         if len(window_adatas) > 0:
@@ -1395,15 +1390,19 @@ def _load_h5ad_random(
 
             t_write = time.time() - t1
 
-            total_batch_counter += current_window_batches
             window_counter += 1
             logger.info(
-                f"[window append] window={window_counter:,}, "
+                f"[window append] [{window_counter:,}/{total_windows:,}], "
                 f"blocks={current_window_batches:,}/{blocks_per_pool:,}, "
                 f"cells={window_cells:,}, "
                 f"nnz={window_nnz:,}, "
                 f"fill={window_fill_time:.2f}s, "
                 f"append={t_write:.2f}s"
+            )
+            conn.execute("COMMIT")
+            conn.execute("BEGIN TRANSACTION")
+            logger.info(
+                f"[COMMIT] processed_windows={window_counter:,}"
             )
 
         # Final commit
@@ -1457,7 +1456,6 @@ def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    commit_every: int = 1,
     import_window_memory_factor: float = 1.0,
 ):
 
@@ -1480,8 +1478,6 @@ def _load_h5ad_order(
 
     cells_per_block
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
-    commit_every
-        Commit the active DuckDB transaction once every N mini-batches.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
 
@@ -1550,7 +1546,7 @@ def _load_h5ad_order(
 
     logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
-    mini_batch_counter = 0
+    total_windows = math.ceil(n_cells / mega_batch_size)
 
     # Place the transaction outside the main loop
     conn.execute("BEGIN TRANSACTION")
@@ -1562,6 +1558,7 @@ def _load_h5ad_order(
                 desc="load_h5ad",
             )
         ):
+            window_i = mega_i + 1
             mega_end = min(mega_start + mega_batch_size, n_cells)
 
             t0 = time.time()
@@ -1583,51 +1580,45 @@ def _load_h5ad_order(
             else:
                 mega_nnz = np.count_nonzero(mega.X)
 
-            # Import in batches according to cells_per_block
-            for start in range(0, mega.n_obs, cells_per_block):
-                end = min(start + cells_per_block, mega.n_obs)
-                adata = mega[start:end]
+            t1 = time.time()
 
-                t1 = time.time()
+            # ---------------- window import obs ----------------
+            global_cell_id = _append_obs_rows(
+                mega,
+                conn,
+                start_cell_id=global_cell_id,
+            )
 
-                # ---------------- batch import obs ----------------
-                global_cell_id = _append_obs_rows(
-                    adata,
-                    conn,
-                    start_cell_id=global_cell_id,
-                )
+            # ---------------- import var (once) ----------------
+            if not var_written:
+                _append_var(mega, conn)
+                var_written = True
 
-                # ---------------- import var (once) ----------------
-                if not var_written:
-                    _append_var(adata, conn)
-                    var_written = True
+            # ---------------- window import X (HyS) ----------------
+            (
+                global_indptr_id,
+                global_indptr_offset,
+                global_data_id,
+            ) = _append_x_hys(
+                mega,
+                conn,
+                base_cell_id=global_cell_id - mega.n_obs,
+                global_indptr_id=global_indptr_id,
+                global_indptr_offset=global_indptr_offset,
+                global_data_id=global_data_id,
+            )
 
-                # ---------------- batch import X (CSRO) ----------------
-                (
-                    global_indptr_id,
-                    global_indptr_offset,
-                    global_data_id,
-                ) = _append_x_hys(
-                    adata,
-                    conn,
-                    base_cell_id=global_cell_id - adata.n_obs,
-                    global_indptr_id=global_indptr_id,
-                    global_indptr_offset=global_indptr_offset,
-                    global_data_id=global_data_id,
-                )
+            t_write = time.time() - t1
+            logger.info(
+                f"[order window append] [{window_i:,}/{total_windows:,}], "
+                f"cells={mega.n_obs:,}, "
+                f"nnz={mega_nnz:,}, "
+                f"read={t_read:.2f}s, "
+                f"append={t_write:.2f}s"
+            )
 
-                t_write = time.time() - t1
-
-                mini_batch_counter += 1
-
-                # Commit once every commit_every mini-batches
-                if mini_batch_counter % commit_every == 0:
-                    conn.execute("COMMIT")
-                    conn.execute("BEGIN TRANSACTION")
-
-                del adata
-
-            del mega
+            conn.execute("COMMIT")
+            conn.execute("BEGIN TRANSACTION")
 
         # Final commit
         conn.execute("COMMIT")
@@ -1714,13 +1705,17 @@ def _write_shuffle_window_to_duckdb(
 
     # 1. Convert each block before concat so later shuffle does not need to
     # modify a full-window AnnData object.
+    t_category0 = time.time()
     for i, adata in enumerate(window_adatas):
+        adata = _convert_obs_categories_to_object_inplace(adata)
         window_adatas[i] = _convert_x_to_count_inplace(
             adata,
             source_x_scale=source_x_scale,
         )
+    t_category = time.time() - t_category0
 
     # 2. Merge multiple batches within the window
+    t_concat0 = time.time()
     adata_window = sc.concat(
         window_adatas,
         axis=0,
@@ -1728,12 +1723,25 @@ def _write_shuffle_window_to_duckdb(
         merge="first",
         index_unique=None,
     )
+    t_concat = time.time() - t_concat0
     window_adatas.clear()
+    logger.info(
+        f"[window concat] cells={adata_window.n_obs:,}, "
+        f"vars={adata_window.n_vars:,}, "
+        f"category={t_category:.2f}s, "
+        f"concat={t_concat:.2f}s"
+    )
 
     # 3. Shuffle all cells within the window uniformly
+    t_shuffle0 = time.time()
     if adata_window.n_obs > 1:
         perm = np.random.permutation(adata_window.n_obs)
         adata_window = adata_window[perm]
+    t_shuffle = time.time() - t_shuffle0
+    logger.info(
+        f"[window shuffle] cells={adata_window.n_obs:,}, "
+        f"shuffle={t_shuffle:.2f}s"
+    )
 
     # Window statistics
     window_cells = adata_window.n_obs
@@ -1744,18 +1752,31 @@ def _write_shuffle_window_to_duckdb(
         window_nnz = np.count_nonzero(adata_window.X)
 
     # 4. Write obs
+    t_obs0 = time.time()
     global_cell_id = _append_obs_rows(
         adata_window,
         conn,
         start_cell_id=global_cell_id,
     )
+    t_obs = time.time() - t_obs0
+    logger.info(
+        f"[window obs append] cells={adata_window.n_obs:,}, "
+        f"obs_append={t_obs:.2f}s"
+    )
 
     # 5. Write var, only once
     if not var_written:
+        t_var0 = time.time()
         _append_var(adata_window, conn)
+        t_var = time.time() - t_var0
+        logger.info(
+            f"[window var append] vars={adata_window.n_vars:,}, "
+            f"var_append={t_var:.2f}s"
+        )
         var_written = True
 
     # 6. Write X_HyS_data / X_HyS_indptr
+    t_x_hys0 = time.time()
     (
         global_indptr_id,
         global_indptr_offset,
@@ -1767,6 +1788,12 @@ def _write_shuffle_window_to_duckdb(
         global_indptr_id=global_indptr_id,
         global_indptr_offset=global_indptr_offset,
         global_data_id=global_data_id,
+    )
+    t_x_hys = time.time() - t_x_hys0
+    logger.info(
+        f"[window x_hys append] cells={adata_window.n_obs:,}, "
+        f"nnz={window_nnz:,}, "
+        f"x_hys_append={t_x_hys:.2f}s"
     )
 
     return (
@@ -2735,6 +2762,9 @@ def _append_x_hys(
     -----
     ``atlas_gene_id`` is written as ``uint16``, corresponding to ``USMALLINT`` in the database.
     """
+    t_total0 = time.time()
+
+    t_csr0 = time.time()
     X = adata.X
 
     if not sparse.issparse(X):
@@ -2742,12 +2772,13 @@ def _append_x_hys(
     elif not sparse.isspmatrix_csr(X):
         X = X.tocsr()
 
-
     indptr = X.indptr.astype(np.int64, copy=False)
     indices = X.indices.astype(np.uint16, copy=False)
     data_count = X.data.astype(np.float32, copy=False)
+    t_csr = time.time() - t_csr0
 
     # ================= indptr =================
+    t_indptr_table0 = time.time()
     row_nnz = np.diff(indptr)
 
     # Do not store indptr[0]; only store indptr[1:]
@@ -2767,7 +2798,9 @@ def _append_x_hys(
             type=pa.int64(),
         ),
     })
+    t_indptr_table = time.time() - t_indptr_table0
 
+    t_indptr_insert0 = time.time()
     conn.execute("""
         INSERT INTO X_HyS_indptr (
             atlas_cell_id,
@@ -2778,14 +2811,19 @@ def _append_x_hys(
             indptr
         FROM indptr_table
     """)
+    t_indptr_insert = time.time() - t_indptr_insert0
 
     global_indptr_id += len(adj_indptr)
 
     # ================= data_count =================
     nnz = len(data_count)
+    t_cell_index = 0.0
+    t_data_table = 0.0
+    t_data_insert = 0.0
 
     if nnz > 0:
 
+        t_cell_index0 = time.time()
         cell_index = np.repeat(
             np.arange(
                 base_cell_id,
@@ -2794,7 +2832,9 @@ def _append_x_hys(
             ),
             row_nnz,
         )
+        t_cell_index = time.time() - t_cell_index0
 
+        t_data_table0 = time.time()
         data_table = pa.table({
             "id": pa.array(
                 np.arange(
@@ -2817,7 +2857,9 @@ def _append_x_hys(
                 type=pa.float32(),
             ),
         })
+        t_data_table = time.time() - t_data_table0
 
+        t_data_insert0 = time.time()
         conn.execute("""
             INSERT INTO X_HyS_data (
                 id,
@@ -2832,9 +2874,22 @@ def _append_x_hys(
                 data_count
             FROM data_table
         """)
+        t_data_insert = time.time() - t_data_insert0
 
         global_data_id += nnz
         global_indptr_offset += nnz
+
+    logger.info(
+        f"[append hys] cells={adata.n_obs:,}, "
+        f"nnz={nnz:,}, "
+        f"csr={t_csr:.2f}s, "
+        f"indptr_table={t_indptr_table:.2f}s, "
+        f"indptr_insert={t_indptr_insert:.2f}s, "
+        f"cell_index={t_cell_index:.2f}s, "
+        f"data_table={t_data_table:.2f}s, "
+        f"data_insert={t_data_insert:.2f}s, "
+        f"total={time.time() - t_total0:.2f}s"
+    )
 
     return global_indptr_id, global_indptr_offset, global_data_id
 
