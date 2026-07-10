@@ -138,7 +138,7 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            db_memory_limit: str | int | None = "3G",
+            db_memory_limit: str | int | None = "1G",
     ):
         """Initialize an Atlas database object.
 
@@ -158,7 +158,7 @@ class Atlas:
             This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
             for example ``4`` is equivalent to ``"4GB"``.
 
-            The default value is ``"3G"``.
+            The default value is ``"1G"``.
             If ``None`` is passed explicitly, one quarter of the current system physical memory is detected and rounded down
             to an integer number of GB, then used as DuckDB's memory limit.
             For example, a system with about 31.8 GB of memory is configured as ``"7GB"``.
@@ -1329,7 +1329,7 @@ class Atlas:
             *,
             load_type: Literal["order", "random"] = "random",
             cells_per_block: int | None = None,
-            import_window_memory_factor: float = 1.0,
+            import_window_memory_factor: float = 3.0,
     ) -> Any:
         """Import h5ad files into an Atlas database.
 

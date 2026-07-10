@@ -5,6 +5,8 @@ import logging
 import h5py
 import pyarrow as pa
 import time
+import zlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import gc
 import numpy as np
@@ -23,6 +25,251 @@ XScale = Literal["count", "log"]
 # Get the logger
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
+
+
+class FastH5adBlockReader:
+    """Read AnnData blocks with a direct CSR gzip fast path when available.
+
+    Construct the reader once and call ``read_block`` for every block.
+    Unsupported files automatically fall back to regular AnnData backed reads.
+    """
+
+    def __init__(
+        self,
+        h5ad_path: PathLike[str] | str,
+        *,
+        workers: int = 8,
+    ) -> None:
+        self.h5ad_path = os.fspath(h5ad_path)
+        self.adata_backed = sc.read_h5ad(self.h5ad_path, backed="r")
+        self.n_vars = int(self.adata_backed.n_vars)
+        self.workers = int(workers)
+        self.h5: h5py.File | None = None
+        self.pool: ThreadPoolExecutor | None = None
+        self._is_supported = False
+        try:
+            self._open_fast_path_if_supported()
+        except Exception:
+            self.close()
+            raise
+
+    def __enter__(self) -> "FastH5adBlockReader":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self.close()
+
+    @staticmethod
+    def supports(h5: h5py.File) -> bool:
+        """Return whether ``/X`` can be read by the direct CSR gzip fast path."""
+
+        if "X" not in h5 or not isinstance(h5["X"], h5py.Group):
+            return False
+
+        x_group = h5["X"]
+        encoding_type = x_group.attrs.get("encoding-type", "")
+        if isinstance(encoding_type, bytes):
+            encoding_type = encoding_type.decode()
+        if encoding_type != "csr_matrix":
+            return False
+
+        shape = x_group.attrs.get("shape")
+        if shape is None or len(shape) != 2:
+            return False
+
+        for name in ("data", "indices", "indptr"):
+            if name not in x_group:
+                return False
+
+        for name in ("data", "indices"):
+            dataset = x_group[name]
+            if dataset.ndim != 1 or dataset.chunks is None or len(dataset.chunks) != 1:
+                return False
+            if dataset.compression != "gzip":
+                return False
+            if dataset.shuffle or dataset.fletcher32:
+                return False
+
+            dcpl = dataset.id.get_create_plist()
+            if dcpl.get_nfilters() != 1:
+                return False
+            filter_info = dcpl.get_filter(0)
+            if filter_info[0] != 1:
+                return False
+
+        return True
+
+    @property
+    def is_supported(self) -> bool:
+        """Whether this reader is using the direct CSR gzip fast path."""
+
+        return self._is_supported
+
+    def _open_fast_path_if_supported(self) -> None:
+        """Open the h5ad file only when the direct CSR gzip path can be used."""
+
+        if self.workers <= 0:
+            return
+
+        h5 = h5py.File(self.h5ad_path, "r")
+        if not self.supports(h5):
+            h5.close()
+            return
+
+        self.n_vars = int(h5["X"].attrs["shape"][1])
+        self.h5 = h5
+        self.pool = ThreadPoolExecutor(max_workers=self.workers)
+        self._is_supported = True
+
+    def close(self) -> None:
+        """Close the thread pool and h5ad file."""
+
+        if self.pool is not None:
+            self.pool.shutdown(wait=True)
+            self.pool = None
+        if self.h5 is not None:
+            self.h5.close()
+            self.h5 = None
+        try:
+            self.adata_backed.file.close()
+        except Exception:
+            pass
+        self._is_supported = False
+
+    @staticmethod
+    def _decompress_chunk(
+        chunk_bytes: bytes,
+        dtype: np.dtype,
+        chunk_start: int,
+        logical_chunk_end: int,
+        range_start: int,
+        range_end: int,
+    ) -> tuple[int, np.ndarray]:
+        """Decompress one HDF5 gzip chunk and return the requested overlap."""
+
+        raw = zlib.decompress(chunk_bytes)
+        decoded = np.frombuffer(raw, dtype=dtype)
+
+        overlap_start = max(chunk_start, range_start)
+        overlap_end = min(logical_chunk_end, range_end)
+        if overlap_end <= overlap_start:
+            return 0, decoded[:0]
+
+        decoded_start = overlap_start - chunk_start
+        decoded_end = overlap_end - chunk_start
+        if decoded_end > decoded.size:
+            raise ValueError(
+                f"Decoded chunk is shorter than expected: decoded={decoded.size}, required={decoded_end}"
+            )
+
+        local_start = overlap_start - range_start
+        return local_start, decoded[decoded_start:decoded_end]
+
+    def _read_1d_gzip_range(
+        self,
+        dataset: h5py.Dataset,
+        start: int,
+        end: int,
+        out: np.ndarray,
+    ) -> None:
+        """Read a 1D gzip-compressed HDF5 range into a preallocated array."""
+
+        if self.pool is None:
+            raise RuntimeError("FastH5adBlockReader is not open")
+
+        if end <= start:
+            return
+
+        chunk_size = int(dataset.chunks[0])
+        first_chunk = (int(start) // chunk_size) * chunk_size
+        futures = []
+
+        for chunk_start in range(first_chunk, int(end), chunk_size):
+            filter_mask, chunk_bytes = dataset.id.read_direct_chunk((chunk_start,))
+            if filter_mask != 0:
+                raise ValueError(
+                    f"{dataset.name} chunk at {chunk_start} skipped one or more filters: mask={filter_mask}"
+                )
+            logical_chunk_end = min(chunk_start + chunk_size, int(dataset.shape[0]))
+            futures.append(
+                self.pool.submit(
+                    self._decompress_chunk,
+                    chunk_bytes,
+                    dataset.dtype,
+                    int(chunk_start),
+                    int(logical_chunk_end),
+                    int(start),
+                    int(end),
+                )
+            )
+
+        # Collect in submission order. This preserves chunk order and avoids
+        # using thread completion order for array assembly.
+        for future in futures:
+            local_start, decoded_slice = future.result()
+            n = len(decoded_slice)
+            out[local_start:local_start + n] = decoded_slice
+
+    def _read_x_block(self, block_start: int, block_end: int) -> sparse.csr_matrix:
+        """Read one expression block as a CSR matrix."""
+
+        if self.h5 is None:
+            raise RuntimeError("FastH5adBlockReader is not open")
+
+        x_group = self.h5["X"]
+        indptr_global = x_group["indptr"][int(block_start):int(block_end) + 1]
+        data_start = int(indptr_global[0])
+        data_end = int(indptr_global[-1])
+        nnz = data_end - data_start
+
+        indptr = (indptr_global - indptr_global[0]).astype(np.int64, copy=False)
+        data = np.empty(nnz, dtype=x_group["data"].dtype)
+        indices = np.empty(nnz, dtype=x_group["indices"].dtype)
+
+        self._read_1d_gzip_range(
+            x_group["data"],
+            data_start,
+            data_end,
+            data,
+        )
+        self._read_1d_gzip_range(
+            x_group["indices"],
+            data_start,
+            data_end,
+            indices,
+        )
+
+        return sparse.csr_matrix(
+            (data, indices, indptr),
+            shape=(int(block_end) - int(block_start), self.n_vars),
+        )
+
+    def _read_obsm_block(self, block_start: int, block_end: int) -> dict[str, np.ndarray]:
+        """Read cell-aligned ``obsm`` arrays for one cell block."""
+
+        obsm = {}
+        for key in self.adata_backed.obsm.keys():
+            value = self.adata_backed.obsm[key][block_start:block_end]
+            if hasattr(value, "copy"):
+                value = value.copy()
+            else:
+                value = np.asarray(value).copy()
+            obsm[key] = value
+        return obsm
+
+    def read_block(self, block_start: int, block_end: int) -> AnnData:
+        """Read one cell block and return a full AnnData object."""
+
+        block_start = int(block_start)
+        block_end = int(block_end)
+        if not self.is_supported:
+            return self.adata_backed[block_start:block_end].to_memory()
+
+        X = self._read_x_block(block_start, block_end)
+        obs = self.adata_backed.obs.iloc[block_start:block_end].copy()
+        var = self.adata_backed.var.copy()
+        obsm = self._read_obsm_block(block_start, block_end)
+        return AnnData(X=X, obs=obs, var=var, obsm=obsm)
 
 
 # Unified h5ad import interface
@@ -161,8 +408,9 @@ def load_h5ad(
         h5ad_path = os.fspath(h5ad_path)
 
         # Lightly read n_cells to unify the default value of cells_per_block
-        adata_backed = sc.read_h5ad(h5ad_path, backed="r")
-        n_cells = adata_backed.n_obs
+        block_reader = FastH5adBlockReader(h5ad_path, workers=0)
+        n_cells = block_reader.adata_backed.n_obs
+        block_reader.close()
         cells_per_block = _normalize_cells_per_block(cells_per_block, n_cells)
 
         # =====================================================
@@ -498,11 +746,11 @@ def _load_h5ad_list_random(
     file_cell_counts = []
 
     for path in h5ad_paths:
-        ad = sc.read_h5ad(path, backed="r")
-        n = ad.n_obs
+        reader = FastH5adBlockReader(path, workers=0)
+        n = reader.adata_backed.n_obs
         total_n_cells += n
         file_cell_counts.append(n)
-        ad.file.close()
+        reader.close()
 
     # ===== Compute global cells_per_block  =====
     cells_per_block = _normalize_cells_per_block(cells_per_block, total_n_cells)
@@ -538,7 +786,8 @@ def _load_h5ad_list_random(
     try:
         for file_idx, h5ad_path in enumerate(h5ad_paths):
 
-            adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+            reader = FastH5adBlockReader(h5ad_path)
+            adata_backed = reader.adata_backed
 
             n_cells = adata_backed.n_obs
             n_genes = adata_backed.n_vars
@@ -602,7 +851,7 @@ def _load_h5ad_list_random(
                 {
                     "file_idx": file_idx,
                     "h5ad_path": h5ad_path,
-                    "adata_backed": adata_backed,
+                    "reader": reader,
                     "n_cells": n_cells,
                     "n_genes": n_genes,
                     "source_x_scale": source_x_scale,
@@ -626,7 +875,7 @@ def _load_h5ad_list_random(
             rng.shuffle(all_block_refs)
 
         # Dynamically create tables: use only the first file to create tables
-        first_backed = file_states[0]["adata_backed"]
+        first_backed = file_states[0]["reader"].adata_backed
 
         _create_obs_table_from_adata(conn, first_backed[:1])
         _create_var_table_from_adata(conn, first_backed[:1])
@@ -791,7 +1040,7 @@ def _load_h5ad_list_random(
                     # Continuously read one batch block from h5ad
                     t_read0 = time.time()
 
-                    adata = state["adata_backed"][block_start:block_end].to_memory()
+                    adata = state["reader"].read_block(block_start, block_end)
 
                     t_read = time.time() - t_read0
 
@@ -881,7 +1130,7 @@ def _load_h5ad_list_random(
         # Close all backed files regardless of success or failure
         for s in file_states:
             try:
-                s["adata_backed"].file.close()
+                s["reader"].close()
             except Exception:
                 pass
         # On exception or successful exit, try to clear references to large objects
@@ -893,16 +1142,7 @@ def _load_h5ad_list_random(
             all_block_refs.clear()
         except Exception:
             pass
-        try:
-            for ad in cell_pool:
-                del ad
-            cell_pool.clear()
-        except Exception:
-            pass
-        try:
-            gc.collect()
-        except Exception:
-            pass
+
 
 
 def _load_h5ad_list_order(
@@ -1017,8 +1257,10 @@ def _load_h5ad_random(
 
     var_written = False
 
-    # Open in backed mode
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+    # Open h5ad through the block reader; its AnnData backed object is reused
+    # for metadata access, scale inspection, and fallback reads.
+    block_reader = FastH5adBlockReader(h5ad_path)
+    adata_backed = block_reader.adata_backed
     n_cells = adata_backed.n_obs
 
     # Pre-read sample_n cells while detecting X scale and estimating import memory
@@ -1057,9 +1299,9 @@ def _load_h5ad_random(
 
     # Window cache: collect blocks_per_pool batches each time before unified random writing
     window_adatas = []
-    window_batch_count = 0
     total_batch_counter = 0
     window_counter = 0
+    window_fill_start = time.time()
 
     conn.execute("BEGIN TRANSACTION")
 
@@ -1073,31 +1315,15 @@ def _load_h5ad_random(
             block_end = min(int(block_start) + cells_per_block, n_cells)
 
             # Continuously read one batch block
-            t0 = time.time()
-            adata = adata_backed[int(block_start):block_end].to_memory()
-            t_read = time.time() - t0
-
-            # nnz of the current block
-            if sparse.issparse(adata.X):
-                block_nnz = adata.X.nnz
-            else:
-                block_nnz = np.count_nonzero(adata.X)
+            adata = block_reader.read_block(int(block_start), block_end)
 
             # Do not shuffle and write immediately inside a single batch; put it into the window first
             window_adatas.append(adata)
-            window_batch_count += 1
-
-            if (block_i + 1) % 20 == 0 or block_i == 0:
-                logger.info(
-                    f"\n[read block {block_i}] "
-                    f"cells={adata.n_obs:,}, "
-                    f"nnz={block_nnz:,}, "
-                    f"read={t_read:.2f}s, "
-                    f"window_batches={window_batch_count}/{blocks_per_pool}"
-                )
 
             # When the window is full, shuffle and write it uniformly
-            if window_batch_count >= blocks_per_pool:
+            if len(window_adatas) >= blocks_per_pool:
+                current_window_batches = len(window_adatas)
+                window_fill_time = time.time() - window_fill_start
                 t1 = time.time()
 
                 (
@@ -1121,9 +1347,17 @@ def _load_h5ad_random(
 
                 t_write = time.time() - t1
 
-                total_batch_counter += window_batch_count
+                total_batch_counter += current_window_batches
                 window_counter += 1
-                window_batch_count = 0
+                logger.info(
+                    f"[window append] window={window_counter:,}, "
+                    f"blocks={current_window_batches:,}/{blocks_per_pool:,}, "
+                    f"cells={window_cells:,}, "
+                    f"nnz={window_nnz:,}, "
+                    f"fill={window_fill_time:.2f}s, "
+                    f"append={t_write:.2f}s"
+                )
+                window_fill_start = time.time()
 
                 # Commit every commit_every batches; equivalent to committing every 2 windows when blocks_per_pool=5
                 if window_counter % commit_every == 0:
@@ -1135,7 +1369,9 @@ def _load_h5ad_random(
                     )
 
         # Process the remaining window with fewer than 5 batches
-        if window_batch_count > 0:
+        if len(window_adatas) > 0:
+            current_window_batches = len(window_adatas)
+            window_fill_time = time.time() - window_fill_start
             t1 = time.time()
 
             (
@@ -1159,33 +1395,26 @@ def _load_h5ad_random(
 
             t_write = time.time() - t1
 
-            total_batch_counter += window_batch_count
+            total_batch_counter += current_window_batches
             window_counter += 1
-
-            for x in window_adatas:
-                del x
-            window_adatas.clear()
-            window_batch_count = 0
-            gc.collect()
+            logger.info(
+                f"[window append] window={window_counter:,}, "
+                f"blocks={current_window_batches:,}/{blocks_per_pool:,}, "
+                f"cells={window_cells:,}, "
+                f"nnz={window_nnz:,}, "
+                f"fill={window_fill_time:.2f}s, "
+                f"append={t_write:.2f}s"
+            )
 
         # Final commit
         conn.execute("COMMIT")
-
     except Exception:
         conn.execute("ROLLBACK")
         # Also clean up window_adatas on exception
         try:
-            for x in window_adatas:
-                del x
-            window_adatas.clear()
+            block_reader.close()
         except Exception:
             pass
-        # Also close the h5ad backed file on exception
-        try:
-            adata_backed.file.close()
-        except Exception:
-            pass
-        gc.collect()
         raise
 
     # Primary keys
@@ -1204,7 +1433,7 @@ def _load_h5ad_random(
         pass
 
     try:
-        adata_backed.file.close()
+        block_reader.close()
     except Exception:
         pass
 
@@ -1282,7 +1511,8 @@ def _load_h5ad_order(
 
     var_written = False
 
-    adata_backed = sc.read_h5ad(h5ad_path, backed="r")
+    block_reader = FastH5adBlockReader(h5ad_path)
+    adata_backed = block_reader.adata_backed
     n_cells = adata_backed.n_obs
 
     # Simply detect the underlying format of h5ad.X
@@ -1337,7 +1567,7 @@ def _load_h5ad_order(
             t0 = time.time()
 
             # Actually trigger disk reading
-            mega = adata_backed[mega_start:mega_end].to_memory()
+            mega = block_reader.read_block(mega_start, mega_end)
 
             t_read = time.time() - t0
 
@@ -1404,6 +1634,10 @@ def _load_h5ad_order(
 
     except Exception:
         conn.execute("ROLLBACK")
+        try:
+            block_reader.close()
+        except Exception:
+            pass
         raise
 
     # Primary keys: must be added after all data has been written
@@ -1419,7 +1653,7 @@ def _load_h5ad_order(
     _add_varm_from_h5ad(h5ad_path, atlas)
 
     try:
-        adata_backed.file.close()
+        block_reader.close()
     except Exception:
         pass
 
