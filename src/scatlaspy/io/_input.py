@@ -2636,9 +2636,7 @@ def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: in
         ]
     ]
 
-    conn.register("obs_df", obs_df)
     conn.execute("INSERT INTO obs SELECT * FROM obs_df")
-    conn.unregister("obs_df")
 
     return start_cell_id + n
 
@@ -2692,9 +2690,7 @@ def _append_var(adata: AnnData, conn: DuckDBPyConnection):
         ]
     ]
 
-    conn.register("var_df", var_df)
     conn.execute("INSERT INTO var SELECT * FROM var_df")
-    conn.unregister("var_df")
 
 
 # Import the X_HyS table
@@ -2772,7 +2768,6 @@ def _append_x_hys(
         ),
     })
 
-    conn.register("_indptr_arrow", indptr_table)
     conn.execute("""
         INSERT INTO X_HyS_indptr (
             atlas_cell_id,
@@ -2781,9 +2776,8 @@ def _append_x_hys(
         SELECT
             atlas_cell_id,
             indptr
-        FROM _indptr_arrow
+        FROM indptr_table
     """)
-    conn.unregister("_indptr_arrow")
 
     global_indptr_id += len(adj_indptr)
 
@@ -2824,7 +2818,6 @@ def _append_x_hys(
             ),
         })
 
-        conn.register("_data_arrow", data_table)
         conn.execute("""
             INSERT INTO X_HyS_data (
                 id,
@@ -2837,9 +2830,8 @@ def _append_x_hys(
                 atlas_cell_id,
                 atlas_gene_id,
                 data_count
-            FROM _data_arrow
+            FROM data_table
         """)
-        conn.unregister("_data_arrow")
 
         global_data_id += nnz
         global_indptr_offset += nnz
@@ -2915,9 +2907,7 @@ def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_
                 df["atlas_cell_id"] = np.arange(start, end, dtype=np.int32)
                 df = df[["atlas_cell_id"] + [c for c in df.columns if c != "atlas_cell_id"]]
 
-                conn.register("obsm_df", df)
-                conn.execute(f"INSERT INTO obsm_{key} SELECT * FROM obsm_df")
-                conn.unregister("obsm_df")
+                conn.execute(f"INSERT INTO obsm_{key} SELECT * FROM df")
 
     logger.info("obsm import completed")
 
@@ -2977,12 +2967,10 @@ def _add_varm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas):
             df["atlas_gene_id"] = np.arange(n_genes, dtype=np.uint16)
             df = df[["atlas_gene_id"] + [c for c in df.columns if c != "atlas_gene_id"]]
 
-            conn.register("varm_df", df)
             conn.execute(f"""
                 CREATE OR REPLACE TABLE varm_{key} AS
-                SELECT * FROM varm_df
+                SELECT * FROM df
             """)
-            conn.unregister("varm_df")
 
     logger.info("varm import completed")
 
@@ -3180,12 +3168,10 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
 
         df.insert(0, "atlas_cell_id", np.arange(n_cells, dtype=np.int32))
 
-        conn.register("obsm_df", df)
         conn.execute(f"""
             CREATE OR REPLACE TABLE obsm_{key} AS
-            SELECT * FROM obsm_df
+            SELECT * FROM df
         """)
-        conn.unregister("obsm_df")
 
     logger.info("obsm import completed (unified schema)")
 
@@ -3236,12 +3222,10 @@ def _add_varm(adata: AnnData, atlas: Atlas):
 
         df.insert(0, "atlas_gene_id", np.arange(n_genes, dtype=np.uint16))
 
-        conn.register("varm_df", df)
         conn.execute(f"""
             CREATE OR REPLACE TABLE varm_{key} AS
-            SELECT * FROM varm_df
+            SELECT * FROM df
         """)
-        conn.unregister("varm_df")
 
     logger.info("varm import completed (unified schema)")
 
