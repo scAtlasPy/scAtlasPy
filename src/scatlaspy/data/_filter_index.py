@@ -338,8 +338,8 @@ class FilterIndexBuilder:
         - ``tid``: shard ID used for subsequent minibatch streaming reading
 
         In implementation, temporary mapping tables ``_obs_keep`` and ``_var_keep`` are
-        created first, and then ``X_HyS_data.rowid`` is scanned and inserted in chunks
-        to avoid processing an overly large expression matrix at once.
+        created first, and then ``X_HyS_data`` is scanned once to build the filtered
+        expression table.
 
         Returns
         -------
@@ -401,12 +401,9 @@ class FilterIndexBuilder:
             logger.debug(" X_HyS_data is an empty table, skipping")
             return
 
-        total_rows = max_id - min_id + 1
-        current = min_id
-
         logger.debug(f"rowid range: {min_id:,} ~ {max_id:,}")
+        total_rows = max_id - min_id + 1
         logger.debug(f"total rows to scan: {total_rows:,}")
-        logger.debug(f"chunk_size = {self.chunk_size:,}")
 
         pbar = progress(
             total=total_rows,
@@ -415,30 +412,22 @@ class FilterIndexBuilder:
             ncols=130
         )
 
-        # Insert sequentially in chunks
-        while current <= max_id:
-            end = min(current + self.chunk_size, max_id + 1)
+        conn.execute(f"""
+        INSERT INTO X_HyS_data_filtered
+        SELECT
+            obs.filter_cell_id,
+            var.filter_gene_id,
+            CAST(X.{self.use_data} AS REAL) AS data,
+            CAST(0 AS TINYINT) AS tid
+        FROM X_HyS_data AS X
+        JOIN _obs_keep AS obs
+          ON X.atlas_cell_id = obs.atlas_cell_id
+        JOIN _var_keep AS var
+          ON X.atlas_gene_id = var.atlas_gene_id
+        ORDER BY X.rowid
+        """)
 
-            conn.execute(f"""
-            INSERT INTO X_HyS_data_filtered
-            SELECT
-                obs.filter_cell_id,
-                var.filter_gene_id,
-                CAST(X.{self.use_data} AS REAL) AS data,
-                CAST(0 AS TINYINT) AS tid
-            FROM X_HyS_data AS X
-            JOIN _obs_keep AS obs
-              ON X.atlas_cell_id = obs.atlas_cell_id
-            JOIN _var_keep AS var
-              ON X.atlas_gene_id = var.atlas_gene_id
-            WHERE X.rowid >= {current}
-              AND X.rowid < {end}
-            ORDER BY X.rowid
-            """)
-
-            pbar.update(end - current)
-            current = end
-
+        pbar.update(total_rows)
         pbar.close()
 
         # Calculate tid
