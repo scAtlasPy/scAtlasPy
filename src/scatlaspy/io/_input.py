@@ -1412,14 +1412,15 @@ def _load_h5ad_random(
             new_cells += adata.n_obs
             new_batches += 1
 
-            if new_cells >= write_target_cells:
+            carry_cells_now = 0 if carry_adata is None else carry_adata.n_obs
+            if carry_cells_now + new_cells >= window_cells:
                 window_fill_time = time.time() - window_fill_start
                 t1 = time.time()
 
                 result = _write_rolling_shuffle_window_to_duckdb(
                     carry_adata=carry_adata,
                     new_adatas=new_adatas,
-                    write_cells=write_target_cells,
+                    carry_target_cells=carry_target_cells,
                     conn=conn,
                     global_cell_id=global_cell_id,
                     global_indptr_id=global_indptr_id,
@@ -1432,7 +1433,7 @@ def _load_h5ad_random(
                 global_indptr_offset = result["global_indptr_offset"]
                 global_data_id = result["global_data_id"]
                 var_written = result["var_written"]
-                window_cells = result["written_cells"]
+                written_cells = result["written_cells"]
                 window_nnz = result["written_nnz"]
                 carry_adata = result["next_carry"]
                 carry_cells = result["carry_cells"]
@@ -1444,7 +1445,7 @@ def _load_h5ad_random(
                     f"[rolling window append] [{window_counter:,}/{total_windows:,}], "
                     f"new_batches={new_batches:,}, "
                     f"mixed_cells={mixed_cells:,}, "
-                    f"cells={window_cells:,}, "
+                    f"cells={written_cells:,}, "
                     f"nnz={window_nnz:,}, "
                     f"carry_cells={carry_cells:,}, "
                     f"fill={window_fill_time:.2f}s, "
@@ -1482,7 +1483,7 @@ def _load_h5ad_random(
             global_indptr_offset = result["global_indptr_offset"]
             global_data_id = result["global_data_id"]
             var_written = result["var_written"]
-            window_cells = result["written_cells"]
+            written_cells = result["written_cells"]
             window_nnz = result["written_nnz"]
 
             t_write = time.time() - t1
@@ -1490,7 +1491,7 @@ def _load_h5ad_random(
             logger.info(
                 f"[rolling final append] [{window_counter:,}/{total_windows:,}], "
                 f"new_batches={new_batches:,}, "
-                f"cells={window_cells:,}, "
+                f"cells={written_cells:,}, "
                 f"nnz={window_nnz:,}, "
                 f"fill={window_fill_time:.2f}s, "
                 f"append={t_write:.2f}s"
@@ -2003,10 +2004,10 @@ def _write_rolling_shuffle_window_to_duckdb(
     global_indptr_offset: int,
     global_data_id: int,
     var_written: bool,
-    write_cells: int | None = None,
+    carry_target_cells: int | None = None,
     is_final: bool = False,
 ):
-    """Mix carry cells with new cells, then write either a chunk or the final remainder."""
+    """Mix carry cells with new cells, then write enough cells to keep a stable carry."""
 
     parts = []
     if carry_adata is not None and carry_adata.n_obs > 0:
@@ -2020,9 +2021,10 @@ def _write_rolling_shuffle_window_to_duckdb(
         write_adata = adata_window
         next_carry = None
     else:
-        if write_cells is None:
-            raise ValueError("write_cells must be provided unless is_final=True.")
-        write_n = min(write_cells, mixed_cells)
+        if carry_target_cells is None:
+            raise ValueError("carry_target_cells must be provided unless is_final=True.")
+        write_n = max(1, mixed_cells - carry_target_cells)
+        write_n = min(write_n, mixed_cells)
         write_adata = adata_window[:write_n]
         next_carry = adata_window[write_n:].copy() if write_n < mixed_cells else None
 
@@ -2045,10 +2047,6 @@ def _write_rolling_shuffle_window_to_duckdb(
     )
 
     carry_cells = 0 if next_carry is None else next_carry.n_obs
-
-    del adata_window
-    del write_adata
-    gc.collect()
 
     return {
         "global_cell_id": global_cell_id,
