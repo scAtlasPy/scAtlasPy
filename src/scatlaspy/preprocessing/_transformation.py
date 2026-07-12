@@ -1,5 +1,5 @@
 from _duckdb import DuckDBPyConnection
-from ..data import Atlas
+from ..data import Atlas, duckdb_memory_limit
 from ..io import progress
 from typing import Literal
 from typing import Optional
@@ -2016,6 +2016,7 @@ def _highly_variable_genes_seurat(
         return gene_df
 
 
+@duckdb_memory_limit("3G")
 def scale(
         atlas: Atlas,
         use_data: str = "data_log1p",

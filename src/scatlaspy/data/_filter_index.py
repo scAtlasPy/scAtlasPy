@@ -1,11 +1,23 @@
-import duckdb
-from os import PathLike, fspath
 from ..io import progress
 from datetime import datetime
 import logging
+from _duckdb import DuckDBPyConnection
+from typing import Optional, Protocol
 
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
+
+
+class _AtlasLike(Protocol):
+    """Minimal Atlas interface used by ``FilterIndexBuilder``."""
+
+    @property
+    def file_path(self) -> str:
+        ...
+
+    @property
+    def connection(self) -> Optional[DuckDBPyConnection]:
+        ...
 
 
 class FilterIndexBuilder:
@@ -19,8 +31,8 @@ class FilterIndexBuilder:
 
     Parameters
     ----------
-    file_path
-        Path to the Atlas ``.sasql`` database file.
+    atlas
+        Atlas object whose active DuckDB connection is reused.
     cell_condition
         Boolean column name or condition in ``obs`` used to filter cells;
         if ``None``, all cells are retained.
@@ -56,7 +68,7 @@ class FilterIndexBuilder:
     internal workflows::
 
         builder = FilterIndexBuilder(
-            atlas.file_path,
+            atlas,
             cell_condition="filter_cells",
             gene_condition="filter_genes",
             use_hvg=False,
@@ -66,8 +78,8 @@ class FilterIndexBuilder:
 
     def __init__(
         self,
-        file_path: PathLike[str] | str,
-        *, # file_path can be passed positionally; parameters after * must be passed by name
+        atlas: _AtlasLike,
+        *, # atlas can be passed positionally; parameters after * must be passed by name
         cell_condition: str | None = None,
         gene_condition: str | None = None,
         use_hvg: bool = True,
@@ -75,14 +87,14 @@ class FilterIndexBuilder:
     ):
         """Initialize the filter index builder.
 
-        This constructor saves the Atlas database path, filtering conditions, HVG setting,
-        and expression value column name, and creates a new DuckDB connection.
+        This constructor saves the Atlas object, filtering conditions, HVG setting,
+        and expression value column name, and reuses the Atlas DuckDB connection.
         The actual index rebuilding workflow is executed by ``run()``.
 
         Parameters
         ----------
-        file_path
-            Path to the Atlas ``.sasql`` database file.
+        atlas
+            Atlas object whose active DuckDB connection will be used.
 
         cell_condition
             Boolean column name in the ``obs`` table used to filter cells.
@@ -105,7 +117,8 @@ class FilterIndexBuilder:
         Regular users generally do not need to instantiate it directly.
         """
 
-        self.file_path = fspath(file_path)       # Absolute path to the sasql file
+        self.atlas = atlas
+        self.file_path = atlas.file_path       # Absolute path to the sasql file
         self.producer_num = 10           # Number of threads for minibatch streaming reading
         self.fetch_size = 500_0000    # Fetch size for minibatch streaming reading
         self.chunk_size = 1000_0000    # Amount of data processed each time
@@ -115,7 +128,9 @@ class FilterIndexBuilder:
         self.use_hvg = use_hvg               # Whether to use HVG genes
         self.use_data = use_data       # Select which data column to process
 
-        self.conn = duckdb.connect(file_path)
+        self.conn = atlas.connection
+        if self.conn is None:
+            raise RuntimeError("Atlas connection is not available")
         self.conn.execute("PRAGMA preserve_insertion_order=true")
         # false does not force preservation of the input insertion order, allowing DuckDB to reorganize execution and write order for performance.
         # true tries to preserve the input order when writing through INSERT / COPY / SELECT
@@ -164,7 +179,7 @@ class FilterIndexBuilder:
         3. Build the filtered expression matrix table ``X_HyS_data_filtered``
         4. Build the filtered indptr table ``X_HyS_indptr_filtered``
 
-        After execution, the current DuckDB connection is closed.
+        The active Atlas connection is reused and is not closed by this builder.
 
         Returns
         -------
@@ -180,8 +195,6 @@ class FilterIndexBuilder:
         self._rebuild_x_hys_data_filtered()
 
         self._rebuild_x_hys_indptr_filtered()
-
-        self.conn.close()
 
         logger.info(f"build_read_index Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds")
 

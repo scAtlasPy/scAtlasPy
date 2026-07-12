@@ -5,6 +5,7 @@ import os
 import logging
 import numpy as np
 import pandas as pd
+from functools import wraps
 from os import PathLike
 from anndata import AnnData
 from ._minibatch import MultiThreadedMinibatchFetcher
@@ -23,6 +24,124 @@ from ..io import (
 # Configure logging.
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
+
+_GB = 1024 ** 3
+_MB = 1024 ** 2
+
+
+class _AtlasLike(Protocol):
+    """Minimal Atlas interface needed by the memory-limit decorator."""
+
+    @property
+    def connection(self) -> Optional[duckdb.DuckDBPyConnection]:
+        ...
+
+    @property
+    def db_memory_limit(self) -> str | int | None:
+        ...
+
+    def _resolve_step_memory_limit(self, memory_limit: str | int) -> str:
+        ...
+
+    def _set_db_memory_limit(self, db_memory_limit: str | int | None) -> None:
+        ...
+
+
+def _parse_memory_limit_to_bytes(memory_limit: str | int | None) -> int | None:
+    """Convert a DuckDB memory-limit value into bytes."""
+
+    if memory_limit is None:
+        return None
+
+    if isinstance(memory_limit, int):
+        if memory_limit <= 0:
+            raise ValueError("db_memory_limit must be > 0")
+        return int(memory_limit * _GB)
+
+    if not isinstance(memory_limit, str):
+        raise TypeError(
+            "db_memory_limit must be str, int, or None, "
+            f"but received: {type(memory_limit)}"
+        )
+
+    text = memory_limit.strip().upper().replace(" ", "")
+    if text in {"", "NONE"}:
+        return None
+
+    units = [
+        ("TB", 1024 ** 4),
+        ("T", 1024 ** 4),
+        ("GB", _GB),
+        ("G", _GB),
+        ("MB", _MB),
+        ("M", _MB),
+        ("KB", 1024),
+        ("K", 1024),
+        ("B", 1),
+    ]
+
+    for suffix, scale in units:
+        if text.endswith(suffix):
+            value_text = text[: -len(suffix)]
+            break
+    else:
+        value_text = text
+        scale = _GB
+
+    value = float(value_text)
+    if value <= 0:
+        raise ValueError("db_memory_limit must be > 0")
+    return int(value * scale)
+
+
+def _format_memory_limit_bytes(memory_bytes: int) -> str:
+    """Format bytes as a DuckDB memory-limit string."""
+
+    memory_bytes = max(int(memory_bytes), _MB)
+    if memory_bytes % _GB == 0:
+        return f"{memory_bytes // _GB}GB"
+    if memory_bytes % _MB == 0:
+        return f"{memory_bytes // _MB}MB"
+    return f"{memory_bytes}B"
+
+
+def _get_atlas_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> _AtlasLike:
+    """Find the Atlas object in a function or bound-method call."""
+
+    if args:
+        candidate = args[0]
+        if hasattr(candidate, "connection") and hasattr(candidate, "db_memory_limit"):
+            return candidate
+    if "atlas" in kwargs:
+        candidate = kwargs["atlas"]
+        if hasattr(candidate, "connection") and hasattr(candidate, "db_memory_limit"):
+            return candidate
+    raise TypeError("duckdb_memory_limit requires an Atlas object as the first argument")
+
+
+def duckdb_memory_limit(memory_limit: str | int):
+    """Temporarily use a smaller DuckDB memory limit for one Atlas operation.
+
+    The requested limit is capped by the current Atlas ``db_memory_limit``. This
+    means a function-level limit can lower the memory limit for memory-sensitive
+    operations, but it cannot silently raise a user-provided global limit.
+    """
+
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            atlas = _get_atlas_from_call(args, kwargs)
+            old_limit = atlas.db_memory_limit
+            step_limit = atlas._resolve_step_memory_limit(memory_limit)
+            atlas._set_db_memory_limit(step_limit)
+            try:
+                return func(*args, **kwargs)
+            finally:
+                atlas._set_db_memory_limit(old_limit)
+
+        return wrapper
+
+    return decorator
 
 
 def set_verbosity(
@@ -138,7 +257,7 @@ class Atlas:
     def __init__(
             self,
             file_name: PathLike[str] | str,
-            db_memory_limit: str | int | None = "3G",
+            db_memory_limit: str | int | None = "20G",
     ):
         """Initialize an Atlas database object.
 
@@ -158,10 +277,13 @@ class Atlas:
             This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
             for example ``4`` is equivalent to ``"4GB"``.
 
-            The default value is ``"3G"``.
-            If ``None`` is passed explicitly, one quarter of the current system physical memory is detected and rounded down
-            to an integer number of GB, then used as DuckDB's memory limit.
-            For example, a system with about 31.8 GB of memory is configured as ``"7GB"``.
+            The default requested limit is ``"20G"``. Atlas applies the smaller
+            value between the requested limit and 60% of detected system physical
+            memory, rounded down to whole GB. For example, on a 32 GB machine,
+            the default effective DuckDB limit is ``"19GB"``.
+
+            If ``None`` is passed explicitly, Atlas uses only the 60% system
+            memory cap.
 
             This parameter only limits memory used by DuckDB queries and intermediate computation.
             It does not limit memory allocated directly by Python, NumPy, or pandas.
@@ -308,20 +430,38 @@ class Atlas:
     @staticmethod
     def _resolve_db_memory_limit(
             db_memory_limit: str | int | None,
-    ) -> str | int:
+    ) -> str:
         """Resolve the DuckDB memory-limit argument.
 
-        When ``db_memory_limit`` is explicitly set to ``None``,
-        one quarter of the current system physical memory is detected and rounded down to an integer number of GB.
-        For example, about 31.8 GB is resolved as ``"7GB"``.
+        The resolved value is always capped at 60% of system physical memory.
+        Passing ``None`` uses this 60% cap directly.
         """
 
-        if db_memory_limit is None:
-            memory_gb = Atlas._get_system_memory_gb_floor()
-            memory_limit_gb = max(memory_gb // 4, 1)
-            return f"{memory_limit_gb}GB"
+        system_memory_gb = Atlas._get_system_memory_gb_floor()
+        system_cap_bytes = max(int(system_memory_gb * 0.6), 1) * _GB
 
-        return db_memory_limit
+        if db_memory_limit is None:
+            return _format_memory_limit_bytes(system_cap_bytes)
+
+        user_limit_bytes = _parse_memory_limit_to_bytes(db_memory_limit)
+        if user_limit_bytes is None:
+            return _format_memory_limit_bytes(system_cap_bytes)
+
+        return _format_memory_limit_bytes(min(user_limit_bytes, system_cap_bytes))
+
+
+    def _resolve_step_memory_limit(self, memory_limit: str | int) -> str:
+        """Cap a function-level memory limit by the current Atlas limit."""
+
+        current_limit_bytes = _parse_memory_limit_to_bytes(self.db_memory_limit)
+        step_limit_bytes = _parse_memory_limit_to_bytes(memory_limit)
+
+        if step_limit_bytes is None:
+            return self.db_memory_limit
+        if current_limit_bytes is None:
+            return _format_memory_limit_bytes(step_limit_bytes)
+
+        return _format_memory_limit_bytes(min(step_limit_bytes, current_limit_bytes))
 
 
     @property
@@ -393,6 +533,13 @@ class Atlas:
         return self.__db_memory_limit
 
 
+    def _set_db_memory_limit(self, db_memory_limit: str | int | None) -> None:
+        """Update the active Atlas memory limit and apply it to the connection."""
+
+        self.__db_memory_limit = db_memory_limit
+        self._apply_memory_limit()
+
+
     def _apply_memory_limit(self) -> None:
         """Apply the DuckDB memory limit to the active connection.
 
@@ -423,10 +570,7 @@ class Atlas:
         if self.db_memory_limit is None:
             return
 
-        if isinstance(self.db_memory_limit, int):
-            db_memory_limit = f"{self.db_memory_limit}GB"
-        else:
-            db_memory_limit = str(self.db_memory_limit).strip()
+        db_memory_limit = str(self.db_memory_limit).strip()
 
         if db_memory_limit == "":
             return
@@ -950,6 +1094,7 @@ class Atlas:
 
         conn.commit()
 
+    @duckdb_memory_limit("3G")
     def build_read_index(
             self,
             cell_condition: str | None = "filter_cells",
@@ -1002,8 +1147,11 @@ class Atlas:
             sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
             atlas.build_read_index(use_hvg=True)"""
 
+        if self.connection is None:
+            self.connect("r+")
+
         builder = FilterIndexBuilder(
-            self.file_path,
+            self,
             cell_condition=cell_condition,
             gene_condition=gene_condition,
             use_hvg=use_hvg,
@@ -1323,6 +1471,7 @@ class Atlas:
     #   atlas.load_h5ad(file_path, ...)
     # =====================================================
 
+    @duckdb_memory_limit("3G")
     def load_h5ad(
             self,
             h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
