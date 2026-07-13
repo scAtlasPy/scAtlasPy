@@ -153,7 +153,7 @@ def pca(
             color="pct_counts_mt",
             x_pc=1,
             y_pc=2,
-            sample_n=200000,
+            sample_n=200_000,
         )
 
     Color by gene expression::
@@ -802,7 +802,7 @@ def pca_variance_ratio_cumsum(
         sap.pl.pca_variance_ratio_cumsum(
             atlas,
             n_pcs=80,
-            save_path=r"F:\\figures\\pca_cumsum.png",
+            save_path="./figures/pca_cumsum.png",
             show=False,
         )"""
 
@@ -934,7 +934,7 @@ def pca_loadings(
             components=3,
             n_genes=20,
             include_lowest=False,
-            save_path=r"F:\\figures\\pc3_loadings.png",
+            save_path="./figures/pc3_loadings.png",
             show=False,
         )
     """

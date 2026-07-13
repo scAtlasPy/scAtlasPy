@@ -74,7 +74,7 @@ def umap(
     frameon: bool = True,
 
     # Large-data / output parameters
-    plot_batch_size: int = 200000,
+    plot_batch_size: int = 200_000,
     save_path: PathLike[str] | str | None = None,
 ) -> None:
 
@@ -156,7 +156,7 @@ def umap(
             atlas,
             color="MS4A1",
             use_data="data_log1p",
-            save_path=r"F:\\figures\\umap_MS4A1.png",
+            save_path="./figures/umap_MS4A1.png",
         )
 
     Plot obs grouping and gene expression at the same time::
@@ -284,7 +284,7 @@ def umap(
 def _plot_umap_obs(
     atlas: Atlas,
     color: str = "kmeans",
-    sample_n: int | None = 50000,
+    sample_n: int | None = 50_000,
     groups: list | None = None,
     where: str | None = None,
     legend_loc: str = "right_margin",
@@ -296,7 +296,7 @@ def _plot_umap_obs(
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
-    plot_batch_size: int = 200000,
+    plot_batch_size: int = 200_000,
     return_df: bool = False,
 ):
 
@@ -618,7 +618,7 @@ def _draw_umap_obs_streaming(
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
-    plot_batch_size: int = 200000
+    plot_batch_size: int = 200_000
 ):
 
     """Plot UMAP for a discrete ``obs`` categorical variable in batches.
@@ -885,7 +885,7 @@ def _draw_umap_obs_streaming(
 def _plot_umap_features(
     atlas: Atlas,
     genes: str | list[str],
-    sample_n: int | None = 50000,
+    sample_n: int | None = 50_000,
     where: str | None = None,
     use_data: str = "data_scale",
     ncols: int = 3,
@@ -1216,7 +1216,7 @@ def _plot_umap_mixed(
     atlas: Atlas,
     obs_colors: list[str],
     gene_colors: list[str],
-    sample_n: int | None = 50000,
+    sample_n: int | None = 50_000,
     where: str | None = None,
     use_data: str = "data_log1p",
     ncols: int = 3,
@@ -1261,7 +1261,7 @@ def _plot_umap_mixed(
 
     sample_n
         Number of cells sampled for plotting. If ``None``, all cells are used.
-        For large datasets, it is recommended to set an appropriate integer, such as ``50000``,
+        For large datasets, it is recommended to set an appropriate integer, such as ``50_000``,
         to avoid memory pressure from reading too many UMAP coordinates and expression values at once.
 
     where
@@ -1316,7 +1316,7 @@ def _plot_umap_mixed(
             atlas,
             color=["kmeans", "CD14", "NKG7"],
             use_data="data_log1p",
-            sample_n=50000,
+            sample_n=50_000,
         )
 
     Plot multiple obs categorical variables and multiple gene expressions::

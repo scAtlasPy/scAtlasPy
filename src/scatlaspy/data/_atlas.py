@@ -207,7 +207,7 @@ def set_verbosity(
     Enable detailed logs while debugging an import or preprocessing workflow::
 
         sap.set_verbosity("debug")
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas = sap.Atlas("./data/pbmc")
     """
 
     atlas_logger = logging.getLogger("Atlas")
@@ -270,12 +270,12 @@ class Atlas:
     --------
     Create or connect to an Atlas database::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        atlas = sap.Atlas("./data/pbmc")
 
     Import an h5ad file through the object API::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
-        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad")
+        atlas = sap.Atlas("./data/pbmc")
+        atlas.load_h5ad("./data/pbmc.h5ad")
 
     Inspect the database and close the connection::
 
@@ -326,17 +326,17 @@ class Atlas:
         Examples
         --------
         Pass a database path without a suffix::
-            atlas = sap.Atlas(r"F:\\data\\test_10W")
+            atlas = sap.Atlas("./data/test_10W")
 
         Pass a complete ``.sasql`` file path::
-            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
+            atlas = sap.Atlas("./data/test_10W.sasql")
 
         Enable more detailed package logs::
             sap.set_verbosity("info")
-            atlas = sap.Atlas(r"F:\\data\\test_10W.sasql")
+            atlas = sap.Atlas("./data/test_10W.sasql")
 
         Limit DuckDB query and intermediate-computation memory to 4 GB::
-            atlas = sap.Atlas(r"F:\\data\\test_10W", db_memory_limit="4GB")
+            atlas = sap.Atlas("./data/test_10W", db_memory_limit="4GB")
         """
 
         self.__file_path = self._resolve_file_path(file_name)
@@ -370,10 +370,10 @@ class Atlas:
 
         Supported examples::
 
-            Atlas(r"F:\\data\\file_name\\sql_obs.sasql")
-            Atlas(r"F:\\data\\file_name\\sql_obs")
-            Atlas(Path(r"F:\\data\\file_name\\sql_obs.sasql"))
-            Atlas(Path(r"F:\\data\\file_name\\sql_obs"))
+            Atlas("./data/file_name/sql_obs.sasql")
+            Atlas("./data/file_name/sql_obs")
+            Atlas(Path("./data/file_name/sql_obs.sasql"))
+            Atlas(Path("./data/file_name/sql_obs"))
         """
 
         file_name = os.fspath(file_name)
@@ -509,7 +509,7 @@ class Atlas:
         --------
         Inspect the current database path::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas = sap.Atlas("./data/pbmc")
             atlas.file_path
         """
         return self.__file_path
@@ -585,13 +585,13 @@ class Atlas:
         Examples
         --------
         Limit DuckDB query memory when initializing Atlas::
-            atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit="4GB")
+            atlas = sap.Atlas("./data/pbmc", db_memory_limit="4GB")
 
         Use an integer value interpreted as GB::
-            atlas = sap.Atlas(r"F:\\data\\pbmc", db_memory_limit=4)
+            atlas = sap.Atlas("./data/pbmc", db_memory_limit=4)
 
         The limit is also applied when connecting to an existing database::
-            atlas = sap.Atlas(r"F:\\data\\pbmc.sasql", db_memory_limit="1024MB")
+            atlas = sap.Atlas("./data/pbmc.sasql", db_memory_limit="1024MB")
         """
 
         if self.__connection is None:
@@ -741,7 +741,7 @@ class Atlas:
         --------
         Close the connection after analysis::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas = sap.Atlas("./data/pbmc")
             atlas.describe()
             atlas.close()
         """
@@ -829,7 +829,7 @@ class Atlas:
         --------
         Check whether the database file has been created::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            atlas = sap.Atlas("./data/pbmc")
             atlas.exists()
         """
 
@@ -1571,13 +1571,13 @@ class Atlas:
         --------
         Import a single h5ad file in order::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
+            atlas = sap.Atlas("./data/pbmc")
+            atlas.load_h5ad("./data/pbmc.h5ad", load_type="order")
 
         Import multiple files with random blocks::
 
             atlas.load_h5ad(
-                [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
+                ["./data/batch1.h5ad", "./data/batch2.h5ad"],
                 load_type="random",
                 cells_per_block=1000,
             )
@@ -1625,8 +1625,8 @@ class Atlas:
         --------
         Read with Scanpy and import::
 
-            adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
+            adata = sc.read_h5ad("./data/pbmc.h5ad")
+            atlas = sap.Atlas("./data/pbmc")
             atlas.load_anndata(adata)
         """
 
@@ -1665,8 +1665,8 @@ class Atlas:
         --------
         Automatically detect and import a file::
 
-            atlas = sap.Atlas(r"F:\\data\\pbmc")
-            atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
+            atlas = sap.Atlas("./data/pbmc")
+            atlas.load_multi_format("./data/pbmc.h5ad")
         """
 
         _io_load_multi_format(file_path, self)
@@ -1772,15 +1772,15 @@ class Atlas:
         --------
         Export the current database::
 
-            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
+            atlas.write_h5ad("./data/pbmc_export.h5ad")
 
         Use the object-style API and reduce per-batch memory usage::
 
-            atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
+            atlas.write_h5ad("./data/pbmc_export.h5ad", batch_cells=200_000)
 
         Export the log1p expression matrix::
 
-            atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
+            atlas.write_h5ad("./data/pbmc_log1p.h5ad", use_data="data_log1p")"""
 
         _io_write_h5ad(
             self,

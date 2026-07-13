@@ -382,7 +382,7 @@ def rank_genes_groups_volcano(
             atlas,
             group="0",
             top_n=20,
-            save_path=r"F:\\figures\\rank_volcano.png",
+            save_path="./figures/rank_volcano.png",
         )
     """
 

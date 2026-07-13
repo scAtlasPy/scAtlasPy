@@ -139,7 +139,7 @@ def dotplot(
             genes=["MS4A1", "CD3D", "LYZ"],
             groupby="kmeans",
             groups=["0", "1", "2"],
-            save_path=r"F:\\figures\\marker_dotplot.png",
+            save_path="./figures/marker_dotplot.png",
         )"""
 
     conn = atlas.connection

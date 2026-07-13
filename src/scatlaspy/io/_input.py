@@ -341,13 +341,13 @@ def load_h5ad(
     --------
     Import a single h5ad file in order::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
-        atlas.load_h5ad(r"F:\\data\\pbmc.h5ad", load_type="order")
+        atlas = sap.Atlas("./data/pbmc")
+        atlas.load_h5ad("./data/pbmc.h5ad", load_type="order")
 
     Import multiple files with random blocks::
 
         atlas.load_h5ad(
-            [r"F:\\data\\batch1.h5ad", r"F:\\data\\batch2.h5ad"],
+            ["./data/batch1.h5ad", "./data/batch2.h5ad"],
             load_type="random",
             cells_per_block=1000,
         )"""
@@ -483,8 +483,8 @@ def load_anndata(adata: AnnData, atlas: Atlas) -> None:
     --------
     Read with Scanpy and import::
 
-        adata = sc.read_h5ad(r"F:\\data\\pbmc.h5ad")
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
+        adata = sc.read_h5ad("./data/pbmc.h5ad")
+        atlas = sap.Atlas("./data/pbmc")
         atlas.load_anndata(adata)
     """
 
@@ -566,8 +566,8 @@ def load_multi_format(file_path: PathLike[str] | str, atlas: Atlas) -> None:
     --------
     Automatically detect and import a file::
 
-        atlas = sap.Atlas(r"F:\\data\\pbmc")
-        atlas.load_multi_format(r"F:\\data\\pbmc.h5ad")
+        atlas = sap.Atlas("./data/pbmc")
+        atlas.load_multi_format("./data/pbmc.h5ad")
     """
 
     start_time = datetime.now()
@@ -2857,7 +2857,7 @@ def _create_hys_tables(conn: DuckDBPyConnection):
         CREATE OR REPLACE TABLE X_HyS_data (
             id BIGINT,                --   int64
             atlas_cell_id  INTEGER,   --   int32
-            atlas_gene_id  USMALLINT,  --  unsigned int16, between 0 and 65535
+            atlas_gene_id  USMALLINT,  --  unsigned int16, between 0 and 65_535
             data_count REAL            --  raw count, float32 single-precision floating point number (4 bytes)
         )
         """
@@ -3588,7 +3588,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
         CREATE OR REPLACE TABLE X_HyS_data (
             id BIGINT,
             atlas_cell_id INTEGER,
-            atlas_gene_id USMALLINT,  --  unsigned int16, between 0 and 65535
+            atlas_gene_id USMALLINT,  --  unsigned int16, between 0 and 65_535
             data_count REAL           --  raw count, float32 single-precision floating point number (4 bytes)
         )
         """

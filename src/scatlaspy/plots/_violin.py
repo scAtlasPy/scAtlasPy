@@ -472,7 +472,7 @@ def stacked_violin(
             atlas,
             genes=["MS4A1", "CD3D", "LYZ"],
             groupby="cell_type_auto",
-            save_path=r"F:\\figures\\stacked_violin.png",
+            save_path="./figures/stacked_violin.png",
         )"""
 
     conn = atlas.connection

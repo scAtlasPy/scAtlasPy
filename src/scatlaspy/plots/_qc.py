@@ -94,7 +94,7 @@ def highest_expr_genes(
         sap.pl.highest_expr_genes(
             atlas,
             n_top=30,
-            sample_cells=100000,
+            sample_cells=100_000,
             approx_quantile=True,
         )
     """
@@ -633,7 +633,7 @@ def violin_qc_metrics(
     figsize: tuple[float, float] | None=None,
     use_filtered: bool = False,
     filter_key: str = "filter_cells",
-    sample_n: int | None = 50000,
+    sample_n: int | None = 50_000,
     random_state: int = 0,
     save_path: PathLike[str] | str | None = None
 ) -> None:
@@ -860,7 +860,7 @@ def scatter_qc_metrics(
     figsize: tuple[float, float] | None=(10, 4),
     use_filtered: bool = False,
     filter_key: str = "filter_cells",
-    sample_n: int | None = 50000,
+    sample_n: int | None = 50_000,
     point_size: float = 8,
     alpha: float = 0.7,
     save_path: PathLike[str] | str | None = None
@@ -928,7 +928,7 @@ def scatter_qc_metrics(
         sap.pl.scatter_qc_metrics(
             atlas,
             pairs=[("cell_total_counts", "n_genes_by_counts")],
-            sample_n=100000,
+            sample_n=100_000,
         )
     """
 

@@ -13,7 +13,7 @@ def highly_variable_genes(
 
     # General parameters: supported by both underlying functions
     hvg_key: str = "highly_variable_genes",
-    sample_other: int | None = 20000,
+    sample_other: int | None = 20_000,
 
     # Parameters for the cv / var versions: only passed to highly_variable_genes_plot()
     mean_key: str = "hvg_mean",
@@ -116,8 +116,8 @@ def highly_variable_genes(
             atlas,
             flavor="seurat",
             hvg_key="highly_variable_genes",
-            sample_other=50000,
-            save_path=r"F:\\figures\\hvg.png",
+            sample_other=50_000,
+            save_path="./figures/hvg.png",
         )"""
 
     flavor = str(flavor).lower().strip()
@@ -164,7 +164,7 @@ def _highly_variable_genes_plot(
     var_key: str = "hvg_var",
     std_key: str = "hvg_std",
     score_key: str = "hvg_score",
-    sample_other: int | None = 20000,
+    sample_other: int | None = 20_000,
     figsize: tuple[float, float] | None = None,
     point_size_hvg: float = 8,
     point_size_other: float = 6,
@@ -380,7 +380,7 @@ def _highly_variable_genes_plot(
 def _highly_variable_genes_plot_seurat(
     atlas: Atlas,
     hvg_key: str = "highly_variable_genes",
-    sample_other: int | None = 20000,
+    sample_other: int | None = 20_000,
     save_path: PathLike[str] | str | None = None,
 ):
 

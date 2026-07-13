@@ -80,7 +80,7 @@ def _expression_source_for_transform(conn: DuckDBPyConnection, data_name: str) -
 
 def normalize_total(
     atlas: Atlas,
-    target_sum: float = 10000,
+    target_sum: float = 10_000,
     chunk_cells: int = 500_000,
     add_data: str = "data_normalize",
     use_data: str = "data_count",
@@ -118,7 +118,7 @@ def normalize_total(
 
     target_sum
         Target total expression per cell after normalization. The default value
-        is ``10000``.
+        is ``10_000``.
 
         For each cell, the output value is approximately:
 
@@ -166,7 +166,7 @@ def normalize_total(
     --------
     Normalize raw counts to 10,000 per cell::
 
-        sap.pp.normalize_total(atlas, target_sum=10000)
+        sap.pp.normalize_total(atlas, target_sum=10_000)
 
     """
 
@@ -269,7 +269,7 @@ def normalize_total(
 
 def normalize_total_scale_factor(
     atlas: Atlas,
-    target_sum: float = 10000,
+    target_sum: float = 10_000,
     add_obs_col: str = "scale_factor",
     use_data: str = "data_count",
     chunk_cells: int = 500_000,
@@ -308,7 +308,7 @@ def normalize_total_scale_factor(
 
     target_sum
         Target total expression per cell after normalization. The default value
-        is ``10000``. A larger value makes the overall scale of later normalized
+        is ``10_000``. A larger value makes the overall scale of later normalized
         expression values larger.
 
     add_obs_col
@@ -348,7 +348,7 @@ def normalize_total_scale_factor(
     --------
     Compute the default scale factor::
 
-        sap.pp.normalize_total_scale_factor(atlas, target_sum=10000)
+        sap.pp.normalize_total_scale_factor(atlas, target_sum=10_000)
     """
 
     start_time = datetime.now()
@@ -575,7 +575,7 @@ def log1p(
 
 def normalize_and_log1p(
     atlas: Atlas,
-    target_sum: Optional[float] = 10000,
+    target_sum: Optional[float] = 10_000,
     use_obs_col: str = "scale_factor",
     add_data: str = "data_log1p",
     use_data: str = "data_count",
@@ -606,7 +606,7 @@ def normalize_and_log1p(
 
     target_sum
         Target total expression per cell after normalization. The default value
-        is ``10000``.
+        is ``10_000``.
 
         This value is passed to ``normalize_total_scale_factor`` to compute the
         ``scale_factor`` for each cell.
@@ -650,7 +650,7 @@ def normalize_and_log1p(
     --------
     Compute the scale factor first, then write the log1p matrix::
 
-        sap.pp.normalize_total_scale_factor(atlas, target_sum=10000)
+        sap.pp.normalize_total_scale_factor(atlas, target_sum=10_000)
         sap.pp.normalize_and_log1p(atlas)
     """
 

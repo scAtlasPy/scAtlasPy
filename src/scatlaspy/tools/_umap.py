@@ -86,7 +86,7 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int = 15) -> float:
 def umap(
     atlas: Atlas,
     fit_sample_n: int | None = None,
-    transform_batch_size: int = 50000,
+    transform_batch_size: int = 50_000,
     n_components: int = 2,
     n_pcs: int | None = None,
     n_neighbors: int = 15,
@@ -209,8 +209,8 @@ def umap(
 
         sap.tl.umap(
             atlas,
-            fit_sample_n=500000,
-            transform_batch_size=100000,
+            fit_sample_n=500_000,
+            transform_batch_size=100_000,
             n_neighbors=45,
             min_dist=0.2,
             random_state=42,

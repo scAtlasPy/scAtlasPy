@@ -138,15 +138,15 @@ def write_h5ad(
     --------
     Export the current database::
 
-        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad")
+        atlas.write_h5ad("./data/pbmc_export.h5ad")
 
     Use the object-style API and reduce per-batch memory usage::
 
-        atlas.write_h5ad(r"F:\\data\\pbmc_export.h5ad", batch_cells=200000)
+        atlas.write_h5ad("./data/pbmc_export.h5ad", batch_cells=200_000)
 
     Export the log1p expression matrix::
 
-        atlas.write_h5ad(r"F:\\data\\pbmc_log1p.h5ad", use_data="data_log1p")"""
+        atlas.write_h5ad("./data/pbmc_log1p.h5ad", use_data="data_log1p")"""
 
     start_time = datetime.now()
 

@@ -80,7 +80,7 @@ def filter_cells(
         sap.pp.filter_cells(
             atlas,
             min_counts=500,
-            max_counts=50000,
+            max_counts=50_000,
             min_genes=200,
             max_genes=6000,
             add_data="filter_cells",
