@@ -14,6 +14,70 @@ import gc
 logger = logging.getLogger('Atlas')
 
 
+def _derived_data_table_name(data_name: str) -> str:
+    return f"X_HyS_data_{data_name}"
+
+
+def _has_table(conn: DuckDBPyConnection, table_name: str) -> bool:
+    return conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_name = ?
+        LIMIT 1
+        """,
+        [table_name],
+    ).fetchone() is not None
+
+
+def _has_column(conn: DuckDBPyConnection, table_name: str, column_name: str) -> bool:
+    return conn.execute(
+        """
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = ?
+          AND column_name = ?
+        LIMIT 1
+        """,
+        [table_name, column_name],
+    ).fetchone() is not None
+
+
+def _require_expression_data(conn: DuckDBPyConnection, data_name: str) -> None:
+    """Require an expression field on X_HyS_data or its derived value table."""
+
+    if _has_column(conn, "X_HyS_data", data_name):
+        return
+
+    table_name = _derived_data_table_name(data_name)
+    if _has_table(conn, table_name) and _has_column(conn, table_name, data_name):
+        return
+
+    raise ValueError(
+        f"Expression field does not exist: {data_name}. "
+        f"Expected X_HyS_data.{data_name} or {table_name}.{data_name}."
+    )
+
+
+def _expression_source_for_transform(conn: DuckDBPyConnection, data_name: str) -> tuple[str, str]:
+    """Return a FROM clause and value expression for transforms needing cell/gene ids."""
+
+    if _has_column(conn, "X_HyS_data", data_name):
+        return "X_HyS_data x", f"x.{data_name}"
+
+    table_name = _derived_data_table_name(data_name)
+    if not (_has_table(conn, table_name) and _has_column(conn, table_name, data_name)):
+        raise ValueError(
+            f"Expression field does not exist: {data_name}. "
+            f"Expected X_HyS_data.{data_name} or {table_name}.{data_name}."
+        )
+
+    if _has_column(conn, table_name, "atlas_cell_id") and _has_column(conn, table_name, "atlas_gene_id"):
+        return f"{table_name} x", f"x.{data_name}"
+
+    return f"X_HyS_data x JOIN {table_name} d ON x.id = d.id", f"d.{data_name}"
+
+
 def normalize_total(
         atlas: Atlas,
         target_sum: float = 10000,
@@ -28,8 +92,7 @@ def normalize_total(
     total expression of each cell. For each cell, it first computes the total
     expression of that cell in the ``use_data`` field, then scales all explicitly
     stored nonzero expression values in that cell to the scale defined by
-    ``target_sum``, and writes the result to the ``add_data`` field in the
-    ``X_HyS_data`` table.
+    ``target_sum``, and writes the result to a derived expression table.
 
     This workflow is similar to Scanpy's ``sc.pp.normalize_total`` and is
     commonly used to adjust cells with different sequencing depths to a
@@ -74,15 +137,11 @@ def normalize_total(
         longer.
 
     add_data
-        Name of the normalized result field to write to the ``X_HyS_data``
+        Name of the normalized result field to write to the derived expression
         table. The default value is ``"data_normalize"``.
 
-        If a field with the same name already exists in the original table, the
-        function first drops the old field, then rebuilds ``X_HyS_data`` through
-        a temporary table and writes the normalized result to this field.
-
     use_data
-        Name of the expression value field read from the ``X_HyS_data`` table.
+        Name of the expression value field read from the resolved expression source.
         The default value is ``"data_count"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
@@ -90,13 +149,13 @@ def normalize_total(
     Returns
     -------
     None
-        Results are written directly to the ``add_data`` field in the
-        ``X_HyS_data`` table. No object is returned.
+        Results are written to a derived expression table. No object is
+        returned.
 
     Notes
     -----
     This function only writes normalized values for explicitly stored nonzero
-    expression records in ``X_HyS_data``. For cells whose total expression is 0,
+    expression records in the resolved expression source. For cells whose total expression is 0,
     no new expression records are generated.
 
     After completion, the function cleans temporary tables and executes a
@@ -122,48 +181,40 @@ def normalize_total(
         pass
 
     # 1. Field check
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
+    _require_expression_data(conn, use_data)
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
-
-    # 2. Drop the old normalize field from the source table
+    # 2. Write normalized values into a complete derived expression table.  The
+    # extra cell/gene ids increase storage, but downstream steps can read the
+    # derived table directly instead of joining back to X_HyS_data by id.
+    # Process cells in chunks: a single full-table GROUP BY + JOIN can create
+    # very large DuckDB temporary files on atlas-scale data.
+    result_table = _derived_data_table_name(add_data)
+    conn.execute(f""" DROP TABLE IF EXISTS {result_table} """)
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
-
-    # 3. Create the target table
-    conn.execute("DROP TABLE IF EXISTS X_HyS_data_norm")
-
-    conn.execute("""
-        CREATE TABLE X_HyS_data_norm AS
-        SELECT * FROM X_HyS_data WHERE 1=0
-    """)
-
     conn.execute(f"""
-        ALTER TABLE X_HyS_data_norm
-        ADD COLUMN {add_data} REAL
+        CREATE TABLE {result_table} (
+            id BIGINT,
+            atlas_cell_id INTEGER,
+            atlas_gene_id INTEGER,
+            {add_data} REAL
+        )
     """)
 
-    # 4. Get the cell_id range
     min_cell, max_cell = conn.execute("""
         SELECT MIN(atlas_cell_id), MAX(atlas_cell_id)
         FROM X_HyS_data
+        WHERE atlas_cell_id IS NOT NULL
     """).fetchone()
 
-    if min_cell is None:
-        logger.info("X_HyS_data is empty; skipping")
+    if min_cell is None or max_cell is None:
+        logger.info("X_HyS_data is empty; normalize_total wrote an empty table")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
-
-    # 5. Cell chunking: small _cell_sum_chunk + write to target table
     pbar = progress(
         range(n_chunks),
         total=n_chunks,
@@ -172,43 +223,38 @@ def normalize_total(
     )
 
     for i in pbar:
-
         c_start = min_cell + i * chunk_cells
         c_end = min(c_start + chunk_cells - 1, max_cell)
 
-        # Only compute the sum for the current cell chunk
         conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
-
         conn.execute(f"""
             CREATE TEMP TABLE _cell_sum_chunk AS
             SELECT
-                atlas_cell_id,
-                SUM({use_data}) AS total
-            FROM X_HyS_data
-            WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
-            GROUP BY atlas_cell_id
+                x.atlas_cell_id,
+                SUM({source_value}) AS total
+            FROM {source_from_sql}
+            WHERE x.atlas_cell_id BETWEEN {c_start} AND {c_end}
+              AND {source_value} IS NOT NULL
+            GROUP BY x.atlas_cell_id
             HAVING total > 0
         """)
 
-        # Only write X data for the current cell chunk
         conn.execute(f"""
-            INSERT INTO X_HyS_data_norm
+            INSERT INTO {result_table}
             SELECT
-                x.*,
-                x.{use_data} * {float(target_sum)} / s.total AS {add_data}
-            FROM X_HyS_data x
-            JOIN _cell_sum_chunk s
+                x.id,
+                x.atlas_cell_id,
+                x.atlas_gene_id,
+                CAST({source_value} * {float(target_sum)} / s.total AS REAL) AS {add_data}
+            FROM {source_from_sql}
+            JOIN _cell_sum_chunk AS s
               ON x.atlas_cell_id = s.atlas_cell_id
             WHERE x.atlas_cell_id BETWEEN {c_start} AND {c_end}
-            ORDER BY x.id
+              AND {source_value} IS NOT NULL
         """)
 
-        # Clean up immediately after each chunk
-        conn.execute("DROP TABLE IF EXISTS _cell_sum_chunk")
-
-    # 6. Replace the original table
-    conn.execute("DROP TABLE X_HyS_data")
-    conn.execute("ALTER TABLE X_HyS_data_norm RENAME TO X_HyS_data")
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
+    logger.info(f"normalize_total table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(
@@ -232,14 +278,14 @@ def normalize_total_scale_factor(
 
     This function precomputes the normalization scale factor for each cell in
     the ``obs`` table. For each cell, it calculates the total expression of the
-    ``use_data`` field in the ``X_HyS_data`` table, then computes:
+    resolved ``use_data`` expression source, then computes:
 
     ``scale_factor = target_sum / cell_total``
 
     The result is written to the ``add_obs_col`` field in the ``obs`` table.
 
     This function itself does not modify the expression matrix and does not add
-    any expression field to ``X_HyS_data``. It is mainly used together with
+    any expression table. It is mainly used together with
     ``normalize_and_log1p`` so that later steps can complete normalization and
     log1p in a single chunked ``UPDATE``, avoiding the need to first write a
     complete intermediate normalized matrix.
@@ -256,9 +302,9 @@ def normalize_total_scale_factor(
         and the database must contain at least the ``obs`` table and the
         ``X_HyS_data`` table.
 
-        The ``obs`` table must contain the ``atlas_cell_id`` field; the
-        ``X_HyS_data`` table must contain ``atlas_cell_id`` and the expression
-        field specified by ``use_data``.
+        The ``obs`` table must contain the ``atlas_cell_id`` field; the database
+        must contain the expression field specified by ``use_data`` either on
+        ``X_HyS_data`` or in the corresponding derived expression table.
 
     target_sum
         Target total expression per cell after normalization. The default value
@@ -274,7 +320,7 @@ def normalize_total_scale_factor(
         then writes the current calculation result.
 
     use_data
-        Name of the expression value field read from the ``X_HyS_data`` table.
+        Name of the expression value field read from the resolved expression source.
         The default value is ``"data_count"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
@@ -296,7 +342,7 @@ def normalize_total_scale_factor(
     normalization.
 
     This function only writes cell-level metadata and does not change expression
-    values in ``X_HyS_data``.
+    values.
 
     Examples
     --------
@@ -315,15 +361,8 @@ def normalize_total_scale_factor(
         pass
 
     # 0. Basic safety check
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+    _require_expression_data(conn, use_data)
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
     # 1. Add the scale_factor field to obs
     conn.execute(f"""
@@ -368,11 +407,12 @@ def normalize_total_scale_factor(
         conn.execute(f"""
             CREATE TEMP TABLE _cell_sum_chunk AS
             SELECT
-                atlas_cell_id,
-                SUM({use_data}) AS total
-            FROM X_HyS_data
-            WHERE atlas_cell_id BETWEEN {c_start} AND {c_end}
-            GROUP BY atlas_cell_id
+                x.atlas_cell_id,
+                SUM({source_value}) AS total
+            FROM {source_from_sql}
+            WHERE x.atlas_cell_id BETWEEN {c_start} AND {c_end}
+              AND {source_value} IS NOT NULL
+            GROUP BY x.atlas_cell_id
         """)
 
         # Only update obs records corresponding to the current chunk
@@ -402,6 +442,7 @@ def normalize_total_scale_factor(
     logger.info(f"normalize_total_scale_factor Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
+@duckdb_memory_limit("3G")
 def log1p(
                 atlas: 'Atlas',
                 base: Optional[Number] = None,
@@ -411,7 +452,7 @@ def log1p(
     """Apply a log1p transformation to the expression matrix.
 
     This function applies a log1p transformation to a specified expression field
-    in the ``X_HyS_data`` table and writes the result to a new expression field.
+    in the expression matrix and writes the result to a derived expression table.
     By default, it reads the ``data_normalize`` field, computes the natural
     logarithm ``ln(1 + x)``, and writes the result to the ``data_log1p`` field.
 
@@ -420,10 +461,8 @@ def log1p(
     values and reduce the influence of highly expressed genes on downstream PCA
     or clustering.
 
-    The function performs chunked ``UPDATE`` operations over the
-    ``X_HyS_data.id`` range. Each chunk only updates expression records within
-    the current ID range where ``use_data`` is not ``NULL``, making it suitable
-    for large sparse expression matrices.
+    The function materializes the result with a single ``CREATE TABLE AS``
+    statement, without a global sort.
 
     Parameters
     ----------
@@ -443,27 +482,27 @@ def log1p(
         ``log_base(1 + x)``
 
     add_data
-        Name of the log1p result field to write to the ``X_HyS_data`` table. The
-        default value is ``"data_log1p"``.
+        Name of the log1p result field to write to the derived expression table.
+        The default value is ``"data_log1p"``.
 
         If the field already exists, the function first drops the old field,
         then recreates and writes it.
 
     use_data
-        Name of the expression value field read from the ``X_HyS_data`` table.
+        Name of the expression value field read from the resolved expression source.
         The default value is ``"data_normalize"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
 
     chunk_ids
-        Number of record IDs covered by each chunk when processing by
-        ``X_HyS_data.id`` range. The default value is ``100_000_000``.
+        Deprecated compatibility parameter. The current implementation writes
+        the derived expression table in one SQL statement.
 
     Returns
     -------
     None
-        Results are written directly to the ``add_data`` field in the
-        ``X_HyS_data`` table. No object is returned.
+        Results are written to a derived expression table. No object is
+        returned.
 
     Notes
     -----
@@ -494,63 +533,38 @@ def log1p(
     conn.execute(f"PRAGMA threads = 10 ")
 
     # 0. Field existence check (important)
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
+    _require_expression_data(conn, use_data)
 
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
-
-    # 1. Construct the log expression
-    if base is None:
-        log_expr = f"ln(1.0 + {use_data})"
-    else:
-        log_expr = f"log({float(base)}, 1.0 + {use_data})"
-
-    # 2. Ensure the output field exists
+    # 1. Store log1p values in a complete derived expression table. This
+    # intentionally uses a single CTAS without ORDER BY, matching the fast
+    # new-table benchmark pattern and avoiding an expensive global sort.
+    result_table = _derived_data_table_name(add_data)
+    conn.execute(f""" DROP TABLE IF EXISTS {result_table} """)
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
+    from_sql, source_value = _expression_source_for_transform(conn, use_data)
+
+    if base is None:
+        log_expr = f"ln(1.0 + {source_value})"
+    else:
+        log_expr = f"log({float(base)}, 1.0 + {source_value})"
+
     conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN  {add_data} REAL
+        CREATE TABLE {result_table} AS
+        SELECT
+            x.id,
+            x.atlas_cell_id,
+            x.atlas_gene_id,
+            CAST({log_expr} AS REAL) AS {add_data}
+        FROM {from_sql}
+        WHERE {source_value} IS NOT NULL
     """)
 
-    # 3. Get the id range
-    min_id, max_id = conn.execute("""
-        SELECT MIN(id), MAX(id)
-        FROM X_HyS_data
-    """).fetchone()
-
-    if min_id is None:
-        logger.info("X_HyS_data is empty; skipping")
-        return
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-
-    # 4. Chunked UPDATE
-    pbar = progress(
-        range(n_chunks),
-        total=n_chunks,
-        desc="log1p",
-        unit="chunk",
-    )
-
-    for i in pbar:
-        start_id = min_id + i * chunk_ids
-        end_id = start_id + chunk_ids - 1
-
-        conn.execute(f"""
-            UPDATE X_HyS_data
-            SET {add_data} = {log_expr}
-            WHERE id BETWEEN {start_id} AND {end_id}
-              AND {use_data} IS NOT NULL
-        """)
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
+    logger.info(f"log1p table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(
@@ -561,166 +575,6 @@ def log1p(
     )
 
     logger.info(f"log1p Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
-
-
-def expm1(
-        atlas: 'Atlas',
-        base: Optional[Number] = None,
-        add_data: str = "data_exp1",
-        use_data: str = "data_log1p",
-        chunk_ids: int = 50_000_000 ) -> None:
-    """Apply the inverse transformation to a log1p expression matrix.
-
-    This function applies the inverse transformation to a log1p-transformed
-    expression field in the ``X_HyS_data`` table and writes the result to a new
-    expression field. By default, it reads ``data_log1p``, computes the natural
-    exponential inverse transformation ``exp(x) - 1``, and writes the result to
-    ``data_exp1``.
-
-    When ``log1p`` used a non-natural logarithm base, you can specify the same
-    base through ``base`` so that the inverse transformation matches the
-    original log1p transformation.
-
-    The function performs chunked ``UPDATE`` operations over the
-    ``X_HyS_data.id`` range and only processes expression records where
-    ``use_data`` is not ``NULL``.
-
-    Parameters
-    ----------
-    atlas
-        Atlas object. The object must already be connected to a DuckDB database,
-        and the database must contain the ``X_HyS_data`` table.
-
-    base
-        Logarithm base used by the original log1p transformation. The default
-        value is ``None``, meaning that the natural exponential is used:
-
-        ``exp(x) - 1``
-
-        If a numeric value is provided, for example ``base=2``, the function
-        computes:
-
-        ``base ** x - 1``
-
-    add_data
-        Name of the inverse-transformation result field to write to the
-        ``X_HyS_data`` table. The default value is ``"data_exp1"``.
-
-    use_data
-        Name of the log1p expression field read from the ``X_HyS_data`` table.
-        The default value is ``"data_log1p"``.
-
-    chunk_ids
-        Number of record IDs covered by each chunk when processing by
-        ``X_HyS_data.id`` range. The default value is ``50_000_000``.
-
-    Returns
-    -------
-    None
-        Results are written directly to the ``add_data`` field in the
-        ``X_HyS_data`` table. No object is returned.
-
-    Notes
-    -----
-    This function is usually used for debugging, comparison, or situations that
-    require restoring log1p expression values to the linear space. If the input
-    field is not on the log1p scale, the inverse-transformation result has no
-    biological meaning.
-
-    Examples
-    --------
-    Restore the default log1p matrix to the linear space::
-
-        sap.pp.expm1(atlas, use_data="data_log1p", add_data="data_exp1")
-
-    Restore a log1p matrix that used base 2::
-
-        sap.pp.expm1(
-            atlas,
-            use_data="data_log1p",
-            add_data="data_exp1",
-            base=2,
-        )"""
-
-    start_time = datetime.now()
-
-    conn = atlas.connection
-
-    try:
-        conn.execute(f"PRAGMA threads={os.cpu_count()}")
-    except:
-        pass
-
-    # 0. Field existence check
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
-
-    # 1. Construct the exp expression
-    if base is None:
-        exp_expr = f"exp({use_data}) - 1.0"
-    else:
-        exp_expr = f"pow({float(base)}, {use_data}) - 1.0"
-
-    # 2. Ensure the output field exists
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        DROP COLUMN IF EXISTS {add_data}
-    """)
-
-    conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN {add_data} REAL
-    """)
-
-    # 3. Get the id range
-    min_id, max_id = conn.execute("""
-        SELECT MIN(id), MAX(id)
-        FROM X_HyS_data
-    """).fetchone()
-
-    if min_id is None:
-        logger.info("X_HyS_data is empty; skipping")
-        return
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-
-    # 4. Chunked UPDATE
-    pbar = progress(
-        range(n_chunks),
-        total=n_chunks,
-        desc="expm1",
-        unit="chunk",
-    )
-
-    for i in pbar:
-
-        start_id = min_id + i * chunk_ids
-        end_id = start_id + chunk_ids - 1
-
-        conn.execute(f"""
-            UPDATE X_HyS_data
-            SET {add_data} = {exp_expr}
-            WHERE id BETWEEN {start_id} AND {end_id}
-              AND {use_data} IS NOT NULL
-        """)
-
-    # Memory cleanup
-    _cleanup_transform_after_step(
-        conn,
-        temp_tables=[],
-        checkpoint=True,
-        collect=True,
-    )
-
-    logger.info(f"expm1 Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
-
 
 def normalize_and_log1p(
             atlas: Atlas,
@@ -735,17 +589,16 @@ def normalize_and_log1p(
     This function combines total-count normalization and log1p transformation
     into a single workflow in the Atlas database. It first calls
     ``normalize_total_scale_factor`` to compute each cell's scale factor in the
-    ``obs`` table. It then updates the expression matrix in chunks over the
-    ``X_HyS_data.id`` range and directly computes:
+    ``obs`` table. It then writes a derived expression table and directly computes:
 
     ``log(1 + x * scale_factor)``
 
-    The result is written to the ``add_data`` field in the ``X_HyS_data`` table.
+    The result is written to the derived expression table for ``add_data``.
 
     Compared with running ``normalize_total`` first and then running ``log1p``,
     this function does not need to first write a complete intermediate
-    normalized field, so it is better suited for large-scale data. It is
-    commonly used to generate ``data_log1p`` directly from ``data_count``.
+    normalized field. It is commonly used to generate ``data_log1p`` directly
+    from ``data_count``.
 
     Parameters
     ----------
@@ -770,13 +623,13 @@ def normalize_and_log1p(
 
     add_data
         Name of the normalized-and-log1p expression field to write to the
-        ``X_HyS_data`` table. The default value is ``"data_log1p"``.
+        derived expression table. The default value is ``"data_log1p"``.
 
         If the field already exists, the function first drops the old field and
         then recreates it.
 
     use_data
-        Name of the raw expression field read from the ``X_HyS_data`` table. The
+        Name of the raw expression field read from the resolved expression source. The
         default value is ``"data_count"``.
 
     base
@@ -785,21 +638,20 @@ def normalize_and_log1p(
         ``base=2``, the corresponding-base log1p is computed.
 
     chunk_ids
-        Number of record IDs covered by each chunk when processing by
-        ``X_HyS_data.id`` range. The default value is ``50_000_000``.
+        Deprecated compatibility parameter. The current implementation writes
+        the derived expression table in one SQL statement.
 
     Returns
     -------
     None
-        Results are written directly to the ``add_data`` field in the
-        ``X_HyS_data`` table, and the corresponding scale factor is written to
-        the ``use_obs_col`` field in the ``obs`` table. No object is returned.
+        Results are written to the derived expression table for ``add_data``,
+        and the corresponding scale factor is written to the ``use_obs_col``
+        field in the ``obs`` table. No object is returned.
 
     Notes
     -----
     This function overwrites the old values in the ``use_obs_col`` field of the
-    ``obs`` table and rebuilds the ``add_data`` field in the ``X_HyS_data``
-    table.
+    ``obs`` table and rebuilds the derived expression table for ``add_data``.
 
     Examples
     --------
@@ -818,15 +670,7 @@ def normalize_and_log1p(
         pass
 
     # 0. Field existence check (prevents silent bugs)
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+    _require_expression_data(conn, use_data)
 
     # 1. Call the function above: normalize_total -> compute scale_factor
     normalize_total_scale_factor(
@@ -837,55 +681,33 @@ def normalize_and_log1p(
     )
 
     # 2. Construct the log expression
-    if base is None:
-        log_expr = f"ln(1.0 + x.{use_data} * o.{use_obs_col})"
-    else:
-        log_expr = f"log({float(base)}, 1.0 + x.{use_data} * o.{use_obs_col})"
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
-    # 3. Prepare the output field
+    if base is None:
+        log_expr = f"ln(1.0 + {source_value} * o.{use_obs_col})"
+    else:
+        log_expr = f"log({float(base)}, 1.0 + {source_value} * o.{use_obs_col})"
+
+    # 3. Store normalized-log values in an id,value derived table.
+    result_table = _derived_data_table_name(add_data)
+    conn.execute(f""" DROP TABLE IF EXISTS {result_table} """)
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
     conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN {add_data} REAL
+        CREATE TABLE {result_table} AS
+        SELECT
+            x.id,
+            x.atlas_cell_id,
+            x.atlas_gene_id,
+            CAST({log_expr} AS REAL) AS {add_data}
+        FROM {source_from_sql}
+        JOIN obs AS o
+          ON x.atlas_cell_id = o.atlas_cell_id
+        WHERE {source_value} IS NOT NULL
     """)
-
-    # 4. Get the X_HyS_data.id range
-    min_id, max_id = conn.execute("""
-        SELECT MIN(id), MAX(id)
-        FROM X_HyS_data
-    """).fetchone()
-
-    if min_id is None:
-        logger.info("X_HyS_data is empty; skipping")
-        return
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-
-    # 5. Chunked UPDATE
-    # cell-wise QC: chunked processing
-    pbar = progress(
-        range(n_chunks),
-        total=n_chunks,
-        desc="normalize_and_log1p",
-        unit="chunk",
-    )
-
-    for i in pbar:
-
-        start_id = min_id + i * chunk_ids
-        end_id   = start_id + chunk_ids - 1
-
-        conn.execute(f"""
-            UPDATE X_HyS_data AS x
-            SET {add_data} = {log_expr}
-            FROM obs AS o
-            WHERE x.atlas_cell_id = o.atlas_cell_id
-              AND x.id BETWEEN {start_id} AND {end_id}
-        """)
 
     # Memory cleanup
     _cleanup_transform_after_step(
@@ -962,7 +784,7 @@ def highly_variable_genes(
         ``var`` table. The default value is ``"highly_variable_genes"``.
 
     use_data
-        Name of the expression field read from the ``X_HyS_data`` table. The
+        Name of the expression field read from the resolved expression source. The
         default value is ``"data_log1p"``. Highly variable genes are usually
         recommended to be calculated from log1p-transformed expression values.
 
@@ -1136,7 +958,7 @@ def _highly_variable_genes_basic(
         ``var`` table. The default value is ``"highly_variable_genes"``.
 
     use_data
-        Name of the expression field read from the ``X_HyS_data`` table. The
+        Name of the expression field read from the resolved expression source. The
         default value is ``"data_log1p"``.
 
     Returns
@@ -1177,15 +999,8 @@ def _highly_variable_genes_basic(
         pass
 
     # Check whether the field exists
-    col_exists = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+    _require_expression_data(conn, use_data)
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
     # Ensure the var table has reusable statistic columns
     conn.execute("""
@@ -1223,13 +1038,13 @@ def _highly_variable_genes_basic(
         CREATE OR REPLACE TEMP TABLE _gene_stats AS
         WITH gene_sum AS (
             SELECT
-                atlas_gene_id,
+                x.atlas_gene_id,
                 COUNT(*) AS nnz,
-                SUM({use_data}) AS sum_x,
-                SUM(({use_data}) * ({use_data})) AS sum_x2
-            FROM X_HyS_data
-            WHERE {use_data} IS NOT NULL
-            GROUP BY atlas_gene_id
+                SUM({source_value}) AS sum_x,
+                SUM(({source_value}) * ({source_value})) AS sum_x2
+            FROM {source_from_sql}
+            WHERE {source_value} IS NOT NULL
+            GROUP BY x.atlas_gene_id
         )
         SELECT
             v.atlas_gene_id,
@@ -1411,7 +1226,7 @@ def _highly_variable_genes_seurat(
         ``var`` table. The default value is ``"highly_variable_genes"``.
 
     use_data
-        Name of the expression field read from the ``X_HyS_data`` table. The
+        Name of the expression field read from the resolved expression source. The
         default value is ``"data_log1p"``.
 
         This Seurat-style implementation should usually run on log1p-transformed
@@ -1558,15 +1373,8 @@ def _highly_variable_genes_seurat(
     # -------------------------------------------------
     # 2. Check the use_data field
     # -------------------------------------------------
-    col_exists = conn.execute("""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = ?
-    """, [use_data]).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+    _require_expression_data(conn, use_data)
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
     # -------------------------------------------------
     # 3. Check whether filter fields exist
@@ -1681,13 +1489,13 @@ def _highly_variable_genes_seurat(
         FROM (
             SELECT
                 x.atlas_gene_id,
-                EXP(x.{_q(use_data)}) - 1.0 AS x_raw
-            FROM X_HyS_data AS x
+                EXP({source_value}) - 1.0 AS x_raw
+            FROM {source_from_sql}
             JOIN _hvg_obs_keep AS o
               ON x.atlas_cell_id = o.atlas_cell_id
             JOIN _hvg_var_keep AS v
               ON x.atlas_gene_id = v.atlas_gene_id
-            WHERE x.{_q(use_data)} IS NOT NULL
+            WHERE {source_value} IS NOT NULL
         ) AS t
         GROUP BY atlas_gene_id
     """)
@@ -2059,11 +1867,11 @@ def scale(
         ``X_HyS_data`` tables.
 
     use_data
-        Name of the expression field read from the ``X_HyS_data`` table. The
+        Name of the expression field read from the resolved expression source. The
         default value is ``"data_log1p"``.
 
     add_data
-        Name of the scale result field written to the ``X_HyS_data`` table. The
+        Name of the scale result field written to a derived expression table. The
         default value is ``"data_scale"``.
 
     add_var_col
@@ -2139,13 +1947,7 @@ def scale(
         pass
 
     # 1. Input field checks
-    if conn.execute(f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-    """).fetchone()[0] == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+    _require_expression_data(conn, use_data)
 
     if conn.execute("""
         SELECT COUNT(*)
@@ -2164,8 +1966,13 @@ def scale(
         raise ValueError("The atlas_gene_id field does not exist in X_HyS_data")
 
     # 2. Prepare output fields
+    # Avoid updating the large expression table in place.  The scaled values are
+    # materialized into a complete derived expression table.  Because scale is
+    # usually restricted to HVGs, storing cell/gene ids here avoids an extra join
+    # when build_read_index(use_data="data_scale") is called later.
+    scale_table = f"X_HyS_data_{add_data}"
+    conn.execute(f""" DROP TABLE IF EXISTS {scale_table} """)
     conn.execute(f""" ALTER TABLE X_HyS_data DROP COLUMN IF EXISTS {add_data} """)
-    conn.execute(f""" ALTER TABLE X_HyS_data ADD COLUMN IF NOT EXISTS {add_data} REAL """)
 
     conn.execute(f""" ALTER TABLE var DROP COLUMN IF EXISTS {add_var_col} """)
     conn.execute(f""" ALTER TABLE var ADD COLUMN IF NOT EXISTS {add_var_col} REAL """)
@@ -2209,25 +2016,27 @@ def scale(
 
     conn.execute("DROP TABLE IF EXISTS _gene_stat")
 
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
+
     conn.execute(f"""
         CREATE TEMP TABLE _gene_stat AS
         SELECT
             x.atlas_gene_id,
 
-            SUM(x.{use_data}) / {n_cells} AS mean,
+            SUM({source_value}) / {n_cells} AS mean,
 
             SQRT(
                 GREATEST(
-                    SUM(x.{use_data} * x.{use_data}) / {n_cells}
-                    - POWER(SUM(x.{use_data}) / {n_cells}, 2),
+                    SUM({source_value} * {source_value}) / {n_cells}
+                    - POWER(SUM({source_value}) / {n_cells}, 2),
                     0.0
                 )
             ) AS std
 
-        FROM X_HyS_data x
+        FROM {source_from_sql}
         JOIN _target_genes t
           ON x.atlas_gene_id = t.atlas_gene_id
-        WHERE x.{use_data} IS NOT NULL
+        WHERE {source_value} IS NOT NULL
         GROUP BY x.atlas_gene_id
     """)
 
@@ -2259,70 +2068,37 @@ def scale(
         conn.execute("ROLLBACK")
         raise
 
-    # 6. Get the id range
-    min_id, max_id, total_rows = conn.execute("""
-        SELECT MIN(id), MAX(id), COUNT(*)
-        FROM X_HyS_data
-    """).fetchone()
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-
-    # 7. Direct chunked UPDATE by id
-    done_chunks = 0
-    update_start_all = datetime.now()
-
-    pbar = progress(
-        range(n_chunks),
-        total=n_chunks,
-        desc="scale",
-        unit="chunk",
-    )
-
-    for chunk_idx in pbar:
-
-        chunk_start = min_id + chunk_idx * chunk_ids
-        chunk_end = min(chunk_start + chunk_ids - 1, max_id)
-
-        t0 = datetime.now()
-
-        conn.execute("BEGIN")
-        try:
-
-            # Write z-score for explicitly stored nonzero values
-            conn.execute(f"""
-                UPDATE X_HyS_data x
-                SET {add_data} =
-                    CASE
-                        WHEN g.std > 0 THEN
-                            LEAST(
-                                {float(max_value)},
-                                GREATEST(
-                                    -{float(max_value)},
-                                    (x.{use_data} - g.mean) / g.std
-                                )
+    # 6. Materialize scaled nonzero values as a complete derived table.
+    t0 = datetime.now()
+    conn.execute(f"""
+        CREATE TABLE {scale_table} AS
+        SELECT
+            x.id,
+            x.atlas_cell_id,
+            x.atlas_gene_id,
+            CAST(
+                CASE
+                    WHEN g.std > 0 THEN
+                        LEAST(
+                            {float(max_value)},
+                            GREATEST(
+                                -{float(max_value)},
+                                ({source_value} - g.mean) / g.std
                             )
-                        ELSE 0
-                    END
-                FROM _gene_stat g
-                WHERE x.atlas_gene_id = g.atlas_gene_id
-                  AND x.id BETWEEN {chunk_start} AND {chunk_end}
-                  AND x.{use_data} IS NOT NULL
-            """)
-
-            conn.execute("COMMIT")
-
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-
-        chunk_seconds = (datetime.now() - t0).total_seconds()
-        done_chunks += 1
-
-        avg_chunk_seconds = (
-            (datetime.now() - update_start_all).total_seconds() / done_chunks
-        )
-        remain_chunks = n_chunks - done_chunks
-        eta_seconds = avg_chunk_seconds * remain_chunks
+                        )
+                    ELSE 0
+                END
+            AS REAL) AS {add_data}
+        FROM {source_from_sql}
+        JOIN _gene_stat g
+          ON x.atlas_gene_id = g.atlas_gene_id
+        WHERE {source_value} IS NOT NULL
+    """)
+    n_scaled_rows = conn.execute(f"SELECT COUNT(*) FROM {scale_table}").fetchone()[0]
+    logger.info(
+        f"scale table {scale_table} written, rows={n_scaled_rows:,}, "
+        f"elapsed time: {(datetime.now() - t0).total_seconds():.2f} seconds"
+    )
 
     # 8. Memory cleanup
     _cleanup_transform_after_step(
@@ -2343,17 +2119,16 @@ def sqrt(
     """Apply a square-root transformation to the expression matrix.
 
     This function applies a square-root transformation to a specified expression
-    field in the ``X_HyS_data`` table and writes the result to a new expression
-    field. By default, it reads ``data_count``, computes ``sqrt(x)``, and writes
-    the result to ``data_sqrt``.
+    field from the resolved expression source and writes the result to a complete
+    derived expression table. By default, it reads ``data_count``, computes
+    ``sqrt(x)``, and writes the result to ``data_sqrt``.
 
     The square-root transformation can be used as a simple variance-stabilizing
     or pre-visualization preprocessing method for count data. Compared with
     log1p, sqrt compresses low-expression counts more gently.
 
-    The function performs chunked ``UPDATE`` operations over the
-    ``X_HyS_data.id`` range and only processes expression records where
-    ``use_data`` is not ``NULL``.
+    The function materializes the result with a single ``CREATE TABLE AS``
+    statement, without a global sort.
 
     Parameters
     ----------
@@ -2362,32 +2137,32 @@ def sqrt(
         and the database must contain the ``X_HyS_data`` table.
 
     add_data
-        Name of the square-root transformation result field to write to the
-        ``X_HyS_data`` table. The default value is ``"data_sqrt"``.
+        Name of the square-root transformation result field to write to a derived
+        expression table. The default value is ``"data_sqrt"``.
 
     use_data
-        Name of the expression field read from the ``X_HyS_data`` table. The
+        Name of the expression field read from the resolved expression source. The
         default value is ``"data_count"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
 
     chunk_ids
-        Number of record IDs covered by each chunk when processing by
-        ``X_HyS_data.id`` range. The default value is ``100_000_000``.
+        Deprecated compatibility parameter. The current implementation writes
+        the derived expression table in one SQL statement.
 
     Returns
     -------
     None
-        Results are written directly to the ``add_data`` field in the
-        ``X_HyS_data`` table. No object is returned.
+        Results are written to the derived expression table for ``add_data``. No
+        object is returned.
 
     Notes
     -----
-    This function does not modify the original ``use_data`` field. It only adds
-    or rebuilds the ``add_data`` field. If ``use_data`` contains negative values,
-    DuckDB's ``sqrt`` may produce invalid results or errors; therefore, this
-    function should usually be applied to count fields or nonnegative normalized
-    expression fields.
+    This function does not modify the original ``use_data`` field. It rebuilds
+    the derived expression table for ``add_data``. If ``use_data`` contains
+    negative values, DuckDB's ``sqrt`` may produce invalid results or errors;
+    therefore, this function should usually be applied to count fields or
+    nonnegative normalized expression fields.
 
     Examples
     --------
@@ -2395,9 +2170,9 @@ def sqrt(
 
         sap.pp.sqrt(atlas)
 
-    Adjust the chunk size for large data::
+    Write to a custom derived field::
 
-        sap.pp.sqrt(atlas, chunk_ids=50000000)
+        sap.pp.sqrt(atlas, add_data="data_sqrt")
     """
 
     start_time = datetime.now()
@@ -2409,74 +2184,38 @@ def sqrt(
     except Exception:
         pass
 
-    # 0. Field existence check
-    col_exists = conn.execute(
-        f"""
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = '{use_data}'
-        """
-    ).fetchone()[0]
-
-    if col_exists == 0:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
-
     if add_data is None:
         raise ValueError("add_data must be specified")
 
-    # 1. Construct the sqrt expression (0 is not specially handled)
-    sqrt_expr = f"sqrt({use_data})"
+    # 0. Field existence check
+    _require_expression_data(conn, use_data)
+    source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
-    # 2. Ensure the output field exists
-    # Drop the old column first
+    # 1. Construct the sqrt expression (0 is not specially handled)
+    sqrt_expr = f"sqrt({source_value})"
+
+    # 2. Store square-root values in a complete derived expression table. Keeping
+    # cell and gene ids avoids an extra join in downstream expression readers.
+    result_table = _derived_data_table_name(add_data)
+    conn.execute(f""" DROP TABLE IF EXISTS {result_table} """)
     conn.execute(f"""
         ALTER TABLE X_HyS_data
         DROP COLUMN IF EXISTS {add_data}
     """)
 
-    # Add the REAL field again
     conn.execute(f"""
-        ALTER TABLE X_HyS_data
-        ADD COLUMN {add_data} REAL
+        CREATE TABLE {result_table} AS
+        SELECT
+            x.id,
+            x.atlas_cell_id,
+            x.atlas_gene_id,
+            CAST({sqrt_expr} AS REAL) AS {add_data}
+        FROM {source_from_sql}
+        WHERE {source_value} IS NOT NULL
     """)
 
-    # 3. Get the id range
-    min_id, max_id = conn.execute(
-        """
-        SELECT MIN(id), MAX(id)
-        FROM X_HyS_data
-        """
-    ).fetchone()
-
-    if min_id is None:
-        logger.info("X_HyS_data is empty; skipping")
-        return
-
-    n_chunks = math.ceil((max_id - min_id + 1) / chunk_ids)
-
-    # 4. Chunked UPDATE
-    # cell-wise QC: chunked processing
-    pbar = progress(
-        range(n_chunks),
-        total=n_chunks,
-        desc="sqrt",
-        unit="chunk",
-    )
-
-    for i in pbar:
-
-        start_id = min_id + i * chunk_ids
-        end_id = start_id + chunk_ids - 1
-
-        conn.execute(
-            f"""
-            UPDATE X_HyS_data
-            SET {add_data} = {sqrt_expr}
-            WHERE id BETWEEN {start_id} AND {end_id}
-              AND {use_data} IS NOT NULL
-            """
-        )
+    n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
+    logger.info(f"sqrt table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(

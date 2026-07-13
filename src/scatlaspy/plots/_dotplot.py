@@ -1,4 +1,5 @@
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 import re
 from os import PathLike
 import numpy as np
@@ -67,7 +68,7 @@ def dotplot(
     """Plot a dotplot of gene expression across different cell groups.
 
     This function reads the expression of specified genes in each ``obs[groupby]``
-    group from ``X_HyS_data``, calculates the average expression and the percentage
+    group from the resolved expression source, calculates the average expression and the percentage
     of expressing cells for each ``group x gene`` combination, and plots a dotplot
     similar to Scanpy ``sc.pl.dotplot``: dot color represents average expression,
     and dot size represents the percentage of expressing cells.
@@ -87,8 +88,8 @@ def dotplot(
         Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``,
         or ``"cell_type"``.
     use_data
-        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``,
-        ``"data_count"``, or ``"data_scale"``.
+        Expression value field read from the resolved expression source, such as
+        ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
     sample_cells_per_group
         Maximum number of cells sampled from each group for plotting.
         If ``None``, all cells are used.
@@ -153,7 +154,7 @@ def dotplot(
     # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
+    expr_source = resolve_expression_source(conn, use_data)
 
     if groupby not in obs_cols:
         raise ValueError(f"Column does not exist in obs: {groupby}")
@@ -161,8 +162,6 @@ def dotplot(
         raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
-    if use_data not in x_cols:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -296,12 +295,19 @@ def dotplot(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_data}, 0.0) AS expr
+            COALESCE(xexpr.expr, 0.0) AS expr
         FROM _dotplot_cells_tmp c
         CROSS JOIN _dotplot_genes_tmp g
-        LEFT JOIN X_HyS_data x
-            ON c.atlas_cell_id = x.atlas_cell_id
-           AND g.atlas_gene_id = x.atlas_gene_id
+        LEFT JOIN (
+            SELECT
+                {expr_source.cell_sql} AS atlas_cell_id,
+                {expr_source.gene_sql} AS atlas_gene_id,
+                {expr_source.value_sql} AS expr
+            FROM {expr_source.from_sql}
+            WHERE {expr_source.value_sql} IS NOT NULL
+        ) AS xexpr
+          ON c.atlas_cell_id = xexpr.atlas_cell_id
+         AND g.atlas_gene_id = xexpr.atlas_gene_id
     """).fetchdf()
 
     conn.unregister("_dotplot_cells_tmp")

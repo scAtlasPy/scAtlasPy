@@ -42,7 +42,7 @@ class FilterIndexBuilder:
     use_hvg
         Whether to additionally restrict genes to highly variable genes.
     use_data
-        Expression value column name read from the ``X_HyS_data`` table, such as
+        Expression value column name read from the resolved expression source, such as
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, or ``"data_scale"``.
 
     Notes
@@ -109,7 +109,7 @@ class FilterIndexBuilder:
             the gene filtering condition.
 
         use_data
-            Expression value column name read from the ``X_HyS_data`` table.
+            Expression value column name read from the resolved expression source.
 
         Notes
         -----
@@ -148,6 +148,79 @@ class FilterIndexBuilder:
             """,
             [table_name, column_name],
         ).fetchone() is not None
+
+
+    def _has_table(self, table_name: str) -> bool:
+
+        return self.conn.execute(
+            """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_name = ?
+            LIMIT 1
+            """,
+            [table_name],
+        ).fetchone() is not None
+
+
+    def _derived_data_table_name(self) -> str:
+
+        return f"X_HyS_data_{self.use_data}"
+
+
+    def _expression_source_for_read_index(self) -> tuple[str, str, str, str]:
+        """Resolve where ``use_data`` is stored for read-index construction.
+
+        Returns
+        -------
+        tuple
+            ``from_sql``, ``value_sql``, ``order_sql``, and ``count_table``.
+
+        Notes
+        -----
+        ``use_data`` may be stored in one of three layouts:
+
+        - as a column on ``X_HyS_data``;
+        - as a complete derived table with ``atlas_cell_id`` and ``atlas_gene_id``;
+        - as an ``id,value`` derived table, which must be joined back to
+          ``X_HyS_data`` to recover cell and gene ids.
+        """
+
+        if self._has_column("X_HyS_data", self.use_data):
+            return (
+                "X_HyS_data AS X",
+                f"X.{self.use_data}",
+                "X.rowid",
+                "X_HyS_data",
+            )
+
+        data_table = self._derived_data_table_name()
+        if not (self._has_table(data_table) and self._has_column(data_table, self.use_data)):
+            raise ValueError(
+                f"Expression field does not exist: {self.use_data}. "
+                f"Expected X_HyS_data.{self.use_data} or {data_table}.{self.use_data}."
+            )
+
+        if self._has_column(data_table, "atlas_cell_id") and self._has_column(data_table, "atlas_gene_id"):
+            return (
+                f"{data_table} AS X",
+                f"X.{self.use_data}",
+                "X.rowid",
+                data_table,
+            )
+
+        if not self._has_column(data_table, "id"):
+            raise ValueError(
+                f"Derived expression table {data_table} must contain id, or both "
+                "atlas_cell_id and atlas_gene_id."
+            )
+
+        return (
+            f"X_HyS_data AS X JOIN {data_table} AS D ON X.id = D.id",
+            f"D.{self.use_data}",
+            "X.rowid",
+            data_table,
+        )
 
 
     def _require_filter_column(
@@ -339,7 +412,7 @@ class FilterIndexBuilder:
 
         """Build the filtered expression matrix table ``X_HyS_data_filtered``.
 
-        This method reads expression records from the original ``X_HyS_data`` table and
+        This method reads expression records from the resolved expression source and
         keeps only the cells and genes that pass filtering through ``obs.filter_cell_id``
         and ``var.filter_gene_id``.
 
@@ -351,8 +424,8 @@ class FilterIndexBuilder:
         - ``tid``: shard ID used for subsequent minibatch streaming reading
 
         In implementation, temporary mapping tables ``_obs_keep`` and ``_var_keep`` are
-        created first, and then ``X_HyS_data`` is scanned once to build the filtered
-        expression table.
+        created first, and then the resolved expression source is scanned once to
+        build the filtered expression table.
 
         Returns
         -------
@@ -404,19 +477,15 @@ class FilterIndexBuilder:
         )
         """)
 
-        # Get the rowid range
-        min_id, max_id = conn.execute("""
-            SELECT MIN(rowid), MAX(rowid)
-            FROM X_HyS_data
-        """).fetchone()
+        from_sql, value_sql, order_sql, count_table = self._expression_source_for_read_index()
+        total_rows = conn.execute(f"SELECT COUNT(*) FROM {count_table}").fetchone()[0]
 
-        if min_id is None:
-            logger.debug(" X_HyS_data is an empty table, skipping")
+        if total_rows == 0:
+            logger.debug(" Expression source is empty, skipping")
             return
 
-        logger.debug(f"rowid range: {min_id:,} ~ {max_id:,}")
-        total_rows = max_id - min_id + 1
-        logger.debug(f"total rows to scan: {total_rows:,}")
+        logger.info(f"  -> Using expression source for {self.use_data}: {count_table}")
+        logger.debug(f"total source rows to scan: {total_rows:,}")
 
         pbar = progress(
             total=total_rows,
@@ -430,14 +499,15 @@ class FilterIndexBuilder:
         SELECT
             obs.filter_cell_id,
             var.filter_gene_id,
-            CAST(X.{self.use_data} AS REAL) AS data,
+            CAST({value_sql} AS REAL) AS data,
             CAST(0 AS TINYINT) AS tid
-        FROM X_HyS_data AS X
+        FROM {from_sql}
         JOIN _obs_keep AS obs
           ON X.atlas_cell_id = obs.atlas_cell_id
         JOIN _var_keep AS var
           ON X.atlas_gene_id = var.atlas_gene_id
-        ORDER BY X.rowid
+        WHERE {value_sql} IS NOT NULL
+        ORDER BY {order_sql}
         """)
 
         pbar.update(total_rows)

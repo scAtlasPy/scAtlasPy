@@ -2505,7 +2505,7 @@ def _normalize_cells_per_block(cells_per_block: int | None, n_cells: int) -> int
 
     This internal function is used by ``load_h5ad`` and its underlying import workflows. When the user does not explicitly specify
     ``cells_per_block``, the function estimates a default value based on the total number of cells and limits it to
-    between ``512`` and ``4096``.
+    between ``512`` and ``2048``.
 
     Parameters
     ----------
@@ -2527,7 +2527,7 @@ def _normalize_cells_per_block(cells_per_block: int | None, n_cells: int) -> int
 
     if cells_per_block is None:
         cells_per_block = int(0.001 * n_cells)
-        cells_per_block = max(512, min(cells_per_block, 4096))
+        cells_per_block = max(512, min(cells_per_block, 2048))
 
     cells_per_block = int(cells_per_block)
     logger.info(f"cells_per_block = {cells_per_block}")

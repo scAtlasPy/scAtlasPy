@@ -1,4 +1,5 @@
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 import re
 from os import PathLike
 import numpy as np
@@ -62,7 +63,7 @@ def violin(
 
     """Plot violin plots of gene expression across different cell groups.
 
-    This function resolves gene names from ``var``, reads expression values from the ``use_data`` field in ``X_HyS_data``,
+    This function resolves gene names from ``var``, reads expression values from the resolved ``use_data`` expression source,
     and groups by ``obs[groupby]`` to draw standard violin plots. Each gene is plotted separately; the x-axis shows groups,
     and the y-axis shows expression values.
     This is suitable for checking the expression distribution of marker genes across different clusters or cell types.
@@ -82,8 +83,8 @@ def violin(
         Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
 
     use_data
-        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``,
-        or ``"data_scale"``.
+        Expression value field read from the resolved expression source, such as ``"data_log1p"``,
+        ``"data_count"``, or ``"data_scale"``.
 
     sample_n_per_group
         Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
@@ -133,7 +134,7 @@ def violin(
     # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
+    expr_source = resolve_expression_source(conn, use_data)
 
     if groupby not in obs_cols:
         raise ValueError(f"Column does not exist in obs: {groupby}")
@@ -141,8 +142,6 @@ def violin(
         raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
-    if use_data not in x_cols:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -275,12 +274,19 @@ def violin(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_data}, 0.0) AS expr
+            COALESCE(xexpr.expr, 0.0) AS expr
         FROM _violin_cells_tmp c
         CROSS JOIN _violin_genes_tmp g
-        LEFT JOIN X_HyS_data x
-            ON c.atlas_cell_id = x.atlas_cell_id
-           AND g.atlas_gene_id = x.atlas_gene_id
+        LEFT JOIN (
+            SELECT
+                {expr_source.cell_sql} AS atlas_cell_id,
+                {expr_source.gene_sql} AS atlas_gene_id,
+                {expr_source.value_sql} AS expr
+            FROM {expr_source.from_sql}
+            WHERE {expr_source.value_sql} IS NOT NULL
+        ) AS xexpr
+          ON c.atlas_cell_id = xexpr.atlas_cell_id
+         AND g.atlas_gene_id = xexpr.atlas_gene_id
     """).fetchdf()
 
     conn.unregister("_violin_cells_tmp")
@@ -400,7 +406,7 @@ def stacked_violin(
 
     """Plot a stacked violin plot for multiple marker genes.
 
-    This function reads expression values for multiple genes from ``X_HyS_data`` and groups by ``obs[groupby]`` to draw
+    This function reads expression values for multiple genes from the resolved expression source and groups by ``obs[groupby]`` to draw
     a stacked violin plot: each cell corresponds to a ``group x gene`` combination, the violin shape shows the expression distribution,
     and color intensity represents the median expression level of that combination.
 
@@ -419,8 +425,8 @@ def stacked_violin(
         Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
 
     use_data
-        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``,
-        or ``"data_scale"``.
+        Expression value field read from the resolved expression source, such as ``"data_log1p"``,
+        ``"data_count"``, or ``"data_scale"``.
 
     sample_n_per_group
         Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
@@ -481,7 +487,7 @@ def stacked_violin(
     # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
+    expr_source = resolve_expression_source(conn, use_data)
 
     if groupby not in obs_cols:
         raise ValueError(f"Column does not exist in obs: {groupby}")
@@ -489,8 +495,6 @@ def stacked_violin(
         raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("atlas_gene_id / atlas_gene_name does not exist in var")
-    if use_data not in x_cols:
-        raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
 
     # gene_name -> gene_id
     gene_name_sql = ", ".join([f"'{g}'" for g in genes])
@@ -622,12 +626,19 @@ def stacked_violin(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_data}, 0.0) AS expr
+            COALESCE(xexpr.expr, 0.0) AS expr
         FROM _sv_cells_tmp c
         CROSS JOIN _sv_genes_tmp g
-        LEFT JOIN X_HyS_data x
-            ON c.atlas_cell_id = x.atlas_cell_id
-           AND g.atlas_gene_id = x.atlas_gene_id
+        LEFT JOIN (
+            SELECT
+                {expr_source.cell_sql} AS atlas_cell_id,
+                {expr_source.gene_sql} AS atlas_gene_id,
+                {expr_source.value_sql} AS expr
+            FROM {expr_source.from_sql}
+            WHERE {expr_source.value_sql} IS NOT NULL
+        ) AS xexpr
+          ON c.atlas_cell_id = xexpr.atlas_cell_id
+         AND g.atlas_gene_id = xexpr.atlas_gene_id
     """).fetchdf()
 
     conn.unregister("_sv_cells_tmp")

@@ -1,4 +1,5 @@
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 from matplotlib.lines import Line2D
 import numpy as np
 import re
@@ -104,7 +105,7 @@ def umap(
         If ``None``, no additional condition is added.
 
     use_data
-        Expression value field read from ``X_HyS_data`` when ``color`` contains gene names, such as
+        Expression value field read from the resolved expression source when ``color`` contains gene names, such as
         ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
 
     figsize
@@ -897,7 +898,7 @@ def _plot_umap_features(
 
     """Plot UMAP feature plots by gene expression.
 
-    This internal function resolves gene names from the ``var`` table, reads expression values from the ``use_data`` field in ``X_HyS_data``,
+    This internal function resolves gene names from the ``var`` table, reads expression values from the resolved ``use_data`` expression source,
     merges them with ``obsm_X_umap`` coordinates, and then plots one or more gene feature UMAP panels.
     Undetected sparse expression values are filled with 0; when ``use_data="data_scale"``,
     a more appropriate zero-fill value is selected according to the distribution of that field
@@ -919,8 +920,8 @@ def _plot_umap_features(
         Optional SQL filtering condition used to restrict cells participating in calculation or plotting.
 
     use_data
-        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"``, ``"data_count"``
-        or ``"data_scale"``.
+        Expression value field read from the resolved expression source, such as
+        ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
 
     ncols
         Number of subplots per row for multi-panel plotting.
@@ -979,20 +980,14 @@ def _plot_umap_features(
 
     umap_cols = [r[1] for r in conn.execute("PRAGMA table_info(obsm_X_umap)").fetchall()]
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
+    expr_source = resolve_expression_source(conn, use_data)
 
     if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
         raise ValueError("obsm_X_umap needs to contain atlas_cell_id / umap1 / umap2")
 
     if "atlas_cell_id" not in obs_cols:
         raise ValueError("atlas_cell_id does not exist in obs")
-
-    if "atlas_cell_id" not in x_cols or "atlas_gene_id" not in x_cols:
-        raise ValueError("X_HyS_data needs to contain atlas_cell_id / atlas_gene_id")
-
-    if use_data not in x_cols:
-        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
 
     if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
         raise ValueError("var needs to contain atlas_gene_id / atlas_gene_name")
@@ -1100,11 +1095,18 @@ def _plot_umap_features(
             expr_df = conn.execute(f"""
                 SELECT
                     c.atlas_cell_id,
-                    COALESCE(x.{use_data}, {zero_fill}) AS expr
+                    COALESCE(xexpr.expr, {zero_fill}) AS expr
                 FROM _umap_cells_tmp c
-                LEFT JOIN X_HyS_data x
-                  ON c.atlas_cell_id = x.atlas_cell_id
-                 AND x.atlas_gene_id = {gene_id}
+                LEFT JOIN (
+                    SELECT
+                        {expr_source.cell_sql} AS atlas_cell_id,
+                        {expr_source.gene_sql} AS atlas_gene_id,
+                        {expr_source.value_sql} AS expr
+                    FROM {expr_source.from_sql}
+                    WHERE {expr_source.value_sql} IS NOT NULL
+                ) AS xexpr
+                  ON c.atlas_cell_id = xexpr.atlas_cell_id
+                 AND xexpr.atlas_gene_id = {gene_id}
             """).fetchdf()
 
         else:
@@ -1113,11 +1115,18 @@ def _plot_umap_features(
             expr_df = conn.execute(f"""
                 SELECT
                     c.atlas_cell_id,
-                    COALESCE(x.{use_data}, 0.0) AS expr
+                    COALESCE(xexpr.expr, 0.0) AS expr
                 FROM _umap_cells_tmp c
-                LEFT JOIN X_HyS_data x
-                  ON c.atlas_cell_id = x.atlas_cell_id
-                 AND x.atlas_gene_id = {gene_id}
+                LEFT JOIN (
+                    SELECT
+                        {expr_source.cell_sql} AS atlas_cell_id,
+                        {expr_source.gene_sql} AS atlas_gene_id,
+                        {expr_source.value_sql} AS expr
+                    FROM {expr_source.from_sql}
+                    WHERE {expr_source.value_sql} IS NOT NULL
+                ) AS xexpr
+                  ON c.atlas_cell_id = xexpr.atlas_cell_id
+                 AND xexpr.atlas_gene_id = {gene_id}
             """).fetchdf()
 
         df = umap_df.merge(expr_df, on="atlas_cell_id", how="left")
@@ -1260,7 +1269,7 @@ def _plot_umap_mixed(
         For example, ``where="batch = 'sample1'"``.
 
     use_data
-        Expression field read from ``X_HyS_data`` during gene feature plotting.
+        Expression field read from the resolved expression source during gene feature plotting.
         Common values include ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``
         and ``"data_scale"``.
 
@@ -1345,15 +1354,13 @@ def _plot_umap_mixed(
 
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
     for obs_col in obs_colors:
         if obs_col not in obs_cols:
             raise ValueError(f"The column does not exist in obs: {obs_col}")
 
     if len(gene_colors) > 0:
-        if use_data not in x_cols:
-            raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
+        expr_source = resolve_expression_source(conn, use_data)
 
         if "atlas_gene_id" not in var_cols or "atlas_gene_name" not in var_cols:
             raise ValueError("var needs to contain atlas_gene_id / atlas_gene_name")
@@ -1472,11 +1479,18 @@ def _plot_umap_mixed(
                 expr_df = conn.execute(f"""
                     SELECT
                         c.atlas_cell_id,
-                        COALESCE(x.{use_data}, {zero_fill}) AS expr
+                        COALESCE(xexpr.expr, {zero_fill}) AS expr
                     FROM _umap_cells_tmp c
-                    LEFT JOIN X_HyS_data x
-                      ON c.atlas_cell_id = x.atlas_cell_id
-                     AND x.atlas_gene_id = {gene_id}
+                    LEFT JOIN (
+                        SELECT
+                            {expr_source.cell_sql} AS atlas_cell_id,
+                            {expr_source.gene_sql} AS atlas_gene_id,
+                            {expr_source.value_sql} AS expr
+                        FROM {expr_source.from_sql}
+                        WHERE {expr_source.value_sql} IS NOT NULL
+                    ) AS xexpr
+                      ON c.atlas_cell_id = xexpr.atlas_cell_id
+                     AND xexpr.atlas_gene_id = {gene_id}
                 """).fetchdf()
 
             else:
@@ -1485,11 +1499,18 @@ def _plot_umap_mixed(
                 expr_df = conn.execute(f"""
                     SELECT
                         c.atlas_cell_id,
-                        COALESCE(x.{use_data}, 0.0) AS expr
+                        COALESCE(xexpr.expr, 0.0) AS expr
                     FROM _umap_cells_tmp c
-                    LEFT JOIN X_HyS_data x
-                      ON c.atlas_cell_id = x.atlas_cell_id
-                     AND x.atlas_gene_id = {gene_id}
+                    LEFT JOIN (
+                        SELECT
+                            {expr_source.cell_sql} AS atlas_cell_id,
+                            {expr_source.gene_sql} AS atlas_gene_id,
+                            {expr_source.value_sql} AS expr
+                        FROM {expr_source.from_sql}
+                        WHERE {expr_source.value_sql} IS NOT NULL
+                    ) AS xexpr
+                      ON c.atlas_cell_id = xexpr.atlas_cell_id
+                     AND xexpr.atlas_gene_id = {gene_id}
                 """).fetchdf()
 
             df = umap_df[["atlas_cell_id", "umap1", "umap2"]].merge(

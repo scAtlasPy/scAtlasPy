@@ -1,4 +1,5 @@
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -71,8 +72,8 @@ def pca(
     two-dimensional scatter plot.
     ``color`` can be either a cell-level field in the ``obs`` table or a gene name
     in ``var.atlas_gene_name``. The former colors points by an obs column, while the
-    latter reads the expression value of that gene from the ``use_data`` field in
-    ``X_HyS_data`` and colors points with a continuous colorbar.
+    latter reads the expression value of that gene from the resolved ``use_data``
+    expression source and colors points with a continuous colorbar.
 
     This plot is similar to Scanpy ``sc.pl.pca`` and is commonly used to inspect PCA
     dimensionality reduction results, batch effects, QC metrics, or the distribution
@@ -103,8 +104,9 @@ def pca(
         Maximum number of cells to sample for plotting. If ``None``, all cells are used.
 
     use_data
-        Expression value field read from ``X_HyS_data`` when ``color`` is a gene name,
-        such as ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
+        Expression value field read from the resolved expression source when
+        ``color`` is a gene name, such as ``"data_log1p"``, ``"data_count"``,
+        or ``"data_scale"``.
 
     figsize
         Matplotlib figure size.
@@ -272,11 +274,6 @@ def pca(
             for r in conn.execute("PRAGMA table_info(var)").fetchall()
         ]
 
-        x_cols = [
-            r[1]
-            for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()
-        ]
-
         # color is a column name in the obs table
         if color in obs_cols:
 
@@ -312,23 +309,26 @@ def pca(
 
             if gene_row is not None:
 
-                if use_data not in x_cols:
-                    raise ValueError(
-                        f"The expression field does not exist in X_HyS_data: {use_data}"
-                    )
-
                 gene_id = int(gene_row[0])
+                expr_source = resolve_expression_source(conn, use_data)
 
                 conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
 
                 expr_df = conn.execute(f"""
                     SELECT
                         c.atlas_cell_id,
-                        COALESCE(x.{_q(use_data)}, 0.0) AS color_value
+                        COALESCE(xexpr.expr, 0.0) AS color_value
                     FROM _pca_cells_tmp AS c
-                    LEFT JOIN X_HyS_data AS x
-                      ON c.atlas_cell_id = x.atlas_cell_id
-                     AND x.atlas_gene_id = {gene_id}
+                    LEFT JOIN (
+                        SELECT
+                            {expr_source.cell_sql} AS atlas_cell_id,
+                            {expr_source.gene_sql} AS atlas_gene_id,
+                            {expr_source.value_sql} AS expr
+                        FROM {expr_source.from_sql}
+                        WHERE {expr_source.value_sql} IS NOT NULL
+                    ) AS xexpr
+                      ON c.atlas_cell_id = xexpr.atlas_cell_id
+                     AND xexpr.atlas_gene_id = {gene_id}
                 """).fetchdf()
 
                 conn.unregister("_pca_cells_tmp")

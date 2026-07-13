@@ -119,6 +119,22 @@ def _get_atlas_from_call(args: tuple[Any, ...], kwargs: dict[str, Any]) -> _Atla
     raise TypeError("duckdb_memory_limit requires an Atlas object as the first argument")
 
 
+def _get_duckdb_memory_setting(atlas: _AtlasLike) -> str:
+    """Return DuckDB's active memory_limit setting for logging."""
+
+    if atlas.connection is None:
+        return "connection-unavailable"
+
+    try:
+        return str(
+            atlas.connection.execute(
+                "SELECT current_setting('memory_limit')"
+            ).fetchone()[0]
+        )
+    except Exception as exc:
+        return f"unavailable: {type(exc).__name__}: {exc}"
+
+
 def duckdb_memory_limit(memory_limit: str | int):
     """Temporarily use a smaller DuckDB memory limit for one Atlas operation.
 
@@ -134,10 +150,24 @@ def duckdb_memory_limit(memory_limit: str | int):
             old_limit = atlas.db_memory_limit
             step_limit = atlas._resolve_step_memory_limit(memory_limit)
             atlas._set_db_memory_limit(step_limit)
+            logger.info(
+                "[duckdb_memory_limit] enter %s: requested=%s previous=%s effective=%s duckdb=%s",
+                func.__name__,
+                memory_limit,
+                old_limit,
+                step_limit,
+                _get_duckdb_memory_setting(atlas),
+            )
             try:
                 return func(*args, **kwargs)
             finally:
                 atlas._set_db_memory_limit(old_limit)
+                logger.info(
+                    "[duckdb_memory_limit] exit %s: restored=%s duckdb=%s",
+                    func.__name__,
+                    old_limit,
+                    _get_duckdb_memory_setting(atlas),
+                )
 
         return wrapper
 
@@ -1125,7 +1155,7 @@ class Atlas:
             If ``True``, the final gene set must satisfy both the gene filtering
             condition and the HVG condition.
         use_data
-            Expression value column name read from the ``X_HyS_data`` table. Common
+            Expression value column name read from the resolved expression source. Common
             values include ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``,
             and ``"data_scale"``.
 
@@ -1700,9 +1730,10 @@ class Atlas:
         continued analysis in Scanpy or other tools that support AnnData.
 
         The expression matrix is reassembled into the h5ad CSR ``X`` according to
-        the internal Atlas HyS sparse structure. ``X.data`` comes from the field
-        specified by ``use_data`` in the ``X_HyS_data`` table, ``X.indices`` comes
-        from ``atlas_gene_id``, and ``X.indptr`` comes from ``X_HyS_indptr``.
+        the internal Atlas HyS sparse structure. ``X.data`` comes from the
+        expression source resolved by ``use_data``; this can be a field in
+        ``X_HyS_data`` or a derived expression table. ``X.indices`` comes from
+        ``atlas_gene_id``.
 
         Parameters
         ----------
@@ -1715,10 +1746,10 @@ class Atlas:
             A larger value is usually faster, but increases per-batch memory usage.
 
         use_data
-            Expression value field exported from the ``X_HyS_data`` table.
-            The default is ``"data_count"``.
-            Existing fields such as ``"data_log1p"`` and ``"data_normalize"`` can
-            also be used.
+            Expression value field exported from the resolved expression source.
+            The default is ``"data_count"``. Existing fields such as
+            ``"data_log1p"`` and ``"data_normalize"`` can also be used after the
+            corresponding preprocessing steps.
 
         Returns
         -------
@@ -1733,9 +1764,9 @@ class Atlas:
         ``varm_*`` tables are exported to h5ad ``varm``. The ``varm_`` prefix in the
         table name is removed.
 
-        Before export, the function checks whether ``use_data`` exists in the
-        ``X_HyS_data`` table. If it does not exist, an error is raised directly to
-        avoid exporting an empty matrix or an incorrect field.
+        Before export, the function resolves ``use_data`` from the base expression
+        table or a derived expression table. If it cannot be resolved, an error is
+        raised directly to avoid exporting an empty matrix or an incorrect field.
 
         Examples
         --------
@@ -1874,8 +1905,9 @@ class Atlas:
             the order of this list.
 
         use_data
-            Expression field read from the ``X_HyS_data`` table. Common values include
-            ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
+            Expression field read from the resolved expression source. Common
+            values include ``"data_count"``, ``"data_normalize"``,
+            ``"data_log1p"``, and ``"data_scale"``.
 
         include_obsm
             Whether to write ``obsm_*`` result tables into the returned AnnData object.

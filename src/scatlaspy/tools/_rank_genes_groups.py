@@ -6,6 +6,7 @@ import pandas as pd
 from scipy import stats
 from typing import Any
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 import logging
 logger = logging.getLogger('Atlas')
 
@@ -48,16 +49,16 @@ def rank_genes_groups(
 
         The ``obs`` table must contain ``atlas_cell_id`` and the grouping column
         specified by ``groupby``; the ``var`` table must contain
-        ``atlas_gene_id`` and ``atlas_gene_name``; the ``X_HyS_data`` table must
-        contain ``atlas_cell_id``, ``atlas_gene_id``, and the expression field
-        specified by ``use_data``.
+        ``atlas_gene_id`` and ``atlas_gene_name``; the expression field
+        specified by ``use_data`` must exist either on ``X_HyS_data`` or in a
+        derived expression table.
 
     groupby
         Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or
         ``"cell_type"``.
 
     use_data
-        Expression field name read from the ``X_HyS_data`` table. The default
+        Expression field name read from the resolved expression source. The default
         value is ``"data_log1p"``. Common values include ``"data_count"``,
         ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
 
@@ -173,13 +174,11 @@ def rank_genes_groups(
         # -------------------------------------------------
         obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
         var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-        x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
 
         if groupby not in obs_cols:
             raise ValueError(f"Column does not exist in obs: {groupby}")
 
-        if use_data not in x_cols:
-            raise ValueError(f"Field does not exist in X_HyS_data: {use_data}")
+        expr_source = resolve_expression_source(conn, use_data)
 
         if mask_var is not None and mask_var not in var_cols:
             raise ValueError(f"Column does not exist in var: {mask_var}")
@@ -304,17 +303,17 @@ def rank_genes_groups(
             CREATE TEMP TABLE _rgg_group_stats AS
             SELECT
                 CAST(o.{_q(groupby)} AS TEXT) AS group_name,
-                x.atlas_gene_id,
-                SUM(x.{_q(use_data)}) AS sum_expr,
-                SUM(x.{_q(use_data)} * x.{_q(use_data)}) AS sumsq_expr,
+                {expr_source.gene_sql} AS atlas_gene_id,
+                SUM({expr_source.value_sql}) AS sum_expr,
+                SUM({expr_source.value_sql} * {expr_source.value_sql}) AS sumsq_expr,
                 COUNT(*) AS nnz
-            FROM X_HyS_data x
+            FROM {expr_source.from_sql}
             JOIN obs o
-              ON x.atlas_cell_id = o.atlas_cell_id
+              ON {expr_source.cell_sql} = o.atlas_cell_id
             JOIN _rgg_gene_set gs
-              ON x.atlas_gene_id = gs.atlas_gene_id
+              ON {expr_source.gene_sql} = gs.atlas_gene_id
             WHERE o.{_q(groupby)} IS NOT NULL
-              AND x.{_q(use_data)} IS NOT NULL
+              AND {expr_source.value_sql} IS NOT NULL
             GROUP BY 1, 2
         """)
 

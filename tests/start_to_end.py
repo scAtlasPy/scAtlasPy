@@ -85,7 +85,6 @@ sap.pp.normalize_total_scale_factor(atlas)   # 法2：初步计算， 在 obs表
 
 # 7.log1p
 sap.pp.log1p(atlas)
-sap.pp.expm1(atlas) # log1p的逆运算
 
 sap.pp.normalize_and_log1p(atlas,target_sum=1e6) # 推荐用这个 normalize 法2  + log1p法1
 

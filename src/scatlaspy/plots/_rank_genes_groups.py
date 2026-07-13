@@ -5,6 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
 from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 
 
 def rank_genes_groups(
@@ -617,10 +618,10 @@ def rank_genes_groups_violin(
 
     This function automatically selects the top marker genes of the specified ``group``
     based on the ``rank_genes_groups`` results, or uses a manually specified gene list
-    through ``genes``. The function reads expression values from the ``use_expr_field``
-    field in ``X_HyS_data`` and plots violin plots grouped by ``obs[groupby]``, which
-    are used to check whether candidate markers are specifically expressed in the
-    target group.
+    through ``genes``. The function reads expression values from the resolved
+    ``use_expr_field`` expression source and plots violin plots grouped by
+    ``obs[groupby]``, which are used to check whether candidate markers are
+    specifically expressed in the target group.
 
     Parameters
     ----------
@@ -651,8 +652,8 @@ def rank_genes_groups_violin(
         Number of top marker genes automatically selected when ``genes`` is ``None``.
 
     use_expr_field
-        Expression value field read from ``X_HyS_data``, such as ``"data_log1p"`` or
-        ``"data_count"``.
+        Expression value field read from the resolved expression source, such as
+        ``"data_log1p"`` or ``"data_count"``.
 
     sample_cells_per_group
         Maximum number of cells sampled for plotting from each ``groupby`` group.
@@ -686,7 +687,7 @@ def rank_genes_groups_violin(
     # Check columns
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     var_cols = [r[1] for r in conn.execute("PRAGMA table_info(var)").fetchall()]
-    x_cols = [r[1] for r in conn.execute("PRAGMA table_info(X_HyS_data)").fetchall()]
+    expr_source = resolve_expression_source(conn, use_expr_field)
 
     if groupby not in obs_cols:
         raise ValueError(f"The column does not exist in obs: {groupby}")
@@ -694,8 +695,6 @@ def rank_genes_groups_violin(
         raise ValueError("atlas_cell_id does not exist in obs")
     if "atlas_gene_id" not in var_cols:
         raise ValueError("atlas_gene_id does not exist in var")
-    if use_expr_field not in x_cols:
-        raise ValueError(f"The field does not exist in X_HyS_data: {use_expr_field}")
 
     table_exists = conn.execute("""
         SELECT COUNT(*)
@@ -871,12 +870,19 @@ def rank_genes_groups_violin(
         SELECT
             c.group_label,
             g.atlas_gene_name AS gene,
-            COALESCE(x.{use_expr_field}, 0.0) AS expr
+            COALESCE(xexpr.expr, 0.0) AS expr
         FROM _violin_cells_tmp c
         CROSS JOIN _violin_genes_tmp g
-        LEFT JOIN X_HyS_data x
-            ON c.atlas_cell_id = x.atlas_cell_id
-           AND g.atlas_gene_id = x.atlas_gene_id
+        LEFT JOIN (
+            SELECT
+                {expr_source.cell_sql} AS atlas_cell_id,
+                {expr_source.gene_sql} AS atlas_gene_id,
+                {expr_source.value_sql} AS expr
+            FROM {expr_source.from_sql}
+            WHERE {expr_source.value_sql} IS NOT NULL
+        ) AS xexpr
+          ON c.atlas_cell_id = xexpr.atlas_cell_id
+         AND g.atlas_gene_id = xexpr.atlas_gene_id
     """).fetchdf()
 
     conn.unregister("_violin_cells_tmp")

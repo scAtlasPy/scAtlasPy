@@ -103,7 +103,6 @@ expression field, output field, and replacement behavior.
    :nosignatures:
 
    pp.log1p
-   pp.expm1
    pp.sqrt
    pp.normalize_and_log1p
 ```
@@ -111,7 +110,6 @@ expression field, output field, and replacement behavior.
 These functions transform stored expression values.
 
 - `log1p()` applies the natural logarithm after adding one.
-- `expm1()` applies the inverse transformation.
 - `sqrt()` applies a square-root transformation.
 - `normalize_and_log1p()` performs library-size normalization followed by
   `log1p` transformation in one workflow.

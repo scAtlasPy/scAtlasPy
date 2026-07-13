@@ -10,6 +10,7 @@ from os import PathLike, fspath
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # TYPE_CHECKING = imports for IDEs / type checkers; not executed at runtime to avoid circular imports
     from ..data import Atlas
+from ..data._expression_source import resolve_expression_source
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
@@ -94,9 +95,9 @@ def write_h5ad(
     continued analysis in Scanpy or other tools that support AnnData.
 
     The expression matrix is reassembled into the CSR ``X`` in h5ad according to
-    the internal Atlas HyS sparse structure. ``X.data`` comes from the field
-    specified by ``use_data`` in the ``X_HyS_data`` table, ``X.indices`` comes
-    from ``atlas_gene_id``, and ``X.indptr`` comes from ``X_HyS_indptr``.
+    the internal Atlas HyS sparse structure. ``X.data`` comes from the expression
+    source resolved by ``use_data``; this can be a field in ``X_HyS_data`` or a
+    derived expression table. ``X.indices`` comes from ``atlas_gene_id``.
 
     Parameters
     ----------
@@ -111,10 +112,10 @@ def write_h5ad(
         expression matrix ``data`` and ``indices``.
         A larger value is usually faster, but increases per-batch memory usage.
     use_data
-        Expression value field exported from the ``X_HyS_data`` table. The default
-        is ``"data_count"``.
-        Existing fields such as ``"data_log1p"`` and ``"data_normalize"`` can
-        also be used.
+        Expression value field exported from the resolved expression source. The
+        default is ``"data_count"``. Existing fields such as ``"data_log1p"``
+        and ``"data_normalize"`` can also be used after the corresponding
+        preprocessing steps.
 
     Returns
     -------
@@ -129,9 +130,9 @@ def write_h5ad(
     ``varm_*`` tables are exported to h5ad ``varm``. The ``varm_`` prefix in the
     table name is removed.
 
-    Before export, the function checks whether ``use_data`` exists in the
-    ``X_HyS_data`` table. If it does not exist, an error is raised directly to
-    avoid exporting an empty matrix or an incorrect field.
+    Before export, the function resolves ``use_data`` from the base expression
+    table or a derived expression table. If it cannot be resolved, an error is
+    raised directly to avoid exporting an empty matrix or an incorrect field.
 
     Examples
     --------
@@ -183,20 +184,7 @@ def write_h5ad(
         """
         return '"' + str(name).replace('"', '""') + '"'
 
-    x_field_exists = conn.execute(
-        """
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = ?
-        """,
-        [use_data],
-    ).fetchone()[0]
-
-    if x_field_exists == 0:
-        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
-
-    use_data_sql = _q(use_data)
+    expr_source = resolve_expression_source(conn, use_data)
 
     # Read obs / var
 
@@ -209,10 +197,29 @@ def write_h5ad(
     n_cells = obs.shape[0]
     n_genes = var.shape[0]
 
-    # Read CSR indptr
-    indptr_df = conn.execute("""
-        SELECT indptr
-        FROM X_HyS_indptr
+    # Read CSR indptr for the selected expression source.  Derived tables such as
+    # data_scale may contain only a gene subset, so the original X_HyS_indptr
+    # cannot be reused blindly.
+    indptr_df = conn.execute(f"""
+        WITH nnz_by_cell AS (
+            SELECT
+                {expr_source.cell_sql} AS atlas_cell_id,
+                COUNT(*) AS cnt
+            FROM {expr_source.from_sql}
+            WHERE {expr_source.value_sql} IS NOT NULL
+            GROUP BY {expr_source.cell_sql}
+        ),
+        complete AS (
+            SELECT
+                o.atlas_cell_id,
+                COALESCE(n.cnt, 0) AS cnt
+            FROM obs AS o
+            LEFT JOIN nnz_by_cell AS n
+              ON o.atlas_cell_id = n.atlas_cell_id
+            ORDER BY o.atlas_cell_id
+        )
+        SELECT CAST(SUM(cnt) OVER (ORDER BY atlas_cell_id) AS BIGINT) AS indptr
+        FROM complete
         ORDER BY atlas_cell_id
     """).df()
 
@@ -263,10 +270,17 @@ def write_h5ad(
 
             rows = conn.execute(
                 f"""
-                SELECT atlas_gene_id, {use_data_sql}
-                FROM X_HyS_data
-                WHERE id >= ? AND id < ?
-                ORDER BY id
+                SELECT atlas_gene_id, value
+                FROM (
+                    SELECT
+                        {expr_source.gene_sql} AS atlas_gene_id,
+                        {expr_source.value_sql} AS value,
+                        ROW_NUMBER() OVER (ORDER BY {expr_source.cell_sql}, {expr_source.id_sql}) - 1 AS rn
+                    FROM {expr_source.from_sql}
+                    WHERE {expr_source.value_sql} IS NOT NULL
+                ) AS q
+                WHERE rn >= ? AND rn < ?
+                ORDER BY rn
                 """,
                 [int(start), int(end)],
             ).fetchall()
@@ -541,8 +555,9 @@ def get_anndata(
         The order of cells in the returned AnnData object will be the same as
         the order of this list.
     use_data
-        Expression field read from the ``X_HyS_data`` table. Common values include
-        ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and ``"data_scale"``.
+        Expression field read from the resolved expression source. Common values
+        include ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
+        ``"data_scale"``.
     include_obsm
         Whether to write ``obsm_*`` result tables into the returned AnnData object.
     include_varm
@@ -616,19 +631,7 @@ def get_anndata(
         """
         return '"' + name.replace('"', '""') + '"'
 
-    # Check whether use_data exists
-    x_field_exists = conn.execute(
-        """
-        SELECT COUNT(*)
-        FROM information_schema.columns
-        WHERE table_name = 'X_HyS_data'
-          AND column_name = ?
-        """,
-        [use_data],
-    ).fetchone()[0]
-
-    if x_field_exists == 0:
-        raise ValueError(f"The field does not exist in X_HyS_data: {use_data}")
+    expr_source = resolve_expression_source(conn, use_data)
 
     # 1. Create a temporary selected cell table to preserve the user input order
     selected_df = pd.DataFrame({
@@ -693,12 +696,13 @@ def get_anndata(
     x_sql = f"""
         SELECT
             s._cell_order AS row_id,
-            x.atlas_gene_id AS col_id,
-            x.{_q(use_data)} AS value
-        FROM X_HyS_data AS x
+            {expr_source.gene_sql} AS col_id,
+            {expr_source.value_sql} AS value
+        FROM {expr_source.from_sql}
         JOIN _selected_cells AS s
-          ON x.atlas_cell_id = s.atlas_cell_id
-        ORDER BY s._cell_order, x.atlas_gene_id
+          ON {expr_source.cell_sql} = s.atlas_cell_id
+        WHERE {expr_source.value_sql} IS NOT NULL
+        ORDER BY s._cell_order, {expr_source.gene_sql}
     """
 
     x_df = conn.execute(x_sql).df()
