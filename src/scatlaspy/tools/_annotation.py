@@ -4,13 +4,13 @@ from ..data import Atlas
 
 
 def manual_annotate_clusters(
-        atlas: Atlas,
-        cluster_to_cell_type: Mapping[str, str] | Sequence[str],
-        groupby: str = "kmeans",
-        obs_col: str = "cell_type_manual",
-        table_name: str | None = "manual_cluster_annotation",
-        unknown_label: str | None = None,
-        return_df: bool = True,
+    atlas: Atlas,
+    cluster_to_cell_type: Mapping[str, str] | Sequence[str],
+    groupby: str = "kmeans",
+    obs_col: str = "cell_type_manual",
+    table_name: str | None = "manual_cluster_annotation",
+    unknown_label: str | None = None,
+    return_df: bool = True,
 ) -> pd.DataFrame | None:
     """Manually add cell-type annotations to clusters.
 

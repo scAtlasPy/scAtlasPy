@@ -8,25 +8,25 @@ from typing import Literal
 
 
 def highly_variable_genes(
-        atlas: Atlas,
-        flavor: Literal["seurat", "cv", "var"] = "seurat",
+    atlas: Atlas,
+    flavor: Literal["seurat", "cv", "var"] = "seurat",
 
-        # General parameters: supported by both underlying functions
-        hvg_key: str = "highly_variable_genes",
-        sample_other: int | None = 20000,
+    # General parameters: supported by both underlying functions
+    hvg_key: str = "highly_variable_genes",
+    sample_other: int | None = 20000,
 
-        # Parameters for the cv / var versions: only passed to highly_variable_genes_plot()
-        mean_key: str = "hvg_mean",
-        var_key: str = "hvg_var",
-        std_key: str = "hvg_std",
-        score_key: str = "hvg_score",
-        figsize: tuple[float, float] | None = None,
-        point_size_hvg: float = 8,
-        point_size_other: float = 6,
-        alpha_hvg: float = 0.9,
-        alpha_other: float = 0.6,
+    # Parameters for the cv / var versions: only passed to highly_variable_genes_plot()
+    mean_key: str = "hvg_mean",
+    var_key: str = "hvg_var",
+    std_key: str = "hvg_std",
+    score_key: str = "hvg_score",
+    figsize: tuple[float, float] | None = None,
+    point_size_hvg: float = 8,
+    point_size_other: float = 6,
+    alpha_hvg: float = 0.9,
+    alpha_other: float = 0.6,
 
-        save_path: PathLike[str] | str | None = None,
+    save_path: PathLike[str] | str | None = None,
 ) -> None:
     """Plot diagnostic figures for highly variable gene selection results.
 
@@ -158,19 +158,19 @@ def highly_variable_genes(
 
 # HVG: cv / var version
 def _highly_variable_genes_plot(
-        atlas: Atlas,
-        hvg_key: str = "highly_variable_genes",
-        mean_key: str = "hvg_mean",
-        var_key: str = "hvg_var",
-        std_key: str = "hvg_std",
-        score_key: str = "hvg_score",
-        sample_other: int | None = 20000,
-        figsize: tuple[float, float] | None = None,
-        point_size_hvg: float = 8,
-        point_size_other: float = 6,
-        alpha_hvg: float = 0.9,
-        alpha_other: float = 0.6,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    hvg_key: str = "highly_variable_genes",
+    mean_key: str = "hvg_mean",
+    var_key: str = "hvg_var",
+    std_key: str = "hvg_std",
+    score_key: str = "hvg_score",
+    sample_other: int | None = 20000,
+    figsize: tuple[float, float] | None = None,
+    point_size_hvg: float = 8,
+    point_size_other: float = 6,
+    alpha_hvg: float = 0.9,
+    alpha_other: float = 0.6,
+    save_path: PathLike[str] | str | None = None
 ):
 
     """Plot a cv/var-style diagnostic figure for highly variable gene selection.
@@ -378,10 +378,10 @@ def _highly_variable_genes_plot(
 
 # HVG: seurat version
 def _highly_variable_genes_plot_seurat(
-        atlas: Atlas,
-        hvg_key: str = "highly_variable_genes",
-        sample_other: int | None = 20000,
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    hvg_key: str = "highly_variable_genes",
+    sample_other: int | None = 20000,
+    save_path: PathLike[str] | str | None = None,
 ):
 
     """Plot a Seurat-style diagnostic figure for highly variable gene selection.

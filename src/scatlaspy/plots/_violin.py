@@ -50,15 +50,15 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
 def violin(
-        atlas: Atlas,
-        genes: str | list[str],
-        groupby: str = "kmeans",
-        use_data: str = "data_log1p",
-        sample_n_per_group: int | None = 2000,
-        groups: list | None = None,
-        where: str | None = None,
-        order: list | None = None,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    genes: str | list[str],
+    groupby: str = "kmeans",
+    use_data: str = "data_log1p",
+    sample_n_per_group: int | None = 2000,
+    groups: list | None = None,
+    where: str | None = None,
+    order: list | None = None,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot violin plots of gene expression across different cell groups.
@@ -390,18 +390,18 @@ def violin(
 
 
 def stacked_violin(
-        atlas: Atlas,
-        genes: str | list[str],
-        groupby: str = "cell_type_auto",
-        use_data: str = "data_log1p",
-        sample_n_per_group: int | None = 2000,
-        groups: list | None = None,
-        where: str | None = None,
-        order: list | None = None,
-        color_vmin: float | None = 0.0,
-        color_vmax: float | None = 5.0,
-        font_size: int = 14,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    genes: str | list[str],
+    groupby: str = "cell_type_auto",
+    use_data: str = "data_log1p",
+    sample_n_per_group: int | None = 2000,
+    groups: list | None = None,
+    where: str | None = None,
+    order: list | None = None,
+    color_vmin: float | None = 0.0,
+    color_vmax: float | None = 5.0,
+    font_size: int = 14,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot a stacked violin plot for multiple marker genes.

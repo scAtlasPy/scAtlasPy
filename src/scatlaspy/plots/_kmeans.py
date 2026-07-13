@@ -5,12 +5,12 @@ from ..data import Atlas
 
 
 def kmeans_cluster_size(
-        atlas: Atlas,
-        use_obs_col: str = "kmeans",
-        figsize: tuple[float, float] | None=(7, 4),
-        show_percent: bool = True,
-        title: str | None = None,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    use_obs_col: str = "kmeans",
+    figsize: tuple[float, float] | None=(7, 4),
+    show_percent: bool = True,
+    title: str | None = None,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot the cell count distribution of K-means or another grouping column.

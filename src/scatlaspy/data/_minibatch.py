@@ -117,9 +117,9 @@ class ShuffleBuffer:
 
     # Write one batch into the buffer
     def add_batch(
-            self,
-            X_batch: np.ndarray,
-            filter_cell_ids: np.ndarray,
+        self,
+        X_batch: np.ndarray,
+        filter_cell_ids: np.ndarray,
     ) -> None:
         """Write a dense minibatch into the shuffle buffer.
 
@@ -1189,9 +1189,9 @@ class MultiThreadedMinibatchFetcher:
 
     # Helper function 3: unified batch output
     def _put_output(
-            self,
-            X_batch: sp.csr_matrix | np.ndarray,
-            filter_cell_ids: np.ndarray,
+        self,
+        X_batch: sp.csr_matrix | np.ndarray,
+        filter_cell_ids: np.ndarray,
     ):
 
         """Execute the core functionality of ``_put_output``.

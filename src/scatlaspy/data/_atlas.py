@@ -175,7 +175,7 @@ def duckdb_memory_limit(memory_limit: str | int):
 
 
 def set_verbosity(
-        level: Literal["silence", "error", "warning", "info", "debug"] | None = "silence",
+    level: Literal["silence", "error", "warning", "info", "debug"] | None = "silence",
 ) -> None:
     """Set the scAtlasPy logging verbosity.
     This function configures the package-level ``Atlas`` logger used by import, preprocessing, tools, and plotting workflows.
@@ -285,9 +285,9 @@ class Atlas:
     """
 
     def __init__(
-            self,
-            file_name: PathLike[str] | str,
-            db_memory_limit: str | int | None = "20G",
+        self,
+        file_name: PathLike[str] | str,
+        db_memory_limit: str | int | None = "20G",
     ):
         """Initialize an Atlas database object.
 
@@ -459,7 +459,7 @@ class Atlas:
 
     @staticmethod
     def _resolve_db_memory_limit(
-            db_memory_limit: str | int | None,
+        db_memory_limit: str | int | None,
     ) -> str:
         """Resolve the DuckDB memory-limit argument.
 
@@ -1048,12 +1048,12 @@ class Atlas:
 
 
     def _save_read_index_meta(
-            self,
-            *,
-            cell_condition: str | None,
-            gene_condition: str | None,
-            use_hvg: bool,
-            use_data: str,
+        self,
+        *,
+        cell_condition: str | None,
+        gene_condition: str | None,
+        use_hvg: bool,
+        use_data: str,
     ) -> None:
         """Save the current read index construction parameters.
 
@@ -1126,11 +1126,11 @@ class Atlas:
 
     @duckdb_memory_limit("3G")
     def build_read_index(
-            self,
-            cell_condition: str | None = "filter_cells",
-            gene_condition: str | None = "filter_genes",
-            use_hvg: bool = True,
-            use_data: str = "data_log1p",
+        self,
+        cell_condition: str | None = "filter_cells",
+        gene_condition: str | None = "filter_genes",
+        use_hvg: bool = True,
+        use_data: str = "data_log1p",
     ) -> None:
         """Build the expression matrix read index.
 
@@ -1227,12 +1227,12 @@ class Atlas:
             yield X_batch
 
     def get_minibatch_dense(
-            self,
-            pass_mode: str = "single-pass",
-            batch_size: int = 2048,
-            max_batches: int | None = None,
-            buffer_batch_num: int = 5,
-            get_obs_col: str | None = None,
+        self,
+        pass_mode: str = "single-pass",
+        batch_size: int = 2048,
+        max_batches: int | None = None,
+        buffer_batch_num: int = 5,
+        get_obs_col: str | None = None,
     ) -> Iterator[np.ndarray | dict[str, Any]]:
         """Read the expression matrix in dense minibatches.
 
@@ -1503,12 +1503,12 @@ class Atlas:
 
     @duckdb_memory_limit("3G")
     def load_h5ad(
-            self,
-            h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
-            *,
-            load_type: Literal["order", "random"] = "random",
-            cells_per_block: int | None = None,
-            import_window_memory_factor: float = 1.0,
+        self,
+        h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
+        *,
+        load_type: Literal["order", "random"] = "random",
+        cells_per_block: int | None = None,
+        import_window_memory_factor: float = 1.0,
     ) -> Any:
         """Import h5ad files into an Atlas database.
 
@@ -1672,8 +1672,8 @@ class Atlas:
         _io_load_multi_format(file_path, self)
 
     def rename_duplicated_genes(
-            self,
-            gene_name_column: str = "atlas_gene_name",
+        self,
+        gene_name_column: str = "atlas_gene_name",
     ) -> bool:
 
         """Check whether gene names in the Atlas database are duplicated.
@@ -1715,11 +1715,11 @@ class Atlas:
         return _io_rename_duplicated_genes(self, gene_name_column=gene_name_column)
 
     def write_h5ad(
-            self,
-            out_h5ad_path: PathLike[str] | str,
-            *,
-            batch_cells: int = 1_000_000,
-            use_data: str = "data_count",
+        self,
+        out_h5ad_path: PathLike[str] | str,
+        *,
+        batch_cells: int = 1_000_000,
+        use_data: str = "data_count",
     ) -> None:
 
         """Export an Atlas database to an h5ad file.
@@ -1790,8 +1790,8 @@ class Atlas:
         )
 
     def get_obs_df(
-            self,
-            columns: list[str] | str | None = None,
+        self,
+        columns: list[str] | str | None = None,
     ) -> pd.DataFrame:
 
         """Read the obs table from the Atlas database.
@@ -1833,8 +1833,8 @@ class Atlas:
         return _io_get_obs_df(self, columns=columns)
 
     def get_var_df(
-            self,
-            columns: list[str] | str | None = None,
+        self,
+        columns: list[str] | str | None = None,
     ) -> pd.DataFrame:
 
         """Read the var table from the Atlas database.
@@ -1877,11 +1877,11 @@ class Atlas:
         return _io_get_var_df(self, columns=columns)
 
     def get_anndata(
-            self,
-            atlas_cell_ids: list[int] | np.ndarray | None,
-            use_data: str = "data_count",
-            include_obsm: bool = True,
-            include_varm: bool = True,
+        self,
+        atlas_cell_ids: list[int] | np.ndarray | None,
+        use_data: str = "data_count",
+        include_obsm: bool = True,
+        include_varm: bool = True,
     ) -> AnnData:
 
         """Construct an AnnData object from the Atlas database.

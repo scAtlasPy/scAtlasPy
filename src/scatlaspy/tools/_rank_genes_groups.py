@@ -12,20 +12,20 @@ logger = logging.getLogger('Atlas')
 
 
 def rank_genes_groups(
-        atlas: Atlas,
-        groupby: str = "kmeans",
-        use_data: str = "data_log1p",
-        groups: list | None = None,
-        reference: str | int = "rest",
-        n_genes: int | None = None,
-        mask_var: str | None = None, # = "highly_variable_genes"
-        corr_method: str = "benjamini-hochberg",
-        rankby_abs: bool = False,
-        add_table: str = "rank_genes_groups",
-        input_is_log: bool = True,
-        lfc_eps: float = 1e-9,
-        inplace: bool = True,
-        return_df: bool = True,
+    atlas: Atlas,
+    groupby: str = "kmeans",
+    use_data: str = "data_log1p",
+    groups: list | None = None,
+    reference: str | int = "rest",
+    n_genes: int | None = None,
+    mask_var: str | None = None, # = "highly_variable_genes"
+    corr_method: str = "benjamini-hochberg",
+    rankby_abs: bool = False,
+    add_table: str = "rank_genes_groups",
+    input_is_log: bool = True,
+    lfc_eps: float = 1e-9,
+    inplace: bool = True,
+    return_df: bool = True,
 ) -> pd.DataFrame | None:
     """Rank marker genes by cell groups.
 

@@ -48,21 +48,21 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
 def pca(
-        atlas: Atlas,
-        color: str | None = None,
-        x_pc: int = 0,
-        y_pc: int = 1,
-        annotate_var_explained: bool = True,
-        sample_n: int | None = None,
-        use_data: str = "data_log1p",
-        figsize: tuple[float, float] | None=(6, 5),
-        point_size: float = 12,
-        alpha: float = 0.8,
-        cmap: str = "viridis",
-        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        legend_loc: str | None = None,
-        frameon: bool = True,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    color: str | None = None,
+    x_pc: int = 0,
+    y_pc: int = 1,
+    annotate_var_explained: bool = True,
+    sample_n: int | None = None,
+    use_data: str = "data_log1p",
+    figsize: tuple[float, float] | None=(6, 5),
+    point_size: float = 12,
+    alpha: float = 0.8,
+    cmap: str = "viridis",
+    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+    legend_loc: str | None = None,
+    frameon: bool = True,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot a cell PCA embedding scatter plot.
@@ -585,13 +585,13 @@ def pca(
 
 
 def pca_variance_ratio(
-        atlas: Atlas,
-        n_pcs: int = 30,
-        *,
-        log: bool = False,
-        show: bool | None = None,
-        figsize: tuple[float, float] | None = (7, 6),
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    n_pcs: int = 30,
+    *,
+    log: bool = False,
+    show: bool | None = None,
+    figsize: tuple[float, float] | None = (7, 6),
+    save_path: PathLike[str] | str | None = None,
 ) -> None:
     """Plot the variance explained ratio of each PCA component.
 
@@ -744,13 +744,13 @@ def pca_variance_ratio(
 
 
 def pca_variance_ratio_cumsum(
-        atlas: Atlas,
-        n_pcs: int = 30,
-        *,
-        log: bool = False,
-        show: bool | None = None,
-        figsize: tuple[float, float] | None=(16, 8),
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    n_pcs: int = 30,
+    *,
+    log: bool = False,
+    show: bool | None = None,
+    figsize: tuple[float, float] | None=(16, 8),
+    save_path: PathLike[str] | str | None = None,
 ) -> None:
     """Plot the cumulative PCA variance explained ratio.
 
@@ -867,13 +867,13 @@ def pca_variance_ratio_cumsum(
 
 # Plot PCA loadings
 def pca_loadings(
-        atlas: Atlas,
-        components: int | tuple[int, ...] | list[int] = (1, 2),
-        n_genes: int = 10,
-        include_lowest: bool = True,
-        figsize: tuple[float, float] | None = (14, 8),
-        show: bool | None = None,
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    components: int | tuple[int, ...] | list[int] = (1, 2),
+    n_genes: int = 10,
+    include_lowest: bool = True,
+    figsize: tuple[float, float] | None = (14, 8),
+    show: bool | None = None,
+    save_path: PathLike[str] | str | None = None,
 ) -> None:
     """Plot PCA loadings.
 

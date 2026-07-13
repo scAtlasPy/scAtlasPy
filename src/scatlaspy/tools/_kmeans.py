@@ -59,12 +59,12 @@ class StreamingKMeans:
     """
 
     def __init__(
-            self,
-            n_components: int=50,
-            n_clusters: int=2,
-            batch_size: int=2048,
-            fit_batches: int = 1000,
-            buffer_batch_num: int = 5,
+        self,
+        n_components: int=50,
+        n_clusters: int=2,
+        batch_size: int=2048,
+        fit_batches: int = 1000,
+        buffer_batch_num: int = 5,
     ):
         """Initialize the streaming MiniBatchKMeans clusterer.
 
@@ -301,11 +301,11 @@ class StreamingKMeans:
 
     # Transform with PCA + predict minibatch KMeans clustering
     def predict_kmeans(
-            self,
-            atlas: Atlas,
-            use_cluster_table: str = "obs_cluster",
-            write_to_obs: bool = True,
-            add_obs_col: str = "kmeans"
+        self,
+        atlas: Atlas,
+        use_cluster_table: str = "obs_cluster",
+        write_to_obs: bool = True,
+        add_obs_col: str = "kmeans"
     ) -> "StreamingKMeans":
 
         """Predict KMeans cluster labels for all cells and write them to the database.
@@ -491,11 +491,11 @@ class StreamingKMeans:
 
     # Run the main function
     def run(
-            self,
-            atlas: Atlas,
-            use_cluster_table: str = "obs_cluster",
-            write_to_obs: bool = True,
-            add_obs_col: str = "kmeans"
+        self,
+        atlas: Atlas,
+        use_cluster_table: str = "obs_cluster",
+        write_to_obs: bool = True,
+        add_obs_col: str = "kmeans"
     ) -> "StreamingKMeans":
         """Train and write streaming KMeans clustering results.
 
@@ -553,13 +553,13 @@ class StreamingKMeans:
 
 # Entry function
 def kmeans(
-        atlas: Atlas,
-        n_components: int = 30,
-        n_clusters: int = 10,
-        batch_size: int = 2048,
-        fit_batches: int = 1000,
-        add_obs_col: str = "kmeans",
-        use_cluster_table: str = "obs_cluster",
+    atlas: Atlas,
+    n_components: int = 30,
+    n_clusters: int = 10,
+    batch_size: int = 2048,
+    fit_batches: int = 1000,
+    add_obs_col: str = "kmeans",
+    use_cluster_table: str = "obs_cluster",
 ) -> None:
 
     """Perform MiniBatch K-means clustering based on PCA embeddings.

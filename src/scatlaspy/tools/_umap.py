@@ -84,21 +84,21 @@ def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int = 15) -> float:
 
 
 def umap(
-        atlas: Atlas,
-        fit_sample_n: int | None = None,
-        transform_batch_size: int = 50000,
-        n_components: int = 2,
-        n_pcs: int | None = None,
-        n_neighbors: int = 15,
-        min_dist: float = 0.5,
-        spread: float = 1.0,
-        metric: str = "euclidean",
-        random_state: int = 42,
-        n_jobs: int = 1,
-        add_table: str = "obsm_X_umap",
-        save_params_table: str = "uns_umap_params",
-        eval_sample_n: int = 5000,
-        save_eval_table: str = "uns_umap_eval"
+    atlas: Atlas,
+    fit_sample_n: int | None = None,
+    transform_batch_size: int = 50000,
+    n_components: int = 2,
+    n_pcs: int | None = None,
+    n_neighbors: int = 15,
+    min_dist: float = 0.5,
+    spread: float = 1.0,
+    metric: str = "euclidean",
+    random_state: int = 42,
+    n_jobs: int = 1,
+    add_table: str = "obsm_X_umap",
+    save_params_table: str = "uns_umap_params",
+    eval_sample_n: int = 5000,
+    save_eval_table: str = "uns_umap_eval"
 ) -> Any:
     """Calculate UMAP based on PCA embeddings.
 

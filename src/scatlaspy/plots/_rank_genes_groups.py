@@ -9,16 +9,16 @@ from ..data._expression_source import resolve_expression_source
 
 
 def rank_genes_groups(
-        atlas: Atlas,
-        use_table: str = "rank_genes_groups",
-        groups: list | None = None,
-        n_genes: int = 25,
-        score_key: str = "scores",
-        gene_label: str = "names",
-        ncols: int = 4,
-        figsize: tuple | None = None,
-        save_path: PathLike[str] | str | None = None,
-        show: bool = True,
+    atlas: Atlas,
+    use_table: str = "rank_genes_groups",
+    groups: list | None = None,
+    n_genes: int = 25,
+    score_key: str = "scores",
+    gene_label: str = "names",
+    ncols: int = 4,
+    figsize: tuple | None = None,
+    save_path: PathLike[str] | str | None = None,
+    show: bool = True,
 ) -> None:
     """Plot the top marker gene ranking for each group.
 
@@ -278,22 +278,22 @@ def rank_genes_groups(
 
 
 def rank_genes_groups_volcano(
-        atlas: Atlas,
-        use_table: str = "rank_genes_groups",
-        group: str | int = "0",
-        lfc_key: str = "logfoldchanges",
-        pval_key: str = "pvals_adj",
-        gene_label: str = "names",
-        pval_cutoff: float = 0.05,
-        logfc_cutoff: float = 1.0,
-        top_n: int = 8,
-        figsize: tuple = (12, 10),
-        y_cap: float |  None = None,
-        xlim_abs: float | None = None,
-        save_path: PathLike[str] | str | None = None,
-        show: bool = True,
-        label_fontsize: int = 7,
-        label_offset_step: int = 12,
+    atlas: Atlas,
+    use_table: str = "rank_genes_groups",
+    group: str | int = "0",
+    lfc_key: str = "logfoldchanges",
+    pval_key: str = "pvals_adj",
+    gene_label: str = "names",
+    pval_cutoff: float = 0.05,
+    logfc_cutoff: float = 1.0,
+    top_n: int = 8,
+    figsize: tuple = (12, 10),
+    y_cap: float |  None = None,
+    xlim_abs: float | None = None,
+    save_path: PathLike[str] | str | None = None,
+    show: bool = True,
+    label_fontsize: int = 7,
+    label_offset_step: int = 12,
 ) -> None:
     """Plot a volcano plot for differential genes in a single group.
 
@@ -602,16 +602,16 @@ def rank_genes_groups_volcano(
 
 
 def rank_genes_groups_violin(
-        atlas: Atlas,
-        group: str = 0 ,
-        use_table: str = "rank_genes_groups",
-        groupby: str = "kmeans",
-        reference: str | int | None = None,
-        genes: list[str] | None = None,
-        n_genes: int = 8,
-        use_expr_field: str = "data_log1p",
-        sample_cells_per_group: int = 2000,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    group: str = 0 ,
+    use_table: str = "rank_genes_groups",
+    groupby: str = "kmeans",
+    reference: str | int | None = None,
+    genes: list[str] | None = None,
+    n_genes: int = 8,
+    use_expr_field: str = "data_log1p",
+    sample_cells_per_group: int = 2000,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot violin plots of marker gene expression across different groups.

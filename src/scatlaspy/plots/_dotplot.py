@@ -49,20 +49,20 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
 def dotplot(
-        atlas: Atlas,
-        genes: str | list[str],
-        groupby: str = "kmeans",
-        use_data: str = "data_log1p",
-        sample_cells_per_group: int | None = None,
-        groups: list | None = None,
-        where: str | None = None,
-        order: list | None = None,
-        expression_cutoff: float = 0.0,
-        standard_scale: str | None = None,
-        colorbar_vmin: float | None = 0.0,
-        colorbar_vmax: float | None = 5.0,
-        font_size: int = 14,
-        save_path: PathLike[str] | str | None = None
+    atlas: Atlas,
+    genes: str | list[str],
+    groupby: str = "kmeans",
+    use_data: str = "data_log1p",
+    sample_cells_per_group: int | None = None,
+    groups: list | None = None,
+    where: str | None = None,
+    order: list | None = None,
+    expression_cutoff: float = 0.0,
+    standard_scale: str | None = None,
+    colorbar_vmin: float | None = 0.0,
+    colorbar_vmax: float | None = 5.0,
+    font_size: int = 14,
+    save_path: PathLike[str] | str | None = None
 ) -> None:
 
     """Plot a dotplot of gene expression across different cell groups.

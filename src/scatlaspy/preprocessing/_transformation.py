@@ -79,11 +79,11 @@ def _expression_source_for_transform(conn: DuckDBPyConnection, data_name: str) -
 
 
 def normalize_total(
-        atlas: Atlas,
-        target_sum: float = 10000,
-        chunk_cells: int = 500_000,
-        add_data: str = "data_normalize",
-        use_data: str = "data_count"
+    atlas: Atlas,
+    target_sum: float = 10000,
+    chunk_cells: int = 500_000,
+    add_data: str = "data_normalize",
+    use_data: str = "data_count",
 ) -> None:
 
     """Normalize by total expression per cell.
@@ -268,11 +268,11 @@ def normalize_total(
 
 
 def normalize_total_scale_factor(
-        atlas: Atlas,
-        target_sum: float = 10000,
-        add_obs_col: str = "scale_factor",
-        use_data: str = "data_count",
-        chunk_cells: int = 500_000,
+    atlas: Atlas,
+    target_sum: float = 10000,
+    add_obs_col: str = "scale_factor",
+    use_data: str = "data_count",
+    chunk_cells: int = 500_000,
 ) -> None:
     """Compute the normalization scale factor for each cell.
 
@@ -444,11 +444,11 @@ def normalize_total_scale_factor(
 
 @duckdb_memory_limit("3G")
 def log1p(
-                atlas: 'Atlas',
-                base: Optional[Number] = None,
-                add_data: str = "data_log1p",
-                use_data: str = "data_normalize",
-                chunk_ids: int = 100_000_000) -> None:
+    atlas: 'Atlas',
+    base: Optional[Number] = None,
+    add_data: str = "data_log1p",
+    use_data: str = "data_normalize",
+) -> None:
     """Apply a log1p transformation to the expression matrix.
 
     This function applies a log1p transformation to a specified expression field
@@ -493,10 +493,6 @@ def log1p(
         The default value is ``"data_normalize"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
-
-    chunk_ids
-        Deprecated compatibility parameter. The current implementation writes
-        the derived expression table in one SQL statement.
 
     Returns
     -------
@@ -576,14 +572,15 @@ def log1p(
 
     logger.info(f"log1p Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
+
 def normalize_and_log1p(
-            atlas: Atlas,
-            target_sum: Optional[float] = 10000,
-            use_obs_col: str = "scale_factor",
-            add_data: str = "data_log1p",
-            use_data: str = "data_count",
-            base: Optional[Number] = None,
-            chunk_ids: int = 50_000_000 ) -> None:
+    atlas: Atlas,
+    target_sum: Optional[float] = 10000,
+    use_obs_col: str = "scale_factor",
+    add_data: str = "data_log1p",
+    use_data: str = "data_count",
+    base: Optional[Number] = None,
+) -> None:
     """Complete total-count normalization and log1p transformation in one workflow.
 
     This function combines total-count normalization and log1p transformation
@@ -636,10 +633,6 @@ def normalize_and_log1p(
         Base of the logarithm. The default value is ``None``, meaning that the
         natural logarithm e is used. If a numeric value is provided, for example
         ``base=2``, the corresponding-base log1p is computed.
-
-    chunk_ids
-        Deprecated compatibility parameter. The current implementation writes
-        the derived expression table in one SQL statement.
 
     Returns
     -------
@@ -721,20 +714,20 @@ def normalize_and_log1p(
 
 
 def highly_variable_genes(
-        atlas: Atlas,
-        flavor: Literal["seurat", "cv", "var"] = "seurat",
-        n_top_genes: int = 2000,
-        add_var_col: str = "highly_variable_genes",
-        use_data: str = "data_log1p",
-        n_bins: int = 20,
-        min_mean: float = 0.0125,
-        max_mean: float = 3.0,
-        min_disp: float = 0.5,
-        max_disp: float = float("inf"),
-        use_filtered: bool = True,
-        obs_filter_col: str = "filter_cells",
-        var_filter_col: str = "filter_genes",
-        inplace: bool = True,
+    atlas: Atlas,
+    flavor: Literal["seurat", "cv", "var"] = "seurat",
+    n_top_genes: int = 2000,
+    add_var_col: str = "highly_variable_genes",
+    use_data: str = "data_log1p",
+    n_bins: int = 20,
+    min_mean: float = 0.0125,
+    max_mean: float = 3.0,
+    min_disp: float = 0.5,
+    max_disp: float = float("inf"),
+    use_filtered: bool = True,
+    obs_filter_col: str = "filter_cells",
+    var_filter_col: str = "filter_genes",
+    inplace: bool = True,
 ) -> None:
     """Identify highly variable genes and write them to the var table.
 
@@ -900,12 +893,12 @@ def highly_variable_genes(
 
 
 def _highly_variable_genes_basic(
-                        atlas: Atlas,
-                        flavor: Literal["var", "cv"] = "cv",
-                        n_top_genes: int = 2000,
-                        add_var_col: str = "highly_variable_genes",
-                        use_data: str = "data_log1p"
-                    ) -> None:
+    atlas: Atlas,
+    flavor: Literal["var", "cv"] = "cv",
+    n_top_genes: int = 2000,
+    add_var_col: str = "highly_variable_genes",
+    use_data: str = "data_log1p"
+) -> None:
     """Identify highly variable genes using basic statistics.
 
     This internal function supports ``highly_variable_genes(flavor="cv")`` and
@@ -1162,19 +1155,19 @@ def _highly_variable_genes_basic(
 
 
 def _highly_variable_genes_seurat(
-        atlas: Atlas,
-        n_top_genes: int = 2000,
-        add_var_col: str = "highly_variable_genes",
-        use_data: str = "data_log1p",
-        n_bins: int = 20,
-        min_mean: float = 0.0125,
-        max_mean: float = 3.0,
-        min_disp: float = 0.5,
-        max_disp: float = float("inf"),
-        use_filtered: bool = True,
-        obs_filter_col: str = "filter_cells",
-        var_filter_col: str = "filter_genes",
-        inplace: bool = True,
+    atlas: Atlas,
+    n_top_genes: int = 2000,
+    add_var_col: str = "highly_variable_genes",
+    use_data: str = "data_log1p",
+    n_bins: int = 20,
+    min_mean: float = 0.0125,
+    max_mean: float = 3.0,
+    min_disp: float = 0.5,
+    max_disp: float = float("inf"),
+    use_filtered: bool = True,
+    obs_filter_col: str = "filter_cells",
+    var_filter_col: str = "filter_genes",
+    inplace: bool = True,
 ):
     """Identify highly variable genes using a Seurat-style method.
 
@@ -1826,15 +1819,14 @@ def _highly_variable_genes_seurat(
 
 @duckdb_memory_limit("3G")
 def scale(
-        atlas: Atlas,
-        use_data: str = "data_log1p",
-        add_data: str = "data_scale",
-        add_var_col: str = "zero_scale_transform",
-        max_value: float = 10.0,
-        use_hvg: bool = True,
-        hvg_key: str = "highly_variable_genes",
-        chunk_ids: int = 20_000_000,
-        ) -> None:
+    atlas: Atlas,
+    use_data: str = "data_log1p",
+    add_data: str = "data_scale",
+    add_var_col: str = "zero_scale_transform",
+    max_value: float = 10.0,
+    use_hvg: bool = True,
+    hvg_key: str = "highly_variable_genes",
+) -> None:
     """Center and standardize the expression matrix by gene.
 
     This function centers and standardizes the expression matrix by gene in the
@@ -1895,10 +1887,6 @@ def scale(
     hvg_key
         Name of the boolean column in the ``var`` table that marks highly
         variable genes. The default value is ``"highly_variable_genes"``.
-
-    chunk_ids
-        Number of record IDs covered by each chunk when writing scale results
-        back by ``X_HyS_data.id`` range. The default value is ``20_000_000``.
 
     Returns
     -------
@@ -2115,7 +2103,7 @@ def sqrt(
     atlas: "Atlas",
     add_data: str = "data_sqrt",
     use_data: str = "data_count",
-    chunk_ids: int = 100_000_000) -> None:
+) -> None:
     """Apply a square-root transformation to the expression matrix.
 
     This function applies a square-root transformation to a specified expression
@@ -2145,10 +2133,6 @@ def sqrt(
         default value is ``"data_count"``. Common values include
         ``"data_count"``, ``"data_normalize"``, ``"data_log1p"``, and
         ``"data_scale"``.
-
-    chunk_ids
-        Deprecated compatibility parameter. The current implementation writes
-        the derived expression table in one SQL statement.
 
     Returns
     -------
@@ -2229,11 +2213,11 @@ def sqrt(
 
 
 def _cleanup_transform_after_step(
-        conn: DuckDBPyConnection,
-        temp_tables: list[str] | None = None,
-        unregister_tables: list[str] | None = None,
-        checkpoint: bool = False,
-        collect: bool = True,
+    conn: DuckDBPyConnection,
+    temp_tables: list[str] | None = None,
+    unregister_tables: list[str] | None = None,
+    checkpoint: bool = False,
+    collect: bool = True,
 ):
     """Clean up temporary resources generated by the current step.
 

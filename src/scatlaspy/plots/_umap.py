@@ -52,30 +52,30 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
 def umap(
-        atlas: Atlas,
-        color: str | list[str] = "kmeans",
-        *,
-        sample_n: int | None = None,
-        where: str | None = None,
+    atlas: Atlas,
+    color: str | list[str] = "kmeans",
+    *,
+    sample_n: int | None = None,
+    where: str | None = None,
 
-        # gene feature parameters
-        use_data: str = "data_log1p",
+    # gene feature parameters
+    use_data: str = "data_log1p",
 
-        # Plotting parameters
-        figsize: tuple[float, float] | None = (22, 8),
-        point_size: float = 5,
-        alpha: float = 0.85,
-        cmap: str = "viridis",
-        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+    # Plotting parameters
+    figsize: tuple[float, float] | None = (22, 8),
+    point_size: float = 5,
+    alpha: float = 0.85,
+    cmap: str = "viridis",
+    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
 
-        # legend / layout
-        legend_loc: str | None = "right_margin",
-        ncols: int = 3,
-        frameon: bool = True,
+    # legend / layout
+    legend_loc: str | None = "right_margin",
+    ncols: int = 3,
+    frameon: bool = True,
 
-        # Large-data / output parameters
-        plot_batch_size: int = 200000,
-        save_path: PathLike[str] | str | None = None,
+    # Large-data / output parameters
+    plot_batch_size: int = 200000,
+    save_path: PathLike[str] | str | None = None,
 ) -> None:
 
     """Plot cell UMAP embeddings.
@@ -282,22 +282,22 @@ def umap(
 
 # umap() - if color is an obs column -> plot_umap_obs()
 def _plot_umap_obs(
-        atlas: Atlas,
-        color: str = "kmeans",
-        sample_n: int | None = 50000,
-        groups: list | None = None,
-        where: str | None = None,
-        legend_loc: str = "right_margin",
-        title: str | None = None,
-        figsize: tuple[float, float] | None=(22, 8),
-        point_size: float = 1.0,
-        alpha: float = 0.7,
-        cmap: str = "viridis",
-        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        frameon: bool = True,
-        save_path: PathLike[str] | str | None = None,
-        plot_batch_size: int = 200000,
-        return_df: bool = False,
+    atlas: Atlas,
+    color: str = "kmeans",
+    sample_n: int | None = 50000,
+    groups: list | None = None,
+    where: str | None = None,
+    legend_loc: str = "right_margin",
+    title: str | None = None,
+    figsize: tuple[float, float] | None=(22, 8),
+    point_size: float = 1.0,
+    alpha: float = 0.7,
+    cmap: str = "viridis",
+    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+    frameon: bool = True,
+    save_path: PathLike[str] | str | None = None,
+    plot_batch_size: int = 200000,
+    return_df: bool = False,
 ):
 
     """Plot UMAP by a single ``obs`` field.
@@ -607,18 +607,18 @@ def _plot_umap_obs(
 # umap() - if color is an obs column -> plot_umap_obs()
 #          sample_n == None -> _draw_umap_obs_streaming()
 def _draw_umap_obs_streaming(
-        atlas: Atlas,
-        color: str,
-        where_sql: str,
-        legend_loc: str = "right_margin",
-        title: str | None = None,
-        figsize: tuple[float, float] | None=(22, 8),
-        point_size: float = 1.0,
-        alpha: float = 0.7,
-        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        frameon: bool = True,
-        save_path: PathLike[str] | str | None = None,
-        plot_batch_size: int = 200000
+    atlas: Atlas,
+    color: str,
+    where_sql: str,
+    legend_loc: str = "right_margin",
+    title: str | None = None,
+    figsize: tuple[float, float] | None=(22, 8),
+    point_size: float = 1.0,
+    alpha: float = 0.7,
+    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+    frameon: bool = True,
+    save_path: PathLike[str] | str | None = None,
+    plot_batch_size: int = 200000
 ):
 
     """Plot UMAP for a discrete ``obs`` categorical variable in batches.
@@ -883,17 +883,17 @@ def _draw_umap_obs_streaming(
 
 # umap() - if color is a gene name -> plot_umap_features()
 def _plot_umap_features(
-        atlas: Atlas,
-        genes: str | list[str],
-        sample_n: int | None = 50000,
-        where: str | None = None,
-        use_data: str = "data_scale",
-        ncols: int = 3,
-        figsize: tuple[float, float] | None=None,
-        point_size: float = 8,
-        alpha: float = 0.9,
-        cmap: str = "viridis",
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    genes: str | list[str],
+    sample_n: int | None = 50000,
+    where: str | None = None,
+    use_data: str = "data_scale",
+    ncols: int = 3,
+    figsize: tuple[float, float] | None=None,
+    point_size: float = 8,
+    alpha: float = 0.9,
+    cmap: str = "viridis",
+    save_path: PathLike[str] | str | None = None,
 ):
 
     """Plot UMAP feature plots by gene expression.
@@ -1213,20 +1213,20 @@ def _plot_umap_features(
 
 # umap() - mixed mode: obs categorical variables + gene feature variables in the same Figure
 def _plot_umap_mixed(
-        atlas: Atlas,
-        obs_colors: list[str],
-        gene_colors: list[str],
-        sample_n: int | None = 50000,
-        where: str | None = None,
-        use_data: str = "data_log1p",
-        ncols: int = 3,
-        figsize: tuple[float, float] | None = None,
-        point_size: float = 5,
-        alpha: float = 0.85,
-        cmap: str = "viridis",
-        palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-        frameon: bool = True,
-        save_path: PathLike[str] | str | None = None,
+    atlas: Atlas,
+    obs_colors: list[str],
+    gene_colors: list[str],
+    sample_n: int | None = 50000,
+    where: str | None = None,
+    use_data: str = "data_log1p",
+    ncols: int = 3,
+    figsize: tuple[float, float] | None = None,
+    point_size: float = 5,
+    alpha: float = 0.85,
+    cmap: str = "viridis",
+    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
+    frameon: bool = True,
+    save_path: PathLike[str] | str | None = None,
 ):
     """Plot a mixed-type multi-panel UMAP figure.
 
@@ -1826,13 +1826,13 @@ def _build_discrete_color_map(labels: Any, palette: Any | None=None):
 
 
 def _spread_on_data_label_positions(
-        center_df: pd.DataFrame,
-        x_col: str = "x_center",
-        y_col: str = "y_center",
-        min_dx_frac: float = 0.08,
-        min_dy_frac: float = 0.06,
-        step_frac: float = 0.018,
-        max_iter: int = 200,
+    center_df: pd.DataFrame,
+    x_col: str = "x_center",
+    y_col: str = "y_center",
+    min_dx_frac: float = 0.08,
+    min_dy_frac: float = 0.06,
+    step_frac: float = 0.018,
+    max_iter: int = 200,
 ) -> pd.DataFrame:
     """Apply simple collision avoidance to category labels displayed directly on a UMAP plot.
 
