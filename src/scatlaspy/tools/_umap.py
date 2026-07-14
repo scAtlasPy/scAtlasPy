@@ -1,4 +1,3 @@
-import umap as umap_lib
 from sklearn.manifold import trustworthiness
 from sklearn.neighbors import NearestNeighbors
 from datetime import datetime
@@ -8,6 +7,85 @@ from typing import Any
 from ..data import Atlas
 import logging
 logger = logging.getLogger('Atlas')
+
+
+def _import_classic_umap() -> Any:
+    """Import the classic UMAP estimator without importing TensorFlow eagerly."""
+
+    try:
+        from umap.umap_ import UMAP
+    except ImportError as exc:
+        raise ImportError(
+            "sap.tl.umap requires umap-learn. Install it with "
+            "`pip install umap-learn` and call this function again."
+        ) from exc
+
+    return UMAP
+
+
+def _import_parametric_umap() -> Any:
+    """Import ParametricUMAP only when the user calls the parametric workflow."""
+
+    try:
+        from umap.parametric_umap import ParametricUMAP
+    except ImportError as exc:
+        raise ImportError(
+            "sap.tl.parametric_umap requires the optional ParametricUMAP "
+            "dependencies, including TensorFlow. Install them in your analysis "
+            "environment with `pip install 'umap-learn[parametric_umap]'` or "
+            "install a compatible TensorFlow package, then call this function again."
+        ) from exc
+
+    return ParametricUMAP
+
+
+def _get_pca_columns(
+    atlas: Atlas,
+    n_pcs: int | None = None,
+    input_table: str = "obsm_X_pca",
+) -> list[str]:
+    """Return PCA coordinate columns from an Atlas PCA table."""
+
+    conn = atlas.connection
+
+    tables = conn.execute(f"""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_name = '{input_table}'
+    """).fetchdf()
+
+    if len(tables) == 0:
+        raise ValueError(
+            f"{input_table} does not exist in the database.\n"
+            "Please run sap.tl.pca(atlas) first"
+        )
+
+    pca_cols = [
+        r[1]
+        for r in conn.execute(f"PRAGMA table_info({input_table})").fetchall()
+    ]
+
+    pc_cols = [c for c in pca_cols if c.startswith("pc")]
+
+    if len(pc_cols) == 0:
+        raise ValueError(f"No pc columns exist in {input_table}")
+
+    pc_cols = sorted(pc_cols, key=lambda x: int(x.replace("pc", "")))
+
+    if n_pcs is not None:
+        n_pcs = int(n_pcs)
+
+        if n_pcs <= 0:
+            raise ValueError("n_pcs must be greater than 0")
+
+        if n_pcs > len(pc_cols):
+            raise ValueError(
+                f"n_pcs={n_pcs} exceeds the number of available PCs in {input_table}: {len(pc_cols)}"
+            )
+
+        pc_cols = pc_cols[:n_pcs]
+
+    return pc_cols
 
 
 def knn_overlap(X_high: np.ndarray, X_low: np.ndarray, k: int = 15) -> float:
@@ -296,8 +374,10 @@ def umap(
 
     X_fit = fit_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
 
+    UMAP = _import_classic_umap()
+
     # Fit the UMAP model
-    reducer = umap_lib.UMAP(
+    reducer = UMAP(
         n_components=n_components,
         n_neighbors=n_neighbors,
         min_dist=min_dist,
@@ -469,5 +549,330 @@ def umap(
         logger.info(f"[UMAP] transformed {offset}/{total_n}")
 
     logger.info(f"UMAP Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds")
+
+    return reducer
+
+
+def parametric_umap(
+    atlas: Atlas,
+    fit_sample_n: int = 200_000,
+    transform_batch_size: int = 100_000,
+    parametric_batch_size: int = 1024,
+    training_epochs: int = 1,
+    n_components: int = 2,
+    n_pcs: int | None = None,
+    n_neighbors: int = 15,
+    min_dist: float = 0.5,
+    spread: float = 1.0,
+    metric: str = "euclidean",
+    random_state: int = 42,
+    n_jobs: int = 1,
+    add_table: str = "obsm_X_umap",
+    save_params_table: str = "uns_umap_params",
+    eval_sample_n: int = 5000,
+    save_eval_table: str = "uns_umap_eval",
+    keras_fit_kwargs: dict[str, Any] | None = None,
+    verbose: int = 1,
+) -> Any:
+    """Calculate UMAP coordinates with ParametricUMAP based on PCA embeddings.
+
+    This workflow trains a neural mapping from PCA coordinates to UMAP coordinates
+    on a sampled subset of cells, then predicts coordinates for all cells in
+    batches. It is intended for atlas-scale datasets where the classic
+    ``umap.UMAP.transform`` step is too slow.
+
+    Parameters
+    ----------
+    atlas
+        Atlas object with an existing ``obsm_X_pca`` table.
+
+    fit_sample_n
+        Number of cells sampled from ``obsm_X_pca`` for ParametricUMAP training.
+        The default is ``200_000``.
+
+    transform_batch_size
+        Number of cells read from ``obsm_X_pca`` for each full-dataset prediction
+        batch.
+
+    parametric_batch_size
+        Keras training batch size used inside ParametricUMAP.
+
+    training_epochs
+        ParametricUMAP training epoch multiplier. In umap-learn, one unit here
+        corresponds to ``loss_report_frequency`` Keras epochs, which is currently
+        10 by default.
+
+    n_components
+        Number of UMAP dimensions. scAtlasPy currently writes ``umap1`` and
+        ``umap2``, so this function requires ``n_components=2``.
+
+    n_pcs
+        Number of PCA dimensions used as input. If ``None``, all PC columns from
+        ``obsm_X_pca`` are used.
+
+    n_neighbors, min_dist, spread, metric, random_state, n_jobs
+        Standard UMAP parameters passed to ParametricUMAP.
+
+    add_table
+        Output table for UMAP coordinates. The default is ``obsm_X_umap`` so that
+        existing plotting functions can be used unchanged.
+
+    save_params_table
+        Table used to store the parameters of this run.
+
+    eval_sample_n
+        Number of training-sample cells used for trustworthiness and kNN-overlap
+        evaluation.
+
+    save_eval_table
+        Table used to store evaluation metrics.
+
+    keras_fit_kwargs
+        Optional keyword arguments passed to the internal Keras ``fit`` call.
+        Do not pass ``epochs`` here; use ``training_epochs`` instead.
+
+    verbose
+        Verbosity passed to ParametricUMAP and Keras prediction.
+
+    Returns
+    -------
+    umap.parametric_umap.ParametricUMAP
+        Fitted ParametricUMAP object.
+
+    Notes
+    -----
+    TensorFlow is an optional dependency. It is imported only when this function
+    is called. If TensorFlow is missing, scAtlasPy raises a clear ImportError
+    instead of making TensorFlow a required package dependency.
+    """
+
+    start = datetime.now()
+    conn = atlas.connection
+
+    if n_components != 2:
+        raise ValueError("parametric_umap currently requires n_components=2")
+
+    if fit_sample_n <= 0:
+        raise ValueError("fit_sample_n must be greater than 0")
+
+    if transform_batch_size <= 0:
+        raise ValueError("transform_batch_size must be greater than 0")
+
+    if parametric_batch_size <= 0:
+        raise ValueError("parametric_batch_size must be greater than 0")
+
+    if training_epochs <= 0:
+        raise ValueError("training_epochs must be greater than 0")
+
+    if float(spread) < float(min_dist):
+        raise ValueError(
+            f"spread must be greater than or equal to min_dist; current spread={spread}, min_dist={min_dist}"
+        )
+
+    if keras_fit_kwargs is None:
+        keras_fit_kwargs = {}
+    else:
+        keras_fit_kwargs = dict(keras_fit_kwargs)
+
+    if "epochs" in keras_fit_kwargs:
+        raise ValueError(
+            "Do not pass keras_fit_kwargs['epochs']; use training_epochs instead."
+        )
+
+    keras_fit_kwargs.setdefault("verbose", verbose)
+
+    ParametricUMAP = _import_parametric_umap()
+
+    pc_cols = _get_pca_columns(atlas, n_pcs=n_pcs, input_table="obsm_X_pca")
+    pc_cols_sql = ", ".join(pc_cols)
+
+    total_n = conn.execute("SELECT COUNT(*) FROM obsm_X_pca").fetchone()[0]
+    sample_n = min(int(fit_sample_n), int(total_n))
+    seed = 0 if random_state is None else int(random_state)
+
+    logger.info("[ParametricUMAP] input_table = obsm_X_pca")
+    logger.info(f"[ParametricUMAP] output_table = {add_table}")
+    logger.info(f"[ParametricUMAP] total cells = {total_n:,}")
+    logger.info(f"[ParametricUMAP] fit_sample_n = {sample_n:,}")
+    logger.info(f"[ParametricUMAP] n_pcs = {len(pc_cols)}")
+    logger.info(f"[ParametricUMAP] transform_batch_size = {transform_batch_size:,}")
+    logger.info(f"[ParametricUMAP] parametric_batch_size = {parametric_batch_size:,}")
+    logger.info(f"[ParametricUMAP] training_epochs = {training_epochs}")
+
+    fit_df = conn.execute(f"""
+        SELECT atlas_cell_id, {pc_cols_sql}
+        FROM obsm_X_pca
+        ORDER BY hash(atlas_cell_id + {seed})
+        LIMIT {sample_n}
+    """).fetchdf()
+
+    if len(fit_df) == 0:
+        raise ValueError("The sample used to fit ParametricUMAP is empty")
+
+    X_fit = fit_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
+
+    reducer = ParametricUMAP(
+        batch_size=int(parametric_batch_size),
+        n_components=n_components,
+        n_neighbors=n_neighbors,
+        min_dist=min_dist,
+        spread=spread,
+        metric=metric,
+        random_state=random_state,
+        n_jobs=n_jobs,
+        verbose=verbose,
+        keras_fit_kwargs=keras_fit_kwargs,
+    )
+    reducer.n_training_epochs = int(training_epochs)
+
+    logger.info("[ParametricUMAP] fitting model")
+    reducer.fit(X_fit)
+
+    logger.info("[ParametricUMAP] evaluating training sample")
+    X_fit_umap = reducer.transform(X_fit).astype(np.float32)
+
+    eval_n = min(int(eval_sample_n), X_fit.shape[0])
+
+    if eval_n >= 3:
+        rng = np.random.default_rng(random_state)
+        eval_idx = rng.choice(X_fit.shape[0], size=eval_n, replace=False)
+        X_eval = X_fit[eval_idx]
+        X_eval_umap = X_fit_umap[eval_idx]
+        eval_k = min(n_neighbors, eval_n - 1)
+
+        trustworthiness_score = trustworthiness(
+            X_eval,
+            X_eval_umap,
+            n_neighbors=eval_k,
+        )
+        knn_overlap_score = knn_overlap(
+            X_eval,
+            X_eval_umap,
+            k=eval_k,
+        )
+    else:
+        eval_k = 0
+        trustworthiness_score = np.nan
+        knn_overlap_score = np.nan
+
+    logger.info(f"[ParametricUMAP] trustworthiness = {trustworthiness_score:.4f}")
+    logger.info(f"[ParametricUMAP] knn_overlap     = {knn_overlap_score:.4f}")
+
+    conn.execute(f"DROP TABLE IF EXISTS {add_table}")
+    conn.execute(f"""
+        CREATE TABLE {add_table} (
+            atlas_cell_id BIGINT,
+            umap1 FLOAT,
+            umap2 FLOAT
+        )
+    """)
+
+    conn.execute(f"DROP TABLE IF EXISTS {save_params_table}")
+    conn.execute(f"""
+        CREATE TABLE {save_params_table} (
+            param_name VARCHAR,
+            param_value VARCHAR
+        )
+    """)
+
+    params_df = pd.DataFrame({
+        "param_name": [
+            "method",
+            "n_components",
+            "n_pcs",
+            "n_neighbors",
+            "min_dist",
+            "spread",
+            "metric",
+            "random_state",
+            "fit_sample_n",
+            "transform_batch_size",
+            "parametric_batch_size",
+            "training_epochs",
+            "input_table",
+            "output_table",
+            "eval_sample_n",
+        ],
+        "param_value": [
+            "parametric_umap",
+            str(n_components),
+            str(len(pc_cols)),
+            str(n_neighbors),
+            str(min_dist),
+            str(spread),
+            str(metric),
+            str(random_state),
+            str(sample_n),
+            str(transform_batch_size),
+            str(parametric_batch_size),
+            str(training_epochs),
+            "obsm_X_pca",
+            add_table,
+            str(eval_sample_n),
+        ],
+    })
+
+    conn.append(save_params_table, params_df)
+
+    conn.execute(f"DROP TABLE IF EXISTS {save_eval_table}")
+    conn.execute(f"""
+        CREATE TABLE {save_eval_table} (
+            metric_name VARCHAR,
+            metric_value DOUBLE
+        )
+    """)
+
+    eval_df = pd.DataFrame({
+        "metric_name": [
+            "trustworthiness",
+            "knn_overlap",
+            "eval_sample_n",
+            "eval_n_neighbors",
+        ],
+        "metric_value": [
+            float(trustworthiness_score),
+            float(knn_overlap_score),
+            float(eval_n),
+            float(eval_k),
+        ],
+    })
+
+    conn.append(save_eval_table, eval_df)
+
+    logger.info("[ParametricUMAP] predicting full dataset")
+    written_n = 0
+    last_cell_id = -1
+
+    while written_n < total_n:
+        batch_df = conn.execute(f"""
+            SELECT atlas_cell_id, {pc_cols_sql}
+            FROM obsm_X_pca
+            WHERE atlas_cell_id > {int(last_cell_id)}
+            ORDER BY atlas_cell_id
+            LIMIT {int(transform_batch_size)}
+        """).fetchdf()
+
+        if len(batch_df) == 0:
+            break
+
+        X_batch = batch_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
+        X_umap = reducer.transform(X_batch).astype(np.float32)
+
+        out_df = pd.DataFrame({
+            "atlas_cell_id": batch_df["atlas_cell_id"].to_numpy(dtype=np.int64),
+            "umap1": X_umap[:, 0],
+            "umap2": X_umap[:, 1],
+        })
+
+        conn.append(add_table, out_df)
+
+        written_n += len(batch_df)
+        last_cell_id = int(batch_df["atlas_cell_id"].iloc[-1])
+
+        logger.info(f"[ParametricUMAP] predicted {written_n:,}/{total_n:,}")
+
+    logger.info(
+        f"ParametricUMAP Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds"
+    )
 
     return reducer

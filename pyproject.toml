@@ -52,6 +52,10 @@ dependencies = [
 
 
 [project.optional-dependencies]
+parametric = [
+    "umap-learn[parametric_umap]>=0.5.12",
+]
+
 test = [
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
