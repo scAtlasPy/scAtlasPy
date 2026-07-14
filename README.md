@@ -29,7 +29,7 @@ atlas.build_read_index(
     use_hvg=True,
 )
 
-sap.tl.pca(atlas, n_components=50)
+sap.tl.pca(atlas)
 sap.tl.kmeans(atlas, n_clusters=20)
 sap.pl.pca(atlas, color="kmeans")
 ```
@@ -120,7 +120,7 @@ atlas.build_read_index(
     use_hvg=True,
 )
 
-sap.tl.pca(atlas, n_components=50)
+sap.tl.pca(atlas)
 sap.tl.kmeans(atlas, n_clusters=20)
 sap.tl.umap(atlas)
 sap.tl.rank_genes_groups(atlas, groupby="kmeans")
@@ -212,7 +212,7 @@ sap.pp.filter_genes(atlas, min_cells=3)
 sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
 
 atlas.build_read_index(use_hvg=True)
-sap.tl.pca(atlas, n_components=50, fit_batches=1000)
+sap.tl.pca(atlas)
 ```
 
 ## Development

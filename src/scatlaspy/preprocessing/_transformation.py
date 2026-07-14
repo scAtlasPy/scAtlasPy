@@ -1823,33 +1823,36 @@ def scale(
     use_data: str = "data_log1p",
     add_data: str = "data_scale",
     add_var_col: str = "zero_scale_transform",
-    max_value: float = 10.0,
+    max_value: float | None = 10.0,
     use_hvg: bool = True,
     hvg_key: str = "highly_variable_genes",
+    mode: Literal["center_and_scale", "center_only", "scale_only"] = "center_and_scale",
 ) -> None:
-    """Center and standardize the expression matrix by gene.
+    """Center and/or variance-normalize the expression matrix by gene.
 
-    This function centers and standardizes the expression matrix by gene in the
-    Atlas database and writes the z-score result to the derived expression table
-    for ``add_data``. It is similar to Scanpy's ``sc.pp.scale`` and is
-    commonly used for downstream analyses that require standardized input, such
-    as PCA, KMeans, and other workflows.
+    This function transforms the expression matrix by gene in the Atlas database
+    and writes the result to the derived expression table for ``add_data``. By
+    default, it centers and standardizes the data as z-scores, similar to
+    Scanpy's ``sc.pp.scale``. It can also be configured to only center the data
+    or only normalize each gene by its standard deviation.
 
     For each target gene, the function first computes the mean and standard
-    deviation across all cells based on ``use_data``, then computes the
-    following for explicitly stored nonzero expression records:
+    deviation across all cells based on ``use_data``. Then it transforms
+    explicitly stored expression records according to ``mode``:
 
-    ``z = (x - mean_gene) / std_gene``
+    - ``"center_and_scale"``: ``z = (x - mean_gene) / std_gene``;
+    - ``"center_only"``: ``z = x - mean_gene``;
+    - ``"scale_only"``: ``z = x / std_gene``.
 
     If ``max_value`` is not ``None``, the result is clipped to the range
-    ``[-max_value, max_value]``.
+    ``[-max_value, max_value]`` for modes that use variance normalization.
 
     Because 0 values not explicitly stored in the sparse matrix usually no
-    longer equal 0 after scaling, the function also writes the ``add_var_col``
-    field to the ``var`` table. This field records the scaled fill value
-    corresponding to the original 0 value for each gene, namely
-    ``(0 - mean_gene) / std_gene``. When minibatch dense reading uses
-    ``data_scale``, this field is used to fill sparse zero positions.
+    longer equal 0 after centering, the function also writes the ``add_var_col``
+    field to the ``var`` table. This field records the transformed fill value
+    corresponding to the original 0 value for each gene. When minibatch dense
+    reading uses ``data_scale``, this field is used to fill sparse zero
+    positions.
 
     Parameters
     ----------
@@ -1888,16 +1891,21 @@ def scale(
         Name of the boolean column in the ``var`` table that marks highly
         variable genes. The default value is ``"highly_variable_genes"``.
 
+    mode
+        Transformation mode. The default ``"center_and_scale"`` preserves the
+        previous z-score behavior. Use ``"center_only"`` to subtract gene means
+        without dividing by standard deviation. Use ``"scale_only"`` to divide
+        by standard deviation without subtracting gene means.
+
     Returns
     -------
     None
         No object is returned.
         Results are written to the derived expression table for ``add_data``.
         By default, this is ``data_scale``, which means z-score standardization
-        is applied to data: ``z = (x - mean_g) / std_g``. Results are also
-        written to the ``add_var_col`` field in the ``var`` table. By default,
-        ``zero_scale_transform`` means that each gene's ``(0 - g.mean) / g.std``
-        is stored in this field of the ``var`` table for later use.
+        is applied to data. Results are also written to the ``add_var_col`` field
+        in the ``var`` table. By default, ``zero_scale_transform`` stores each
+        gene's transformed zero value for later dense minibatch filling.
 
     Notes
     -----
@@ -1922,10 +1930,20 @@ def scale(
             use_hvg=True,
             hvg_key="highly_variable_genes",
             max_value=10,
-        )"""
+        )
+
+    Only center each gene without variance normalization::
+
+        sap.pp.scale(atlas, mode="center_only")
+        """
 
     start_time = datetime.now()
     conn = atlas.connection
+
+    if mode not in {"center_and_scale", "center_only", "scale_only"}:
+        raise ValueError(
+            "mode must be one of 'center_and_scale', 'center_only', or 'scale_only'"
+        )
 
     # 0. Parallelism
     try:
@@ -2006,6 +2024,56 @@ def scale(
 
     source_from_sql, source_value = _expression_source_for_transform(conn, use_data)
 
+    if mode == "center_and_scale":
+        transformed_expr = f"""
+            CASE
+                WHEN g.std > 0 THEN ({source_value} - g.mean) / g.std
+                ELSE 0
+            END
+        """
+        zero_expr = """
+            CASE
+                WHEN g.std > 0 THEN (0 - g.mean) / g.std
+                ELSE 0
+            END
+        """
+    elif mode == "center_only":
+        transformed_expr = f"({source_value} - g.mean)"
+        zero_expr = "(0 - g.mean)"
+    else:
+        transformed_expr = f"""
+            CASE
+                WHEN g.std > 0 THEN {source_value} / g.std
+                ELSE 0
+            END
+        """
+        zero_expr = """
+            CASE
+                WHEN g.std > 0 THEN 0 / g.std
+                ELSE 0
+            END
+        """
+
+    if max_value is not None and mode != "center_only":
+        transformed_expr = f"""
+            LEAST(
+                {float(max_value)},
+                GREATEST(
+                    -{float(max_value)},
+                    {transformed_expr}
+                )
+            )
+        """
+        zero_expr = f"""
+            LEAST(
+                {float(max_value)},
+                GREATEST(
+                    -{float(max_value)},
+                    {zero_expr}
+                )
+            )
+        """
+
     conn.execute(f"""
         CREATE TEMP TABLE _gene_stat AS
         SELECT
@@ -2035,18 +2103,7 @@ def scale(
     try:
         conn.execute(f"""
             UPDATE var v
-            SET {add_var_col} =
-                CASE
-                    WHEN g.std > 0 THEN
-                        LEAST(
-                            {float(max_value)},
-                            GREATEST(
-                                -{float(max_value)},
-                                (0 - g.mean) / g.std
-                            )
-                        )
-                    ELSE 0
-                END
+            SET {add_var_col} = CAST({zero_expr} AS REAL)
             FROM _gene_stat g
             WHERE v.atlas_gene_id = g.atlas_gene_id
         """)
@@ -2064,19 +2121,7 @@ def scale(
             x.id,
             x.atlas_cell_id,
             x.atlas_gene_id,
-            CAST(
-                CASE
-                    WHEN g.std > 0 THEN
-                        LEAST(
-                            {float(max_value)},
-                            GREATEST(
-                                -{float(max_value)},
-                                ({source_value} - g.mean) / g.std
-                            )
-                        )
-                    ELSE 0
-                END
-            AS REAL) AS {add_data}
+            CAST({transformed_expr} AS REAL) AS {add_data}
         FROM {source_from_sql}
         JOIN _gene_stat g
           ON x.atlas_gene_id = g.atlas_gene_id

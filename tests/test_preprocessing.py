@@ -86,3 +86,37 @@ def test_hvg_and_scale_create_metadata_and_scaled_expression(atlas_from_adata, w
     batch = next(atlas.get_minibatch_dense(batch_size=7, max_batches=1))
     assert batch.shape == (7, 5)
     assert batch.dtype == np.float32
+
+
+def test_scale_modes_control_centering_and_variance_normalization(atlas_from_adata, counts_adata):
+    X = dense_counts(counts_adata)
+    mean = X.mean(axis=0, keepdims=True)
+    std = np.sqrt(np.maximum((X * X).mean(axis=0, keepdims=True) - mean * mean, 0.0))
+
+    expected = {
+        "center_and_scale": np.divide(X - mean, std, out=np.zeros_like(X), where=std > 0),
+        "center_only": X - mean,
+        "scale_only": np.divide(X, std, out=np.zeros_like(X), where=std > 0),
+    }
+
+    for mode, expected_dense in expected.items():
+        atlas = atlas_from_adata(counts_adata, name=f"{mode}.sasql")
+        sap.pp.scale(
+            atlas,
+            use_data="data_count",
+            use_hvg=False,
+            max_value=None,
+            mode=mode,
+        )
+        var = atlas.query("SELECT atlas_gene_id, zero_scale_transform FROM var ORDER BY atlas_gene_id")
+        scaled = np.tile(var["zero_scale_transform"].to_numpy(dtype=np.float32), (X.shape[0], 1))
+        values = atlas.query("""
+            SELECT atlas_cell_id, atlas_gene_id, data_scale
+            FROM X_HyS_data_data_scale
+            ORDER BY atlas_cell_id, atlas_gene_id
+        """)
+        scaled[
+            values["atlas_cell_id"].to_numpy(dtype=int),
+            values["atlas_gene_id"].to_numpy(dtype=int),
+        ] = values["data_scale"].to_numpy(dtype=np.float32)
+        assert_dense_equal(scaled, expected_dense)

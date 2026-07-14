@@ -54,7 +54,7 @@ class StreamingKMeans:
     --------
     Recommended public API usage::
 
-        sap.tl.pca(atlas, n_components=50)
+        sap.tl.pca(atlas)
         sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
     """
 
@@ -624,7 +624,7 @@ def kmeans(
     --------
     Cluster into 20 groups using the first 30 principal components::
 
-        sap.tl.pca(atlas, n_components=50)
+        sap.tl.pca(atlas)
         sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
     """
 

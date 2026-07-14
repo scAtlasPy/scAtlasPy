@@ -44,7 +44,7 @@ atlas.build_read_index(
 
 sap.tl.pca(
     atlas,
-    n_components=50,
+    n_components=30,
 )
 ```
 
@@ -216,7 +216,7 @@ atlas.build_read_index(
 
 sap.tl.pca(
     atlas,
-    n_components=50,
+    n_components=30,
 )
 
 sap.tl.kmeans(

@@ -41,7 +41,7 @@ sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
 atlas.build_read_index()
 
 # Dimensionality reduction, clustering, and visualization
-sap.tl.pca(atlas, n_components=50)
+sap.tl.pca(atlas)
 sap.tl.kmeans(atlas, n_clusters=8)
 sap.tl.umap(atlas)
 sap.pl.umap(atlas, color="kmeans")

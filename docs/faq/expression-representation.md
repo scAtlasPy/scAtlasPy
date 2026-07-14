@@ -214,7 +214,8 @@ atlas.build_read_index(use_hvg=True, use_data="data_log1p")
 atlas.build_read_index(use_hvg=True, use_data="data_scale")
 ```
 
-When interpreting results, remember that `sap.tl.pca()` uses an incremental,
-minibatch-based implementation so that PCA can run on atlas-scale data without
-materializing the full matrix in memory. Small differences from exact in-memory
-PCA implementations such as Scanpy or `sklearn.decomposition.PCA` are expected.
+When interpreting results, remember that `sap.tl.pca()` uses a streaming
+randomized covariance eigensolver so that PCA can run on atlas-scale data
+without materializing the full matrix in memory. Small differences from exact
+in-memory PCA implementations such as Scanpy or `sklearn.decomposition.PCA` are
+expected.
