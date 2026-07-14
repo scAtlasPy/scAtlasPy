@@ -60,13 +60,13 @@ test = [
 ]
 
 docs = [
-    "sphinx>=9.0.4",
-    "myst-parser>=5.1.0",
+    "sphinx>=8.1.3,<8.2",
+    "myst-parser>=4.0.1,<5.0",
     "myst-nb>=1.4.0",
     "sphinx-copybutton>=0.5.2",
-    "sphinx-design>=0.7.0",
-    "sphinx-autodoc-typehints>=3.6.1",
-    "sphinx-book-theme>=1.2.0",
+    "sphinx-design>=0.6.1,<0.7",
+    "sphinx-autodoc-typehints>=3.0.1,<3.1",
+    "sphinx-book-theme>=1.1.4,<1.2",
     "numpydoc>=1.10.0",
     "ipywidgets>=8.1.8",
 ]
@@ -88,17 +88,12 @@ scatlaspy = [
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
-    "l0: hand-checkable edge cases and exact storage assertions",
-    "l1: randomized and property-style tests",
-    "l2: reference parity tests against SciPy or Scanpy",
-    "l3: large streaming, memory, concurrency, and performance tests",
-    "l4: release stress tests for million-plus scale validation",
+    "storage: tests for Atlas database schema and AnnData import/export behavior",
+    "preprocessing: tests for filtering, QC, and derived expression transforms",
+    "minibatch: tests for read-index construction and dense minibatch reading",
+    "workflow: tests for PCA, clustering, ranking, and annotation workflows",
     "slow: tests that are too slow for quick local iteration",
-    "stress: resource-intensive stress tests",
-    "ml: tests that exercise minibatch machine learning workflows",
-    "reference: tests that compare against mature reference implementations",
     "realdata: opt-in tests against user-provided real datasets",
-    "import_benchmark: opt-in import time and RSS benchmark tests",
 ]
 
 [project.urls]

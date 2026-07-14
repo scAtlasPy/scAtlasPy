@@ -1731,9 +1731,9 @@ class Atlas:
 
         The expression matrix is reassembled into the h5ad CSR ``X`` according to
         the internal Atlas HyS sparse structure. ``X.data`` comes from the
-        expression source resolved by ``use_data``; this can be a field in
-        ``X_HyS_data`` or a derived expression table. ``X.indices`` comes from
-        ``atlas_gene_id``.
+        expression source resolved by ``use_data``; this can be ``data_count``
+        in ``X_HyS_data`` or a derived expression table. ``X.indices`` comes
+        from ``atlas_gene_id``.
 
         Parameters
         ----------
@@ -1889,8 +1889,8 @@ class Atlas:
         This function exports an in-memory AnnData object from the Atlas database
         according to the user-provided ``atlas_cell_ids``. It preserves the order of
         the input cell IDs, reads the corresponding ``obs`` subset, the full ``var``,
-        a sparse CSR ``X`` composed from the specified expression field, and optionally
-        reads ``obsm_*`` and ``varm_*`` result tables.
+        a sparse CSR ``X`` composed from the specified expression representation,
+        and optionally reads ``obsm_*`` and ``varm_*`` result tables.
 
         This function is suitable for small-scale sampling export, local Scanpy analysis,
         model checking, or temporarily converting a group of cells in Atlas back to AnnData.

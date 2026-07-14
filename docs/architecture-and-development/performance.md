@@ -44,7 +44,7 @@ operations.
 | `cell_condition` | Controls how many cells are traversed |
 | `gene_condition` | Controls which genes are included |
 | `use_hvg=True` | Restricts the view to highly variable genes |
-| `use_data` | Selects the expression field reconstructed into each batch |
+| `use_data` | Selects the expression representation reconstructed into each batch |
 
 Reducing the active cell population or gene set is often more effective than
 increasing memory limits or worker counts.
@@ -121,9 +121,10 @@ memory pressure when database operations and Python-side computations run at
 the same time.
 ```
 
-By default, scAtlasPy sets `db_memory_limit="3G"`. Passing
-`db_memory_limit=None` explicitly uses one quarter of the detected system memory,
-rounded down to an integer number of GB, as the DuckDB memory limit.
+By default, scAtlasPy requests `db_memory_limit="20G"`. The effective DuckDB
+limit is capped at 60% of detected system physical memory, rounded down to an
+integer number of GB. Passing `db_memory_limit=None` explicitly uses that 60%
+system-memory cap directly.
 
 ## Import Performance
 

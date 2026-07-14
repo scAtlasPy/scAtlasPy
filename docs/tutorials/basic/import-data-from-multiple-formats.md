@@ -20,12 +20,12 @@ By the end of this tutorial, you will be able to:
 
 Before choosing an import method, inspect the source data and confirm:
 
-- which expression representation you want to store in the Atlas;
+- which count-scale expression matrix you want to store in the Atlas;
 - whether cell and gene identifiers are unique;
 - whether required sample, donor, batch, condition, or technology annotations
   are present;
-- whether multiple input files use compatible genes, metadata, and expression
-  representations after import.
+- whether multiple input files use compatible genes, metadata, and count-scale
+  expression representations after import.
 
 scAtlasPy stores imported expression data, cell and gene metadata, embeddings,
 and supported analysis results in a persistent `.sasql` Atlas database.

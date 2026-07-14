@@ -7,13 +7,13 @@ library-size normalization, expression transformation, highly variable gene
 selection, and scaling.
 
 Preprocessing functions usually update the current Atlas by writing metadata
-columns or expression fields to the `.sasql` database. They do not create a new
-in-memory `AnnData` object.
+columns or derived expression tables to the `.sasql` database. They do not
+create a new in-memory `AnnData` object.
 
 ```{note}
 Most preprocessing results are stored alongside the original data rather than
-replacing it. Consult the individual function entry for the fields written,
-required inputs, and behavior when an output already exists.
+replacing it. Consult the individual function entry for the tables or metadata
+columns written, required inputs, and behavior when an output already exists.
 ```
 
 ## Quality Control
@@ -88,7 +88,8 @@ expression values.
 Common outputs include:
 
 - `obs.scale_factor`;
-- a normalized expression field stored in the Atlas.
+- a derived normalized expression table, usually
+  `X_HyS_data_data_normalize`.
 
 Use the individual API entries to check the default target total, source
 expression field, output field, and replacement behavior.
@@ -114,10 +115,10 @@ These functions transform stored expression values.
 - `normalize_and_log1p()` performs library-size normalization followed by
   `log1p` transformation in one workflow.
 
-A common output of `normalize_and_log1p()` is:
+A common output of `normalize_and_log1p()` is a derived expression table:
 
 ```text
-X_HyS_data.data_log1p
+X_HyS_data_data_log1p
 ```
 
 ```{warning}
@@ -171,10 +172,11 @@ atlas.build_read_index(
 `scale()` centers and standardizes expression values for analyses that require
 features on comparable scales.
 
-A common output field is:
+Common outputs include:
 
 ```text
-X_HyS_data.data_scale
+X_HyS_data_data_scale
+var.zero_scale_transform
 ```
 
 ```{note}
@@ -202,12 +204,12 @@ sap.pp.filter_genes(
 
 sap.pp.normalize_and_log1p(
     atlas,
-    target_sum=1e4,
+    target_sum=10_000,
 )
 
 sap.pp.highly_variable_genes(
     atlas,
-    n_top_genes=2000,
+    n_top_genes=2_000,
 )
 
 sap.pp.scale(atlas)

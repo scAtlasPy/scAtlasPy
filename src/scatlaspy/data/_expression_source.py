@@ -55,7 +55,7 @@ def resolve_expression_source(
     x_alias: str = "x",
     d_alias: str = "d",
 ) -> ExpressionSource:
-    """Resolve an expression field stored on X_HyS_data or a derived table."""
+    """Resolve an expression representation from X_HyS_data or a derived table."""
 
     data_sql = quote_identifier(data_name)
     if has_column(conn, "X_HyS_data", data_name):

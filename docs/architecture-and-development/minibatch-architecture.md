@@ -44,12 +44,12 @@ The read index defines:
 
 - the cells included in the stream;
 - the genes included in the stream;
-- the expression representation reconstructed into each batch;
+- the resolved expression representation reconstructed into each batch;
 - the cell and gene order used by the current analysis view.
 
 ```{important}
 Rebuilding the read index can change the selected cells, selected genes,
-expression field, and feature order used by subsequent minibatch operations.
+expression representation, and feature order used by subsequent minibatch operations.
 These choices should be treated as part of a custom method's input
 specification.
 ```

@@ -1,1 +1,2 @@
-"""scAtlasPy pytest suite."""
+"""Test suite for the current scAtlasPy public behavior."""
+

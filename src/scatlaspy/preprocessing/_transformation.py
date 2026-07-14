@@ -101,10 +101,10 @@ def normalize_total(
 
     The function processes data in chunks over the ``atlas_cell_id`` range. Each
     chunk only computes total counts within the current cell range and writes
-    the expression records from the current chunk to a temporary target table.
-    After all chunks are completed, the normalized table replaces the original
-    ``X_HyS_data`` table, which avoids excessive memory pressure caused by
-    aggregating an ultra-large expression matrix all at once.
+    normalized expression records from the current chunk to a temporary target
+    table. After all chunks are completed, the temporary table is renamed to the
+    derived expression table for ``add_data``. The original ``X_HyS_data`` count
+    table is not replaced.
 
     Parameters
     ----------
@@ -1830,8 +1830,8 @@ def scale(
     """Center and standardize the expression matrix by gene.
 
     This function centers and standardizes the expression matrix by gene in the
-    Atlas database and writes the z-score result to the ``add_data`` field in
-    the ``X_HyS_data`` table. It is similar to Scanpy's ``sc.pp.scale`` and is
+    Atlas database and writes the z-score result to the derived expression table
+    for ``add_data``. It is similar to Scanpy's ``sc.pp.scale`` and is
     commonly used for downstream analyses that require standardized input, such
     as PCA, KMeans, and other workflows.
 
@@ -1892,12 +1892,12 @@ def scale(
     -------
     None
         No object is returned.
-        Results are written directly to the ``add_data`` field in the ``X_HyS_data`` table;
-        by default, this is ``data_scale``, which means z-score standardization
-        is applied to data: ``z = (x - mean_g) / std_g``;
-        results are also written to the ``add_var_col`` field in the ``var`` table.
-        By default, ``zero_scale_transform`` means that each gene's
-        ``(0 - g.mean) / g.std`` is stored in this field of the ``var`` table for later use.
+        Results are written to the derived expression table for ``add_data``.
+        By default, this is ``data_scale``, which means z-score standardization
+        is applied to data: ``z = (x - mean_g) / std_g``. Results are also
+        written to the ``add_var_col`` field in the ``var`` table. By default,
+        ``zero_scale_transform`` means that each gene's ``(0 - g.mean) / g.std``
+        is stored in this field of the ``var`` table for later use.
 
     Notes
     -----

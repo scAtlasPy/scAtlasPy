@@ -31,7 +31,7 @@ closest corresponding structures in AnnData and SeuratObject.
 |---|---|---|---|
 | `obs` | Cell-level metadata | `adata.obs` | `meta.data` |
 | `var` | Gene-level metadata | `adata.var` | Feature metadata in an assay |
-| `X_HyS_data` and `X_HyS_indptr` | Sparse expression matrix and derived expression fields | `adata.X` and `adata.layers` | Assay layers such as counts, normalized data, and scaled data |
+| `X_HyS_data`, derived `X_HyS_data_*` tables, and `X_HyS_indptr` | Sparse count matrix, derived expression representations, and row pointers | `adata.X` and `adata.layers` | Assay layers such as counts, normalized data, and scaled data |
 | `obsm_X_pca` | Cell-level PCA coordinates | `adata.obsm["X_pca"]` | PCA `DimReduc` cell embeddings |
 | `obsm_X_umap` | Cell-level UMAP coordinates | `adata.obsm["X_umap"]` | UMAP `DimReduc` cell embeddings |
 | `varm_PCs` | Gene loadings for PCA | `adata.varm["PCs"]` | PCA `DimReduc` feature loadings |
@@ -132,7 +132,7 @@ record is associated with a cell and a gene:
 ```text
 atlas_cell_id
 atlas_gene_id
-data
+data_count
 ```
 
 Only sparse records are stored directly. Expression values that are implicitly
@@ -155,31 +155,34 @@ streaming.
 
 ## Multiple Expression Representations
 
-Preprocessing functions can add new expression fields to `X_HyS_data` without
-overwriting the imported values.
+The imported count-scale expression values are stored in `X_HyS_data` as
+`data_count`. Preprocessing functions materialize additional expression
+representations in separate derived expression tables instead of overwriting the
+imported counts.
 
 Common fields include:
 
-| Expression field | Meaning |
+| Expression representation | Default storage |
 |---|---|
-| `data` | Expression values stored during import |
-| `data_normalize` | Library-size-normalized expression |
-| `data_log1p` | Log-transformed normalized expression, usually `ln(1 + x)` |
-| `data_scale` | Centered and standardized expression |
-| `data_sqrt` | Square-root-transformed expression |
+| `data_count` | `X_HyS_data.data_count` |
+| `data_normalize` | `X_HyS_data_data_normalize.data_normalize` |
+| `data_log1p` | `X_HyS_data_data_log1p.data_log1p` |
+| `data_scale` | `X_HyS_data_data_scale.data_scale` |
+| `data_sqrt` | `X_HyS_data_data_sqrt.data_sqrt` |
 
-For example, one sparse record may contain several representations:
+Derived expression tables use the same sparse coordinate identity as the count
+table:
 
 ```text
-atlas_cell_id | atlas_gene_id | data | data_normalize | data_log1p | data_scale
+id | atlas_cell_id | atlas_gene_id | data_log1p
 ```
 
-This allows raw or count-scale values, normalized values, and transformed
-values to coexist in the same Atlas.
+This allows count-scale values, normalized values, and transformed values to
+coexist in the same Atlas while keeping each representation explicit.
 
 The appropriate field depends on the downstream analysis:
 
-- count-based models may require `data`;
+- count-based models may require `data_count`;
 - exploratory analysis and marker visualization commonly use `data_log1p`;
 - PCA or model training may use `data_log1p` or `data_scale`, depending on
   whether genes should retain variance-dependent weighting or be standardized.
@@ -285,11 +288,13 @@ The main relationships in an Atlas can be summarized as:
 ```text
 obs.atlas_cell_id
     ├── X_HyS_data.atlas_cell_id
+    ├── X_HyS_data_<field>.atlas_cell_id
     ├── X_HyS_indptr.atlas_cell_id
     └── obsm_*.atlas_cell_id
 
 var.atlas_gene_id
     ├── X_HyS_data.atlas_gene_id
+    ├── X_HyS_data_<field>.atlas_gene_id
     └── varm_*.atlas_gene_id
 ```
 
@@ -370,4 +375,4 @@ documented public interfaces.
 - {doc}`../api/atlas` documents the public interfaces for Atlas inspection,
   querying, and data access.
 - {doc}`../api/preprocessing` documents the functions that create metadata and
-  expression fields.
+  derived expression tables.

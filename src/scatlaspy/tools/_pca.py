@@ -61,7 +61,7 @@ class StreamingPCA:
     # Initialize
     def __init__(self,
                  n_components: int = 30,
-                 fit_batches: int = 1000,
+                 fit_batches: int = 200,
                  buffer_batch_num: int = 5,
                  batch_size: int = 2048,
                  ):
@@ -698,7 +698,7 @@ class StreamingPCA:
 def pca(
     atlas: Atlas,
     n_components: int = 50,
-    fit_batches: int = 1000,
+    fit_batches: int = 200,
     batch_size: int = 2048,
 ) -> None:
     """Calculate PCA based on the Atlas expression matrix.
