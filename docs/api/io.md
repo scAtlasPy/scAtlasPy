@@ -113,6 +113,9 @@ atlas.rename_duplicated_genes()
 
    io.get_obs_df
    io.get_var_df
+   io.get_obsm_df
+   io.get_varm_df
+   io.get_uns_df
    io.get_anndata
    io.write_h5ad
 ```
@@ -121,6 +124,9 @@ atlas.rename_duplicated_genes()
 |---|---|
 | Retrieve cell metadata as a pandas DataFrame | `atlas.get_obs_df()` |
 | Retrieve gene metadata as a pandas DataFrame | `atlas.get_var_df()` |
+| Retrieve cell embeddings or multidimensional results | `atlas.get_obsm_df(...)` |
+| Retrieve gene loadings or multidimensional results | `atlas.get_varm_df(...)` |
+| Retrieve unstructured analysis result tables | `atlas.get_uns_df(...)` |
 | Create an in-memory AnnData object | `atlas.get_anndata(...)` |
 | Write Atlas data to an h5ad file | `atlas.write_h5ad(path)` |
 
@@ -149,6 +155,62 @@ var = atlas.get_var_df(
         "atlas_gene_name",
         "highly_variable_genes",
     ]
+)
+```
+
+### Retrieve Cell Embeddings
+
+Use `get_obsm_df()` to retrieve stored cell-level multidimensional results,
+such as PCA or UMAP coordinates:
+
+```python
+pca = atlas.get_obsm_df(
+    "obsm_X_pca",
+    columns=["pc0", "pc1", "pc2"],
+)
+
+umap = atlas.get_obsm_df(
+    "obsm_X_umap",
+    atlas_cell_id=[10, 2, 7],
+    columns=["umap1", "umap2"],
+)
+```
+
+When `atlas_cell_id` is provided, the returned rows follow the same order as the
+input IDs. When it is `None`, all rows are returned ordered by `atlas_cell_id`.
+
+### Retrieve Gene-Level Multidimensional Results
+
+Use `get_varm_df()` to retrieve stored gene-level multidimensional results,
+such as PCA loadings:
+
+```python
+pcs = atlas.get_varm_df(
+    "varm_PCs",
+    columns=["pc0", "pc1", "pc2"],
+)
+
+pcs_subset = atlas.get_varm_df(
+    "varm_PCs",
+    atlas_gene_id=[10, 2, 7],
+    columns=["pc0", "pc1"],
+)
+```
+
+When `atlas_gene_id` is provided, the returned rows follow the same order as the
+input IDs. When it is `None`, all rows are returned ordered by `atlas_gene_id`.
+
+### Retrieve Unstructured Analysis Results
+
+Use `get_uns_df()` to retrieve stored unstructured result tables, such as PCA
+statistics or UMAP parameters:
+
+```python
+pca_stats = atlas.get_uns_df("uns_pca_stats")
+
+umap_params = atlas.get_uns_df(
+    "uns_umap_params",
+    columns=["param_name", "param_value"],
 )
 ```
 
@@ -206,6 +268,9 @@ The following forms are equivalent:
 | `atlas.load_multi_format(path)` | `sap.io.load_multi_format(path, atlas)` |
 | `atlas.get_obs_df()` | `sap.io.get_obs_df(atlas)` |
 | `atlas.get_var_df()` | `sap.io.get_var_df(atlas)` |
+| `atlas.get_obsm_df(table_name)` | `sap.io.get_obsm_df(atlas, table_name)` |
+| `atlas.get_varm_df(table_name)` | `sap.io.get_varm_df(atlas, table_name)` |
+| `atlas.get_uns_df(table_name)` | `sap.io.get_uns_df(atlas, table_name)` |
 | `atlas.get_anndata(cell_ids)` | `sap.io.get_anndata(atlas, cell_ids)` |
 | `atlas.write_h5ad(path)` | `sap.io.write_h5ad(atlas, path)` |
 | `atlas.rename_duplicated_genes()` | `sap.io.rename_duplicated_genes(atlas)` |

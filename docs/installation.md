@@ -81,6 +81,16 @@ available hardware and CUDA configuration.
 The documentation for each optional workflow identifies any additional
 dependencies that are required.
 
+For ParametricUMAP support, install the parametric extra:
+
+```bash
+pip install "scatlaspy[parametric]"
+```
+
+On Linux, this extra includes TensorFlow with its CUDA runtime dependencies
+through `tensorflow[and-cuda]`, so TensorFlow can use compatible NVIDIA GPUs
+when drivers are available.
+
 (install-from-source)=
 ## Install from Source
 

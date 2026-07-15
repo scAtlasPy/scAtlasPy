@@ -11,6 +11,9 @@ from ._output import (
     write_h5ad,
     get_obs_df,
     get_var_df,
+    get_obsm_df,
+    get_varm_df,
+    get_uns_df,
     get_anndata,
 )
 
@@ -25,5 +28,8 @@ __all__ = [
     "write_h5ad",
     "get_obs_df",
     "get_var_df",
+    "get_obsm_df",
+    "get_varm_df",
+    "get_uns_df",
     "get_anndata",
 ]

@@ -15,7 +15,10 @@ from ..io import (
     rename_duplicated_genes as _io_rename_duplicated_genes,
     get_anndata as _io_get_anndata,
     get_obs_df as _io_get_obs_df,
+    get_obsm_df as _io_get_obsm_df,
     get_var_df as _io_get_var_df,
+    get_varm_df as _io_get_varm_df,
+    get_uns_df as _io_get_uns_df,
     load_anndata as _io_load_anndata,
     load_h5ad as _io_load_h5ad,
     load_multi_format as _io_load_multi_format,
@@ -360,6 +363,39 @@ class Atlas:
             logger.info(f"Database file already exists: {self.file_path}; connection created")
 
         logger.info("Atlas instance initialized")
+
+    def __enter__(self) -> "Atlas":
+        """Return the Atlas object when used as a context manager.
+
+        This enables ``with``-style usage while keeping explicit ``close()``
+        calls available for users who prefer manual connection management.
+
+        Examples
+        --------
+        Use Atlas in a context manager::
+
+            with sap.Atlas("./data/pbmc") as atlas:
+                atlas.describe()
+        """
+
+        return self
+
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        """Close the Atlas connection when leaving a context manager."""
+
+        self.close()
+
+
+    def __del__(self) -> None:
+        """Best-effort cleanup for an Atlas object that was not closed explicitly."""
+
+        try:
+            self.close()
+        except Exception:
+            # Destructors may run during interpreter shutdown, when modules,
+            # loggers, or DuckDB internals are already partially finalized.
+            pass
 
 
     @staticmethod
@@ -1887,6 +1923,161 @@ class Atlas:
         """
 
         return _io_get_var_df(self, columns=columns)
+
+    def get_obsm_df(
+        self,
+        table_name: str,
+        atlas_cell_id: list[int] | np.ndarray | pd.Series | None = None,
+        columns: list[str] | str | None = None,
+    ) -> pd.DataFrame:
+
+        """Read an ``obsm_*`` table from the Atlas database.
+
+        This function reads cell-level multidimensional results, such as
+        ``obsm_X_pca`` or ``obsm_X_umap``, into a pandas DataFrame. The returned
+        result uses ``atlas_cell_id`` as the pandas index while also preserving
+        the ``atlas_cell_id`` column itself.
+
+        Parameters
+        ----------
+        table_name
+            Name of the ``obsm_*`` table to read, for example ``"obsm_X_pca"``
+            or ``"obsm_X_umap"``.
+        atlas_cell_id
+            Optional Atlas cell IDs to select. If ``None``, all rows in the
+            table are returned ordered by ``atlas_cell_id``. If a list or array
+            is passed, the output follows the order of the provided IDs.
+        columns
+            Value columns to read from the ``obsm_*`` table. This can be a
+            single string, a list of strings, or ``None``. If ``None``, all
+            columns are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Query result indexed by ``atlas_cell_id``.
+
+        Examples
+        --------
+        Read all PCA coordinates::
+
+            pca = atlas.get_obsm_df("obsm_X_pca")
+
+        Read selected UMAP coordinates in a specific cell order::
+
+            umap = atlas.get_obsm_df(
+                "obsm_X_umap",
+                atlas_cell_id=[10, 2, 7],
+                columns=["umap1", "umap2"],
+            )
+        """
+
+        return _io_get_obsm_df(
+            self,
+            table_name=table_name,
+            atlas_cell_id=atlas_cell_id,
+            columns=columns,
+        )
+
+    def get_varm_df(
+        self,
+        table_name: str,
+        atlas_gene_id: list[int] | np.ndarray | pd.Series | None = None,
+        columns: list[str] | str | None = None,
+    ) -> pd.DataFrame:
+
+        """Read a ``varm_*`` table from the Atlas database.
+
+        This function reads gene-level multidimensional results, such as
+        ``varm_PCs``, into a pandas DataFrame. The returned result uses
+        ``atlas_gene_id`` as the pandas index while also preserving the
+        ``atlas_gene_id`` column itself.
+
+        Parameters
+        ----------
+        table_name
+            Name of the ``varm_*`` table to read, for example ``"varm_PCs"``.
+        atlas_gene_id
+            Optional Atlas gene IDs to select. If ``None``, all rows in the
+            table are returned ordered by ``atlas_gene_id``. If a list or array
+            is passed, the output follows the order of the provided IDs.
+        columns
+            Value columns to read from the ``varm_*`` table. This can be a
+            single string, a list of strings, or ``None``. If ``None``, all
+            columns are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Query result indexed by ``atlas_gene_id``.
+
+        Examples
+        --------
+        Read all PCA loadings::
+
+            pcs = atlas.get_varm_df("varm_PCs")
+
+        Read selected PCs in a specific gene order::
+
+            pcs = atlas.get_varm_df(
+                "varm_PCs",
+                atlas_gene_id=[10, 2, 7],
+                columns=["pc0", "pc1"],
+            )
+        """
+
+        return _io_get_varm_df(
+            self,
+            table_name=table_name,
+            atlas_gene_id=atlas_gene_id,
+            columns=columns,
+        )
+
+    def get_uns_df(
+        self,
+        table_name: str,
+        columns: list[str] | str | None = None,
+    ) -> pd.DataFrame:
+
+        """Read an ``uns_*`` table from the Atlas database.
+
+        This function reads unstructured analysis result tables, such as
+        ``uns_pca_stats`` or ``uns_umap_params``, into a pandas DataFrame.
+
+        Parameters
+        ----------
+        table_name
+            Name of the ``uns_*`` table to read, for example
+            ``"uns_pca_stats"``.
+        columns
+            Columns to read from the ``uns_*`` table. This can be a single
+            string, a list of strings, or ``None``. If ``None``, all columns
+            are read.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Query result from the requested ``uns_*`` table.
+
+        Examples
+        --------
+        Read PCA explained-variance statistics::
+
+            pca_stats = atlas.get_uns_df("uns_pca_stats")
+
+        Read stored UMAP parameters::
+
+            umap_params = atlas.get_uns_df(
+                "uns_umap_params",
+                columns=["param_name", "param_value"],
+            )
+        """
+
+        return _io_get_uns_df(
+            self,
+            table_name=table_name,
+            columns=columns,
+        )
 
     def get_anndata(
         self,

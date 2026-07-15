@@ -524,6 +524,383 @@ def get_var_df(
     return df
 
 
+def get_obsm_df(
+    atlas: Atlas,
+    table_name: str,
+    atlas_cell_id: list[int] | np.ndarray | pd.Series | None = None,
+    columns: list[str] | str | None = None,
+) -> pd.DataFrame:
+    """Read an ``obsm_*`` table from the Atlas database.
+
+    This function reads cell-level multidimensional results, such as
+    ``obsm_X_pca`` or ``obsm_X_umap``, into a pandas DataFrame. The returned
+    result uses ``atlas_cell_id`` as the pandas index while also preserving the
+    ``atlas_cell_id`` column itself.
+
+    Parameters
+    ----------
+    atlas
+        Atlas object. The object must already be connected to a DuckDB database.
+    table_name
+        Name of the ``obsm_*`` table to read, for example ``"obsm_X_pca"`` or
+        ``"obsm_X_umap"``.
+    atlas_cell_id
+        Optional Atlas cell IDs to select. If ``None``, all rows in the table
+        are returned ordered by ``atlas_cell_id``. If a list or array is passed,
+        the output follows the order of the provided IDs.
+    columns
+        Value columns to read from the ``obsm_*`` table. This can be a single
+        string, a list of strings, or ``None``. If ``None``, all columns are
+        read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Query result indexed by ``atlas_cell_id``.
+
+    Examples
+    --------
+    Read all PCA coordinates::
+
+        pca = atlas.get_obsm_df("obsm_X_pca")
+
+    Read selected UMAP coordinates in a specific cell order::
+
+        umap = atlas.get_obsm_df(
+            "obsm_X_umap",
+            atlas_cell_id=[10, 2, 7],
+            columns=["umap1", "umap2"],
+        )
+    """
+
+    start_time = datetime.now()
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection is None. Please connect to the database first")
+
+    if not isinstance(table_name, str) or not table_name:
+        raise ValueError("table_name must be a non-empty string")
+
+    if not table_name.startswith("obsm_"):
+        raise ValueError(f"table_name must start with 'obsm_': {table_name}")
+
+    table_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = ?
+    """, [table_name]).fetchone()[0]
+
+    if table_exists == 0:
+        raise ValueError(f"The {table_name} table does not exist in the database")
+
+    table_columns = [
+        row[0]
+        for row in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = ?
+            ORDER BY ordinal_position
+        """, [table_name]).fetchall()
+    ]
+
+    if "atlas_cell_id" not in table_columns:
+        raise ValueError(
+            f"The atlas_cell_id field does not exist in the {table_name} table, "
+            "so the pandas index cannot be set"
+        )
+
+    if columns is None:
+        select_columns = table_columns
+    else:
+        if isinstance(columns, str):
+            columns = [columns]
+
+        missing = [c for c in columns if c not in table_columns]
+        if missing:
+            raise ValueError(f"These fields do not exist in the {table_name} table: {missing}")
+
+        select_columns = ["atlas_cell_id"] + [
+            c for c in columns
+            if c != "atlas_cell_id"
+        ]
+
+    select_sql = ", ".join([f't."{c}"' for c in select_columns])
+    table_sql = '"' + table_name.replace('"', '""') + '"'
+
+    if atlas_cell_id is None:
+        df = conn.execute(f"""
+            SELECT {select_sql}
+            FROM {table_sql} AS t
+            ORDER BY t.atlas_cell_id
+        """).df()
+    else:
+        cell_ids = [int(x) for x in list(atlas_cell_id)]
+
+        if len(cell_ids) == 0:
+            raise ValueError("atlas_cell_id cannot be empty")
+
+        if len(cell_ids) != len(set(cell_ids)):
+            raise ValueError("Duplicate values exist in atlas_cell_id. Please deduplicate them first")
+
+        selected = pd.DataFrame(
+            {
+                "atlas_cell_id": np.asarray(cell_ids, dtype=np.int64),
+                "_order": np.arange(len(cell_ids), dtype=np.int64),
+            }
+        )
+        conn.register("_selected_obsm_cells", selected)
+        try:
+            df = conn.execute(f"""
+                SELECT {select_sql}
+                FROM _selected_obsm_cells AS s
+                LEFT JOIN {table_sql} AS t
+                  ON s.atlas_cell_id = t.atlas_cell_id
+                ORDER BY s._order
+            """).df()
+        finally:
+            conn.unregister("_selected_obsm_cells")
+
+    logger.info(f" get_obsm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+
+    return df.set_index("atlas_cell_id", drop=False)
+
+
+def get_varm_df(
+    atlas: Atlas,
+    table_name: str,
+    atlas_gene_id: list[int] | np.ndarray | pd.Series | None = None,
+    columns: list[str] | str | None = None,
+) -> pd.DataFrame:
+    """Read a ``varm_*`` table from the Atlas database.
+
+    This function reads gene-level multidimensional results, such as
+    ``varm_PCs``, into a pandas DataFrame. The returned result uses
+    ``atlas_gene_id`` as the pandas index while also preserving the
+    ``atlas_gene_id`` column itself.
+
+    Parameters
+    ----------
+    atlas
+        Atlas object. The object must already be connected to a DuckDB database.
+    table_name
+        Name of the ``varm_*`` table to read, for example ``"varm_PCs"``.
+    atlas_gene_id
+        Optional Atlas gene IDs to select. If ``None``, all rows in the table
+        are returned ordered by ``atlas_gene_id``. If a list or array is passed,
+        the output follows the order of the provided IDs.
+    columns
+        Value columns to read from the ``varm_*`` table. This can be a single
+        string, a list of strings, or ``None``. If ``None``, all columns are
+        read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Query result indexed by ``atlas_gene_id``.
+
+    Examples
+    --------
+    Read all PCA loadings::
+
+        pcs = atlas.get_varm_df("varm_PCs")
+
+    Read selected PCs in a specific gene order::
+
+        pcs = atlas.get_varm_df(
+            "varm_PCs",
+            atlas_gene_id=[10, 2, 7],
+            columns=["pc0", "pc1"],
+        )
+    """
+
+    start_time = datetime.now()
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection is None. Please connect to the database first")
+
+    if not isinstance(table_name, str) or not table_name:
+        raise ValueError("table_name must be a non-empty string")
+
+    if not table_name.startswith("varm_"):
+        raise ValueError(f"table_name must start with 'varm_': {table_name}")
+
+    table_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = ?
+    """, [table_name]).fetchone()[0]
+
+    if table_exists == 0:
+        raise ValueError(f"The {table_name} table does not exist in the database")
+
+    table_columns = [
+        row[0]
+        for row in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = ?
+            ORDER BY ordinal_position
+        """, [table_name]).fetchall()
+    ]
+
+    if "atlas_gene_id" not in table_columns:
+        raise ValueError(
+            f"The atlas_gene_id field does not exist in the {table_name} table, "
+            "so the pandas index cannot be set"
+        )
+
+    if columns is None:
+        select_columns = table_columns
+    else:
+        if isinstance(columns, str):
+            columns = [columns]
+
+        missing = [c for c in columns if c not in table_columns]
+        if missing:
+            raise ValueError(f"These fields do not exist in the {table_name} table: {missing}")
+
+        select_columns = ["atlas_gene_id"] + [
+            c for c in columns
+            if c != "atlas_gene_id"
+        ]
+
+    select_sql = ", ".join([f't."{c}"' for c in select_columns])
+    table_sql = '"' + table_name.replace('"', '""') + '"'
+
+    if atlas_gene_id is None:
+        df = conn.execute(f"""
+            SELECT {select_sql}
+            FROM {table_sql} AS t
+            ORDER BY t.atlas_gene_id
+        """).df()
+    else:
+        gene_ids = [int(x) for x in list(atlas_gene_id)]
+
+        if len(gene_ids) == 0:
+            raise ValueError("atlas_gene_id cannot be empty")
+
+        if len(gene_ids) != len(set(gene_ids)):
+            raise ValueError("Duplicate values exist in atlas_gene_id. Please deduplicate them first")
+
+        selected = pd.DataFrame(
+            {
+                "atlas_gene_id": np.asarray(gene_ids, dtype=np.int64),
+                "_order": np.arange(len(gene_ids), dtype=np.int64),
+            }
+        )
+        conn.register("_selected_varm_genes", selected)
+        try:
+            df = conn.execute(f"""
+                SELECT {select_sql}
+                FROM _selected_varm_genes AS s
+                LEFT JOIN {table_sql} AS t
+                  ON s.atlas_gene_id = t.atlas_gene_id
+                ORDER BY s._order
+            """).df()
+        finally:
+            conn.unregister("_selected_varm_genes")
+
+    logger.info(f" get_varm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+
+    return df.set_index("atlas_gene_id", drop=False)
+
+
+def get_uns_df(
+    atlas: Atlas,
+    table_name: str,
+    columns: list[str] | str | None = None,
+) -> pd.DataFrame:
+    """Read an ``uns_*`` table from the Atlas database.
+
+    This function reads unstructured analysis result tables, such as
+    ``uns_pca_stats`` or ``uns_umap_params``, into a pandas DataFrame.
+
+    Parameters
+    ----------
+    atlas
+        Atlas object. The object must already be connected to a DuckDB database.
+    table_name
+        Name of the ``uns_*`` table to read, for example ``"uns_pca_stats"``.
+    columns
+        Columns to read from the ``uns_*`` table. This can be a single string,
+        a list of strings, or ``None``. If ``None``, all columns are read.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Query result from the requested ``uns_*`` table.
+
+    Examples
+    --------
+    Read PCA explained-variance statistics::
+
+        pca_stats = atlas.get_uns_df("uns_pca_stats")
+
+    Read stored UMAP parameters::
+
+        umap_params = atlas.get_uns_df(
+            "uns_umap_params",
+            columns=["param_name", "param_value"],
+        )
+    """
+
+    start_time = datetime.now()
+    conn = atlas.connection
+
+    if conn is None:
+        raise ValueError("atlas.connection is None. Please connect to the database first")
+
+    if not isinstance(table_name, str) or not table_name:
+        raise ValueError("table_name must be a non-empty string")
+
+    if not table_name.startswith("uns_"):
+        raise ValueError(f"table_name must start with 'uns_': {table_name}")
+
+    table_exists = conn.execute("""
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_name = ?
+    """, [table_name]).fetchone()[0]
+
+    if table_exists == 0:
+        raise ValueError(f"The {table_name} table does not exist in the database")
+
+    table_columns = [
+        row[0]
+        for row in conn.execute("""
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_name = ?
+            ORDER BY ordinal_position
+        """, [table_name]).fetchall()
+    ]
+
+    if columns is None:
+        select_columns = table_columns
+    else:
+        if isinstance(columns, str):
+            columns = [columns]
+
+        missing = [c for c in columns if c not in table_columns]
+        if missing:
+            raise ValueError(f"These fields do not exist in the {table_name} table: {missing}")
+
+        select_columns = list(columns)
+
+    select_sql = ", ".join([f'"{c}"' for c in select_columns])
+    table_sql = '"' + table_name.replace('"', '""') + '"'
+    df = conn.execute(f"""
+        SELECT {select_sql}
+        FROM {table_sql}
+    """).df()
+
+    logger.info(f" get_uns_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+
+    return df
+
+
 # Export a subset AnnData from DuckDB to memory according to an atlas_cell_id list
 def get_anndata(
     atlas: Atlas,

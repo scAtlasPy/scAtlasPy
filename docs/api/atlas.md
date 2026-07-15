@@ -55,6 +55,14 @@ Close the database connection when the Atlas is no longer needed:
 atlas.close()
 ```
 
+Atlas also supports context-manager usage. The connection is closed
+automatically when the `with` block exits:
+
+```python
+with sap.Atlas("run01") as atlas:
+    atlas.describe()
+```
+
 An existing `.sasql` Atlas can be reopened in a later Python session and used
 to continue the analysis.
 
@@ -176,6 +184,9 @@ other formats or in-memory objects.
    Atlas.write_h5ad
    Atlas.get_obs_df
    Atlas.get_var_df
+   Atlas.get_obsm_df
+   Atlas.get_varm_df
+   Atlas.get_uns_df
    Atlas.get_anndata
    Atlas.rename_duplicated_genes
 ```
@@ -202,6 +213,33 @@ var = atlas.get_var_df(
         "highly_variable_genes",
     ]
 )
+```
+
+Retrieve PCA or UMAP coordinates from stored `obsm_*` tables:
+
+```python
+pca = atlas.get_obsm_df("obsm_X_pca")
+
+umap = atlas.get_obsm_df(
+    "obsm_X_umap",
+    atlas_cell_id=[10, 2, 7],
+    columns=["umap1", "umap2"],
+)
+```
+
+Retrieve PCA loadings from stored `varm_*` tables:
+
+```python
+pcs = atlas.get_varm_df(
+    "varm_PCs",
+    columns=["pc0", "pc1", "pc2"],
+)
+```
+
+Retrieve PCA statistics or other unstructured result tables:
+
+```python
+pca_stats = atlas.get_uns_df("uns_pca_stats")
 ```
 
 Or create an in-memory AnnData object for a selected cell population:

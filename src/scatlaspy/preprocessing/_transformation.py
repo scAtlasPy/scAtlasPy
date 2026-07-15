@@ -78,6 +78,38 @@ def _expression_source_for_transform(conn: DuckDBPyConnection, data_name: str) -
     return f"X_HyS_data x JOIN {table_name} d ON x.id = d.id", f"d.{data_name}"
 
 
+def _write_expression_transform_meta(
+    conn: DuckDBPyConnection,
+    *,
+    data_name: str,
+    source_data: str,
+    transform: str,
+    centered: bool,
+) -> None:
+    """Record how a derived expression field was generated."""
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS atlas_expression_transform_meta (
+            data_name VARCHAR PRIMARY KEY,
+            source_data VARCHAR,
+            transform VARCHAR,
+            centered BOOLEAN
+        )
+    """)
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO atlas_expression_transform_meta (
+            data_name,
+            source_data,
+            transform,
+            centered
+        )
+        VALUES (?, ?, ?, ?)
+        """,
+        [data_name, source_data, transform, bool(centered)],
+    )
+
+
 def normalize_total(
     atlas: Atlas,
     target_sum: float = 10_000,
@@ -2128,6 +2160,13 @@ def scale(
     logger.info(
         f"scale table {scale_table} written, rows={n_scaled_rows:,}, "
         f"elapsed time: {(datetime.now() - t0).total_seconds():.2f} seconds"
+    )
+    _write_expression_transform_meta(
+        conn,
+        data_name=add_data,
+        source_data=use_data,
+        transform=f"scale:{mode}",
+        centered=mode in {"center_and_scale", "center_only"},
     )
 
     # 8. Memory cleanup
