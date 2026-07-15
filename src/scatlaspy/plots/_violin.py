@@ -309,13 +309,13 @@ def violin(
     )
     axes = axes.ravel()
 
-    # scanpy-like palette
-    scanpy_colors = [
+    # Default categorical palette
+    default_colors = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
         "#9467bd", "#8c564b", "#e377c2", "#bcbd22",
         "#17becf", "#7f7f7f", "#aec7e8", "#ffbb78"
     ]
-    color_map = {g: scanpy_colors[i % len(scanpy_colors)] for i, g in enumerate(group_labels)}
+    color_map = {g: default_colors[i % len(default_colors)] for i, g in enumerate(group_labels)}
 
     for ax, gene in zip(axes, genes):
         sub = plot_df[plot_df["gene"] == gene].copy()
@@ -779,7 +779,7 @@ def stacked_violin(
     ax.set_xticks(np.arange(n_genes))
     ax.set_xticklabels(genes, rotation=90, fontsize=font_size)
 
-    # Display y ticks from top to bottom in scanpy style
+    # Display y ticks from top to bottom
     y_tick_positions = [group_to_y[g] for g in group_labels]
     ax.set_yticks(y_tick_positions)
     ax.set_yticklabels(group_labels, fontsize=font_size)

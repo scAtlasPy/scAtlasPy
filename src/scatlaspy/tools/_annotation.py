@@ -14,12 +14,12 @@ def manual_annotate_clusters(
 ) -> pd.DataFrame | None:
     """Manually add cell-type annotations to clusters.
 
-    This function corresponds to the manual annotation step in the Scanpy PBMC3k workflow:
-    after inspecting marker genes, rank genes plots, and UMAP plots, the user manually specifies
-    the cell type name corresponding to each cluster, and these labels are written back to the ``obs`` table.
+    After inspecting marker genes, rank genes plots, and UMAP plots, the user
+    manually specifies the cell type name corresponding to each cluster, and
+    these labels are written back to the ``obs`` table.
 
     The function supports two input formats: one is an explicit dictionary that directly specifies the
-    cell type corresponding to each cluster ID; the other is a Scanpy-style ordered list, where labels are written
+    cell type corresponding to each cluster ID; the other is an ordered list, where labels are written
     sequentially according to the sorting order of the actual clusters in ``obs[groupby]``. At runtime, the function checks
     whether clusters exist, whether there are duplicates, and whether the list length is consistent with the number of clusters.
 
@@ -42,7 +42,7 @@ def manual_annotate_clusters(
             }
 
         If a list or tuple is passed, labels are assigned sequentially according to the sorting order of cluster IDs
-        in ``obs[groupby]``, similar to Scanpy's ``new_cluster_names`` usage.
+        in ``obs[groupby]``.
         For example::
 
             [
@@ -113,7 +113,7 @@ def manual_annotate_clusters(
             obs_col="cell_type_manual",
         )
 
-    Use a Scanpy-style ordered list for manual annotation::
+    Use an ordered list for manual annotation::
 
         new_cluster_names = [
             "CD4 T cells",

@@ -24,7 +24,10 @@ genes, and expression representation with `atlas.build_read_index()`.
 ```
 
 `pca()` calculates a low-dimensional representation of the active read-index
-view.
+view with scAtlasPy's streaming randomized PCA backend. It scans dense
+minibatches from the Atlas, accumulates the compact randomized PCA statistics,
+and writes the final embedding back without materializing the full
+cell-by-gene matrix.
 
 Common stored outputs include:
 
@@ -47,6 +50,16 @@ sap.tl.pca(
     n_components=30,
 )
 ```
+
+Accuracy and runtime are mainly controlled by `oversample` and `n_iter`.
+The defaults are tuned for atlas-scale use:
+
+| Parameter | Description |
+|---|---|
+| `n_components` | Number of PCA dimensions to write. Default ``30``. |
+| `batch_size` | Number of cells per dense minibatch. Default ``2048``. |
+| `oversample` | Extra randomized projection dimensions. Default ``200``. |
+| `n_iter` | Number of covariance subspace iterations. Default ``2``. |
 
 ```{important}
 The active read index determines which cells, genes, feature order, and
@@ -108,8 +121,9 @@ sap.tl.kmeans(
    tl.umap
 ```
 
-`umap()` calculates a two-dimensional visualization from the available
-low-dimensional representation.
+`umap()` calculates a two-dimensional visualization from stored PCA
+coordinates. The current implementation fits a parameterized UMAP model on a
+sampled subset, then predicts coordinates for the full Atlas in batches.
 
 The resulting cell coordinates are commonly stored in:
 
@@ -122,6 +136,9 @@ Example:
 ```python
 sap.tl.umap(atlas)
 ```
+
+For large datasets, set `fit_sample_n` to control the training subset and
+`transform_batch_size` to control full-atlas prediction batches.
 
 The stored coordinates can be visualized with:
 

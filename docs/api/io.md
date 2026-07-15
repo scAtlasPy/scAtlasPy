@@ -53,6 +53,28 @@ Use the same `load_type` for single or multiple files — the code automatically
 Consult {meth}`scatlaspy.io.load_h5ad` for the complete parameters, defaults,
 and supported combinations.
 
+### Cell and Gene Names
+
+By default, `load_h5ad()` uses the AnnData indices as Atlas names:
+
+- `adata.obs_names` becomes `obs.atlas_cell_name`;
+- `adata.var_names` becomes `var.atlas_gene_name`.
+
+Some datasets store the preferred cell or gene names in metadata columns
+instead. In that case, pass the column names explicitly:
+
+```python
+atlas.load_h5ad(
+    "input.h5ad",
+    cell_name_col="cell_barcode",
+    gene_name_col="gene_symbol",
+)
+```
+
+If either column name is provided, it must exist in the corresponding
+`adata.obs` or `adata.var` table. Otherwise, `load_h5ad()` raises a clear
+error rather than silently falling back to the index.
+
 ## Check Gene Names
 
 ```{eval-rst}

@@ -267,8 +267,8 @@ class ShuffleBuffer:
         database and reduces memory usage as much as possible through SQL, chunked
         reading, or streaming computation.
 
-        The overall usage is similar to Scanpy-style ``sap.flush_remaining`` APIs, but
-        the results are stored in Atlas database tables for reuse in subsequent steps.
+        The function flushes any buffered minibatches that were not emitted by a
+        full buffer cycle.
 
         Returns
         -------
@@ -1070,8 +1070,8 @@ class MultiThreadedMinibatchFetcher:
         database and reduces memory usage as much as possible through SQL, chunked
         reading, or streaming computation.
 
-        The overall usage is similar to Scanpy-style ``sap.run`` APIs, but the results
-        are stored in Atlas database tables for reuse in subsequent steps.
+        The function yields minibatches restored from Atlas database tables for
+        reuse in downstream steps.
 
         Yields
         -------

@@ -33,8 +33,7 @@ atlas.load_h5ad("pbmc.h5ad", load_type="random")
 sap.pp.calculate_qc_metrics(atlas)
 sap.pp.filter_cells(atlas, min_genes=200)
 sap.pp.filter_genes(atlas, min_cells=3)
-sap.pp.normalize_total(atlas)
-sap.pp.log1p(atlas)
+sap.pp.normalize_and_log1p(atlas)
 sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
 
 # Prepare the default analysis view: filtered cells, filtered HVGs, and log1p data.

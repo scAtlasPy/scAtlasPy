@@ -9,6 +9,7 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
+from ._utils import default_point_size
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
@@ -51,12 +52,6 @@ DEFAULT_DISCRETE_PALETTES = (
 _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
-def _default_point_size(n_points: int) -> float:
-    """Estimate UMAP point size using Scanpy's default rule."""
-
-    return 120_000 / max(int(n_points), 1)
-
-
 def umap(
     atlas: Atlas,
     color: str | list[str] = "kmeans",
@@ -90,8 +85,8 @@ def umap(
     ``color`` can be a field in the ``obs`` table or a gene name in ``var.atlas_gene_name``;
     when a list contains both obs fields and gene names, the mixed multi-panel plotting logic is used automatically.
 
-    This plot is similar to Scanpy ``sc.pl.umap`` and is commonly used to inspect clustering, cell type annotations, QC metrics, or
-    the distribution of marker gene expression in UMAP space.
+    This plot is commonly used to inspect clustering, cell type annotations, QC metrics,
+    or the distribution of marker gene expression in UMAP space.
 
     Parameters
     ----------
@@ -119,7 +114,7 @@ def umap(
 
     point_size
         Scatter point size. If ``None``, the size is estimated as
-        ``120_000 / n_plotted_cells``, following Scanpy's default behavior.
+        ``120_000 / n_plotted_cells``.
 
     alpha
         Transparency of graphical elements.
@@ -465,7 +460,7 @@ def _plot_umap_obs(
         raise ValueError("No cells are available for plotting after filtering")
 
     if point_size is None:
-        point_size = _default_point_size(len(plot_df))
+        point_size = default_point_size(len(plot_df))
 
     # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
@@ -706,7 +701,7 @@ def _draw_umap_obs_streaming(
     """).fetchone()[0]
 
     if point_size is None:
-        point_size = _default_point_size(total_points)
+        point_size = default_point_size(total_points)
 
     # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
@@ -1054,7 +1049,7 @@ def _plot_umap_features(
         raise ValueError("No cells are available for plotting after filtering / sampling")
 
     if point_size is None:
-        point_size = _default_point_size(len(umap_df))
+        point_size = default_point_size(len(umap_df))
 
     # Query gene_id
     gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
@@ -1257,7 +1252,7 @@ def _plot_umap_mixed(
     This internal function supports cases where ``obs`` categorical variables and
     gene feature variables are passed to ``sap.pl.umap`` at the same time, such as ``color=["kmeans", "CD14", "NKG7"]``.
     The function draws different types of coloring variables into the same Figure, with each variable corresponding to
-    an independent subplot, thereby achieving a multi-panel display effect similar to Scanpy ``sc.pl.umap``.
+    an independent subplot, thereby producing a multi-panel UMAP display.
 
     Specifically, variables in ``obs_colors`` are plotted as discrete categorical variables,
     using the unified discrete color pool and legends; variables in ``gene_colors`` are plotted as continuous expression values
@@ -1266,7 +1261,7 @@ def _plot_umap_mixed(
 
     This function does not overlay category labels and gene expression values on the same axes; instead, it places them
     in different panels of the same Figure. This avoids conflicts between discrete and continuous color
-    mappings while maintaining a display style similar to Scanpy multi-variable UMAP visualization.
+    mappings while keeping categorical and continuous variables visually separate.
 
     Parameters
     ----------
@@ -1442,7 +1437,7 @@ def _plot_umap_mixed(
         raise ValueError("No cells are available for plotting after filtering / sampling")
 
     if point_size is None:
-        point_size = _default_point_size(len(umap_df))
+        point_size = default_point_size(len(umap_df))
 
     # -----------------------------------------------------
     # 3. Read gene expression

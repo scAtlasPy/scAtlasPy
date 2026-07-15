@@ -387,8 +387,8 @@ def pca(
     - ``varm_PCs``: gene PCA loadings;
     - ``uns_pca_stats``: PCA variance and variance explanation ratios.
 
-    This workflow is similar to Scanpy's ``sc.tl.pca``, but to support large-scale
-    data, both training and projection are completed through minibatch chunks.
+    To support large-scale data, both training and projection are completed
+    through minibatch chunks.
 
     Parameters
     ----------

@@ -7,6 +7,7 @@ from datetime import datetime
 from os import PathLike
 import re
 from typing import Any
+from ._utils import default_point_size
 
 
 # =====================================================
@@ -56,7 +57,7 @@ def pca(
     sample_n: int | None = None,
     use_data: str = "data_log1p",
     figsize: tuple[float, float] | None=(6, 5),
-    point_size: float = 12,
+    point_size: float | None = None,
     alpha: float = 0.8,
     cmap: str = "viridis",
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -75,9 +76,8 @@ def pca(
     latter reads the expression value of that gene from the resolved ``use_data``
     expression source and colors points with a continuous colorbar.
 
-    This plot is similar to Scanpy ``sc.pl.pca`` and is commonly used to inspect PCA
-    dimensionality reduction results, batch effects, QC metrics, or the distribution
-    of marker genes in PCA space.
+    This plot is commonly used to inspect PCA dimensionality reduction results,
+    batch effects, QC metrics, or the distribution of marker genes in PCA space.
 
     Parameters
     ----------
@@ -112,7 +112,8 @@ def pca(
         Matplotlib figure size.
 
     point_size
-        Scatter point size.
+        Scatter point size. If ``None``, the size is estimated as
+        ``120_000 / n_plotted_cells``.
 
     alpha
         Transparency of graphical elements.
@@ -258,6 +259,8 @@ def pca(
         raise ValueError("The PCA sampling result is empty, unable to plot")
 
     plot_df = pca_df.copy()
+    if point_size is None:
+        point_size = default_point_size(len(plot_df))
 
     color_kind = None
 
@@ -446,7 +449,7 @@ def pca(
                 palette=palette,
             )
 
-            # Plot by category group, Scanpy-style legend
+            # Plot by category group
             for cat in cats:
                 mask = values == cat
 
@@ -533,7 +536,7 @@ def pca(
                     "legend_loc only supports 'right_margin', 'on_data', or None"
                 )
 
-    # Scanpy-style refinement
+    # Plot style refinement
     ax.set_xlabel(x_label, fontsize=14)
     ax.set_ylabel(y_label, fontsize=14)
 
@@ -542,7 +545,7 @@ def pca(
     else:
         ax.set_title(str(color), fontsize=14, pad=8)
 
-    # Closer to Scanpy: do not draw grid by default
+    # Do not draw a grid by default.
     ax.grid(False)
 
     if frameon:
@@ -596,8 +599,8 @@ def pca_variance_ratio(
     """Plot the variance explained ratio of each PCA component.
 
     This function reads ``variance_ratio`` for each principal component from the
-    ``uns_pca_stats`` table and plots it in a style similar to Scanpy
-    ``sc.pl.pca_variance_ratio``:
+    ``uns_pca_stats`` table and plots the variance explained by each principal
+    component:
     the x-axis is the principal component ranking, the y-axis is the variance
     explained ratio, and each PC is labeled with vertical text.
 
@@ -656,7 +659,7 @@ def pca_variance_ratio(
         raise ValueError("uns_pca_stats is empty. Please run PCA before plotting.")
 
     # 2. Prepare data
-    # Scanpy style: the x-axis is ranking, starting from 0
+    # The x-axis is ranking, starting from 0
     x = np.arange(df.shape[0])
     y = df["variance_ratio"].to_numpy(dtype=float)
 
@@ -681,7 +684,7 @@ def pca_variance_ratio(
             clip_on=False,
         )
 
-    # 5. Axis style, as close to Scanpy as possible
+    # 5. Axis style
     ax.set_title("variance ratio", fontsize=18, pad=8)
     ax.set_xlabel("ranking", fontsize=18)
     ax.set_ylabel("")
@@ -689,7 +692,7 @@ def pca_variance_ratio(
     # Show ranking on the x-axis
     ax.set_xlim(-0.8, len(x) - 0.2)
 
-    # Try to include tick 20 on the right side, close to the Scanpy example
+    # Try to include tick 20 on the right side when enough PCs are shown.
     if len(x) <= 20:
         ax.set_xticks(np.arange(0, len(x) + 1, 5))
     else:
@@ -713,7 +716,7 @@ def pca_variance_ratio(
             y_max * 1.20,
         )
 
-    # Grid and border: Scanpy plots have a grid and a full border
+    # Draw a grid and full border for variance-ratio diagnostics.
     ax.grid(True, color="#cccccc", linewidth=0.8, alpha=0.9)
 
     for spine in ax.spines.values():
@@ -823,7 +826,7 @@ def pca_variance_ratio_cumsum(
 
     # 3. Prepare plotting data
     # pc_index in the database usually starts from 0;
-    # in Scanpy-style plots, it is usually displayed as PC1, PC2, PC3...
+    # Display components as PC1, PC2, PC3...
     x = df["pc_index"].to_numpy() + 1
 
     # Variance explained ratio of each PC
@@ -882,10 +885,9 @@ def pca_loadings(
     for each PC. When ``include_lowest=True``, the lowest-loading side is also shown,
     which helps identify which genes drive the positive and negative directions.
 
-    This plot is similar to ``scanpy.pl.pca_loadings`` and is commonly used to
-    interpret the biological meaning of PCA axes, such as whether a principal component
-    is dominated by specific markers, mitochondrial genes, ribosomal genes, or
-    batch-related genes.
+    This plot is commonly used to interpret the biological meaning of PCA axes, such
+    as whether a principal component is dominated by specific markers, mitochondrial
+    genes, ribosomal genes, or batch-related genes.
 
     Parameters
     ----------
@@ -895,8 +897,8 @@ def pca_loadings(
         ``atlas_gene_name``, gene names are preferentially displayed in the plot.
 
     components
-        Principal component numbers to display. Note that, as in Scanpy, this is
-        1-based. For example, ``components=(1, 2)`` means PC1 and PC2.
+        Principal component numbers to display. This argument is 1-based. For example,
+        ``components=(1, 2)`` means PC1 and PC2.
 
     n_genes
         Number of genes to display on each side.
@@ -972,7 +974,7 @@ def pca_loadings(
 
     for comp in components:
         if comp < 1:
-            raise ValueError("components uses Scanpy-style numbering and must start from 1; for example, use 1 for PC1")
+            raise ValueError("components uses 1-based numbering and must start from 1; for example, use 1 for PC1")
 
     # -------------------------------------------------
     # 2. Check varm_PCs and var tables
@@ -1019,7 +1021,7 @@ def pca_loadings(
     def _find_pc_col(comp: int) -> str:
         """Find the loading column corresponding to the specified principal component in ``varm_PCs``.
 
-        ``components`` uses Scanpy-style 1-based numbering, while database columns may
+        ``components`` uses 1-based numbering, while database columns may
         use different naming styles such as ``pc0``, ``PC1``, or ``1``. This helper
         tries a set of common column names and returns the first match.
 
@@ -1110,7 +1112,7 @@ def pca_loadings(
                   .copy()
             )
 
-            # To make the display more Scanpy-like, sort negative-direction genes from near 0 to most negative
+            # Sort negative-direction genes from near 0 to most negative
             low_df = low_df.sort_values("loading", ascending=False).copy()
 
             plot_df = pd.concat([top_df, low_df], ignore_index=True)
@@ -1179,7 +1181,7 @@ def pca_loadings(
                 )
 
         # -------------------------------------------------
-        # 6. Scanpy-like style
+        # 6. Plot style
         # -------------------------------------------------
         ax.set_title(f"PC{comp}", fontsize=18, pad=8)
         ax.set_xlabel("ranking", fontsize=16)

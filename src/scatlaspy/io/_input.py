@@ -746,6 +746,12 @@ def _load_h5ad_list_random(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
+    cell_name_col
+        Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``, the
+        AnnData obs index is used.
+    gene_name_col
+        Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``, the
+        AnnData var index is used.
     shuffle_blocks
         Whether to shuffle the global block order. Enabled for multi-file random import and disabled for multi-file ordered import.
     shuffle_cells
@@ -1205,6 +1211,12 @@ def _load_h5ad_list_order(
         Number of cells in each contiguous cell block. If ``None``, it is automatically estimated based on the total number of cells.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
+    cell_name_col
+        Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``, the
+        AnnData obs index is used.
+    gene_name_col
+        Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``, the
+        AnnData var index is used.
 
     Returns
     -------
@@ -1296,6 +1308,12 @@ def _load_h5ad_random(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
+    cell_name_col
+        Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``, the
+        AnnData obs index is used.
+    gene_name_col
+        Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``, the
+        AnnData var index is used.
 
     Returns
     -------
@@ -1606,6 +1624,12 @@ def _load_h5ad_order(
         Number of cells to read, write, or process in each batch; larger values are usually faster but consume more memory.
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side import window size.
+    cell_name_col
+        Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``, the
+        AnnData obs index is used.
+    gene_name_col
+        Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``, the
+        AnnData var index is used.
 
     Returns
     -------
@@ -1775,167 +1799,6 @@ def _load_h5ad_order(
         block_reader.close()
     except Exception:
         pass
-
-
-# Merge one shuffle window and write it into DuckDB
-def _write_shuffle_window_to_duckdb(
-    window_adatas: list[AnnData],
-    conn: DuckDBPyConnection,
-    global_cell_id: int,
-    global_indptr_id: int,
-    global_indptr_offset: int,
-    global_data_id: int,
-    var_written: bool,
-    source_x_scale: XScale,
-    cell_name_col: str | None = None,
-    gene_name_col: str | None = None,
-):
-    """Write one shuffle window into the Atlas database.
-
-    This internal function is used in the random import workflow. It receives multiple AnnData
-    blocks collected in one window, first merges them into one AnnData object,
-    then randomly shuffles cell order within the window, and then sequentially
-    writes ``obs``, ``var``, ``X_HyS_indptr``, and ``X_HyS_data``.
-
-    Before writing the expression matrix, the function uniformly converts ``adata.X`` according to ``source_x_scale`` to
-    the count scale, and finally writes it to the ``X_HyS_data.data_count`` field.
-
-    Parameters
-    ----------
-    window_adatas
-        List of AnnData blocks collected in one shuffle window.
-    conn
-        DuckDB database connection.
-    global_cell_id
-        Next global ``atlas_cell_id`` to write.
-    global_indptr_id
-        Next indptr row ID to write.
-    global_indptr_offset
-        Current cumulative number of nonzero values already written, used to relocate indptr.
-    global_data_id
-        Next ``X_HyS_data.id`` to write.
-    var_written
-        Whether the ``var`` table has already been written.
-    source_x_scale
-        Current scale of the input expression matrix, usually ``"count"`` or ``"log"``.
-
-    Returns
-    -------
-    tuple
-        Returns the updated global cursors and window statistics, in the following order:
-
-        ``global_cell_id``, ``global_indptr_id``, ``global_indptr_offset``,
-        ``global_data_id``, ``var_written``, ``window_cells``, ``window_nnz``.
-
-    Notes
-    -----
-    The ``var`` table is written only in the first window; subsequent windows only append ``obs`` and expression
-    matrix-related tables.
-    """
-
-    # 1. Convert each block before concat so later shuffle does not need to
-    # modify a full-window AnnData object.
-    t_category0 = time.time()
-    for i, adata in enumerate(window_adatas):
-        adata = _convert_obs_categories_to_object_inplace(adata)
-        window_adatas[i] = _convert_x_to_count_inplace(
-            adata,
-            source_x_scale=source_x_scale,
-        )
-    t_category = time.time() - t_category0
-
-    # 2. Merge multiple batches within the window
-    t_concat0 = time.time()
-    adata_window = sc.concat(
-        window_adatas,
-        axis=0,
-        join="outer",
-        merge="first",
-        index_unique=None,
-    )
-    t_concat = time.time() - t_concat0
-    window_adatas.clear()
-    logger.info(
-        f"[window concat] cells={adata_window.n_obs:,}, "
-        f"vars={adata_window.n_vars:,}, "
-        f"category={t_category:.2f}s, "
-        f"concat={t_concat:.2f}s"
-    )
-
-    # 3. Shuffle all cells within the window uniformly
-    t_shuffle0 = time.time()
-    if adata_window.n_obs > 1:
-        perm = np.random.permutation(adata_window.n_obs)
-        adata_window = adata_window[perm]
-    t_shuffle = time.time() - t_shuffle0
-    logger.info(
-        f"[window shuffle] cells={adata_window.n_obs:,}, "
-        f"shuffle={t_shuffle:.2f}s"
-    )
-
-    # Window statistics
-    window_cells = adata_window.n_obs
-
-    if sparse.issparse(adata_window.X):
-        window_nnz = adata_window.X.nnz
-    else:
-        window_nnz = np.count_nonzero(adata_window.X)
-
-    # 4. Write obs
-    t_obs0 = time.time()
-    global_cell_id = _append_obs_rows(
-        adata_window,
-        conn,
-        start_cell_id=global_cell_id,
-        cell_name_col=cell_name_col,
-    )
-    t_obs = time.time() - t_obs0
-    logger.info(
-        f"[window obs append] cells={adata_window.n_obs:,}, "
-        f"obs_append={t_obs:.2f}s"
-    )
-
-    # 5. Write var, only once
-    if not var_written:
-        t_var0 = time.time()
-        _append_var(adata_window, conn, gene_name_col=gene_name_col)
-        t_var = time.time() - t_var0
-        logger.info(
-            f"[window var append] vars={adata_window.n_vars:,}, "
-            f"var_append={t_var:.2f}s"
-        )
-        var_written = True
-
-    # 6. Write X_HyS_data / X_HyS_indptr
-    t_x_hys0 = time.time()
-    (
-        global_indptr_id,
-        global_indptr_offset,
-        global_data_id,
-    ) = _append_x_hys(
-        adata_window,
-        conn,
-        base_cell_id= global_cell_id - adata_window.n_obs,
-        global_indptr_id=global_indptr_id,
-        global_indptr_offset=global_indptr_offset,
-        global_data_id=global_data_id,
-    )
-    t_x_hys = time.time() - t_x_hys0
-    logger.info(
-        f"[window x_hys append] cells={adata_window.n_obs:,}, "
-        f"nnz={window_nnz:,}, "
-        f"x_hys_append={t_x_hys:.2f}s"
-    )
-
-    return (
-        global_cell_id,
-        global_indptr_id,
-        global_indptr_offset,
-        global_data_id,
-        var_written,
-        window_cells,
-        window_nnz,
-    )
 
 
 def _concat_and_shuffle_adatas(adatas: list[AnnData]) -> AnnData:

@@ -511,7 +511,7 @@ def highest_expr_genes(
     y_positions = list(range(len(stats_df), 0, -1))
     box_height = 0.78
 
-    scanpy_colors = [
+    default_colors = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
         "#8c564b", "#e377c2", "#bcbd22", "#17becf", "#aec7e8",
         "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5", "#c49c94",
@@ -525,7 +525,7 @@ def highest_expr_genes(
         q3 = float(row.q3)
         whisker_high = float(row.whisker_high)
 
-        color = scanpy_colors[i % len(scanpy_colors)]
+        color = default_colors[i % len(default_colors)]
 
         ax.hlines(y, whisker_low, whisker_high, linewidth=1.1, color="#4a4a4a", zorder=2)
         ax.vlines(whisker_low, y - 0.11, y + 0.11, linewidth=1.1, color="#4a4a4a", zorder=2)
@@ -1016,7 +1016,7 @@ def scatter_qc_metrics(
             sub[x_col].to_numpy(),
             sub[y_col].to_numpy(),
             s=point_size,
-            c="#7f7f7f",      # Scanpy-like gray points
+            c="#7f7f7f",
             alpha=alpha,
             linewidths=0
         )
@@ -1024,7 +1024,7 @@ def scatter_qc_metrics(
         ax.set_xlabel(x_col, fontsize=16)
         ax.set_ylabel(y_col, fontsize=16)
 
-        # Scanpy style: white background + light grid + remove the top and right borders
+        # White background, light grid, and no top/right borders
         ax.set_facecolor("white")
         ax.grid(True, color="#d9d9d9", linewidth=0.8, alpha=0.8)
         ax.spines["top"].set_visible(False)

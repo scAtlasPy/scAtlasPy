@@ -94,10 +94,9 @@ def normalize_total(
     stored nonzero expression values in that cell to the scale defined by
     ``target_sum``, and writes the result to a derived expression table.
 
-    This workflow is similar to Scanpy's ``sc.pp.normalize_total`` and is
-    commonly used to adjust cells with different sequencing depths to a
-    comparable expression scale. For example, the default parameters normalize
-    the total expression of each cell to 10,000.
+    This workflow is commonly used to adjust cells with different sequencing
+    depths to a comparable expression scale. For example, the default parameters
+    normalize the total expression of each cell to 10,000.
 
     The function processes data in chunks over the ``atlas_cell_id`` range. Each
     chunk only computes total counts within the current cell range and writes
@@ -286,8 +285,8 @@ def normalize_total_scale_factor(
 
     This function itself does not modify the expression matrix and does not add
     any expression table. It is mainly used together with
-    ``normalize_and_log1p`` so that later steps can complete normalization and
-    log1p in a single chunked ``UPDATE``, avoiding the need to first write a
+    ``normalize_and_log1p`` so that later steps can write normalized-log values
+    directly to a derived expression table, avoiding the need to first write a
     complete intermediate normalized matrix.
 
     The function processes data in chunks over the ``atlas_cell_id`` range. Each
@@ -456,10 +455,9 @@ def log1p(
     By default, it reads the ``data_normalize`` field, computes the natural
     logarithm ``ln(1 + x)``, and writes the result to the ``data_log1p`` field.
 
-    This workflow is similar to Scanpy's ``sc.pp.log1p`` and is usually used
-    after total-count normalization to compress the dynamic range of expression
-    values and reduce the influence of highly expressed genes on downstream PCA
-    or clustering.
+    This workflow is usually used after total-count normalization to compress the
+    dynamic range of expression values and reduce the influence of highly
+    expressed genes on downstream PCA or clustering.
 
     The function materializes the result with a single ``CREATE TABLE AS``
     statement, without a global sort.
@@ -739,7 +737,7 @@ def highly_variable_genes(
 
     The function supports three calculation flavors:
 
-    - ``"seurat"``: a bin-normalized dispersion method similar to Scanpy/Seurat;
+    - ``"seurat"``: a bin-normalized dispersion method using mean-binned dispersion standardization;
     - ``"cv"``: ranks genes by the coefficient of variation ``std / mean``;
     - ``"var"``: ranks genes by variance.
 
@@ -1172,9 +1170,8 @@ def _highly_variable_genes_seurat(
     """Identify highly variable genes using a Seurat-style method.
 
     This internal function supports ``highly_variable_genes(flavor="seurat")``.
-    It implements a highly variable gene workflow similar to Scanpy/Seurat:
-    first compute the mean and dispersion for each gene, then bin genes by mean
-    expression, standardize dispersion within each bin, and finally select
+    It first computes the mean and dispersion for each gene, then bins genes by
+    mean expression, standardizes dispersion within each bin, and finally selects
     highly variable genes based on normalized dispersion.
 
     By default, the function assumes that ``use_data`` is a log1p-transformed
@@ -1832,9 +1829,9 @@ def scale(
 
     This function transforms the expression matrix by gene in the Atlas database
     and writes the result to the derived expression table for ``add_data``. By
-    default, it centers and standardizes the data as z-scores, similar to
-    Scanpy's ``sc.pp.scale``. It can also be configured to only center the data
-    or only normalize each gene by its standard deviation.
+    default, it centers and standardizes the data as z-scores. It can also be
+    configured to only center the data or only normalize each gene by its
+    standard deviation.
 
     For each target gene, the function first computes the mean and standard
     deviation across all cells based on ``use_data``. Then it transforms

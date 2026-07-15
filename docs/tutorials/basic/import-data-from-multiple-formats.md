@@ -142,6 +142,26 @@ Use randomized import when later sequential reads should not reproduce the
 original ordering of the source file. Use ordered import when preserving source
 order is more useful for inspection or comparison.
 
+### Use Cell or Gene Names Stored in Columns
+
+By default, `load_h5ad()` writes `adata.obs_names` to `obs.atlas_cell_name`
+and `adata.var_names` to `var.atlas_gene_name`.
+
+If a source file stores the preferred names in metadata columns instead, pass
+those columns explicitly:
+
+```python
+atlas.load_h5ad(
+    "./data/source_with_name_columns.h5ad",
+    load_type="random",
+    cell_name_col="cell_barcode",
+    gene_name_col="gene_symbol",
+)
+```
+
+Set either argument to `None` to use the corresponding AnnData index. This is
+the default behavior.
+
 ## Import Multiple h5ad Files
 
 Use `load_type="random"` to combine several `.h5ad` files into one Atlas:

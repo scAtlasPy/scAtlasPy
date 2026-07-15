@@ -90,6 +90,10 @@ sap.pl.pca_loadings(atlas, components=[1, 2])
 sap.pl.pca_variance_ratio(atlas)
 ```
 
+If `point_size=None`, `sap.pl.pca()` estimates a default point size from the
+number of plotted cells. Pass `point_size` explicitly when you want a fixed
+marker size across figures.
+
 ## Clustering and UMAP
 
 ```{eval-rst}
@@ -129,6 +133,10 @@ sap.pl.umap(
     ],
 )
 ```
+
+If `point_size=None`, `sap.pl.umap()` estimates a default point size from the
+number of plotted cells. Pass `point_size` explicitly when you want a fixed
+marker size across figures.
 
 ```{note}
 UMAP is primarily a visualization of local neighborhood structure. Apparent
@@ -201,6 +209,9 @@ sap.pl.umap(
     sample_n=100000,
 )
 ```
+
+With `sample_n=None`, UMAP metadata plots use the streaming plotting path and
+avoid materializing the full plot table at once.
 
 ```{warning}
 A random sample may underrepresent rare cell populations. Use a focused subset

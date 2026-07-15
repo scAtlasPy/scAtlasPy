@@ -169,8 +169,9 @@ atlas.build_read_index(
    pp.scale
 ```
 
-`scale()` centers and standardizes expression values for analyses that require
-features on comparable scales.
+`scale()` transforms expression values gene by gene. By default it centers and
+standardizes values as z-scores, but the `mode` parameter can also request
+centering only or variance normalization only.
 
 Common outputs include:
 
@@ -184,6 +185,14 @@ Scaled values no longer represent the original expression magnitude. For
 marker-gene visualization and biological interpretation, log-normalized values
 are usually easier to interpret.
 ```
+
+Common `mode` choices are:
+
+| `mode` | Transformation |
+|---|---|
+| `"center_and_scale"` | subtract each gene mean and divide by its standard deviation |
+| `"center_only"` | subtract each gene mean without variance normalization |
+| `"scale_only"` | divide by each gene standard deviation without centering |
 
 ## Typical Order
 
@@ -212,7 +221,7 @@ sap.pp.highly_variable_genes(
     n_top_genes=2_000,
 )
 
-sap.pp.scale(atlas)
+sap.pp.scale(atlas, mode="center_and_scale")
 ```
 
 Not every workflow requires every step. The appropriate expression

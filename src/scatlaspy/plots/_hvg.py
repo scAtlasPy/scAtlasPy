@@ -36,9 +36,8 @@ def highly_variable_genes(
     ``"cv"`` or ``"var"`` reads ``hvg_mean``, ``hvg_var``, ``hvg_std``, and ``hvg_score``.
     All styles highlight genes already marked as highly variable according to ``hvg_key``.
 
-    This plot is similar to Scanpy ``sc.pl.highly_variable_genes`` and is mainly used
-    to check whether the highly variable gene selection results are reasonable, rather
-    than recalculating highly variable genes.
+    This plot is used to check whether the highly variable gene selection results are
+    reasonable, rather than recalculating highly variable genes.
 
     Parameters
     ----------

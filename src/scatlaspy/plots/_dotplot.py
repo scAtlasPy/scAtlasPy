@@ -69,9 +69,9 @@ def dotplot(
 
     This function reads the expression of specified genes in each ``obs[groupby]``
     group from the resolved expression source, calculates the average expression and the percentage
-    of expressing cells for each ``group x gene`` combination, and plots a dotplot
-    similar to Scanpy ``sc.pl.dotplot``: dot color represents average expression,
-    and dot size represents the percentage of expressing cells.
+    of expressing cells for each ``group x gene`` combination, and plots a dotplot:
+    dot color represents average expression, and dot size represents the percentage
+    of expressing cells.
 
     This plot is suitable for quickly comparing the expression patterns of multiple
     marker genes across different clusters, cell types, or sample groups.

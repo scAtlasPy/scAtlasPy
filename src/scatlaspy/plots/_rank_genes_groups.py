@@ -25,9 +25,8 @@ def rank_genes_groups(
     This function reads the differential gene result table written by
     ``sap.tl.rank_genes_groups``, displays the top-ranked marker genes for each group,
     and shows the statistical score corresponding to ``score_key`` using scatter points
-    and text labels in each subplot.
-    It is similar to Scanpy ``sc.pl.rank_genes_groups`` and is suitable for quickly
-    browsing candidate marker gene rankings for each cluster.
+    and text labels in each subplot. It is suitable for quickly browsing candidate
+    marker gene rankings for each cluster.
 
     Parameters
     ----------
@@ -463,7 +462,7 @@ def rank_genes_groups_volcano(
         & (df[lfc_key].abs() >= float(logfc_cutoff))
     )
 
-    # Color style aligned with Scanpy plots: upregulated red, downregulated blue, nonsignificant gray
+    # Color upregulated, downregulated, and nonsignificant genes separately.
     colors = np.where(
         df["significant"] & (df[lfc_key] > 0),
         "#d62728",

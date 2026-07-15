@@ -6,18 +6,6 @@ developers should consider when designing workflows or interpreting results.
 The goal is to distinguish currently supported behavior from capabilities that
 are not yet implemented or stabilized.
 
-# 开发完成前要解决的问题
-
-两个文档未检查，对应的底层支撑未实现。
-Train Logistic Regression with Minibatches
-Train a PyTorch Classifier with Minibatches
-
-对仓库，issue等页面的链接都是占位的，未替换真实页面
-github的readme里对本docs的也是占位的链接
-
-docs未做系统性的审查
-
-
 ## KMeans Clustering
 
 `sap.tl.kmeans()` uses a minibatch implementation of KMeans.

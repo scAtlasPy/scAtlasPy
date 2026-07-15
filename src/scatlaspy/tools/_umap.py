@@ -183,10 +183,9 @@ def umap(
     This function reads PCA coordinates from the ``obsm_X_pca`` table in the
     Atlas database, first fits a UMAP model on a sampled subset, then
     transforms all cells into the low-dimensional space in batches, and writes
-    the UMAP coordinates to the database. It is similar to Scanpy's
-    ``sc.tl.umap``, but for large-scale data it uses a "sampled fitting + full
-    batched transformation" strategy to reduce the memory pressure caused by
-    loading all PCA coordinates at once.
+    the UMAP coordinates to the database. For large-scale data, it uses a
+    "sampled fitting + full batched transformation" strategy to reduce the
+    memory pressure caused by loading all PCA coordinates at once.
 
     After running, the function writes three types of results:
 
