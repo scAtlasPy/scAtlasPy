@@ -1847,8 +1847,7 @@ class Atlas:
         This function reads all columns or selected columns from the ``obs`` table
         into a pandas DataFrame. It is suitable for quickly checking cell metadata,
         exporting statistical results, or merging with external analysis results.
-        The returned result uses ``atlas_cell_id`` as the pandas index while also
-        preserving the ``atlas_cell_id`` column itself.
+        The returned result uses ``atlas_cell_id`` as the pandas index.
 
         Parameters
         ----------
@@ -1860,13 +1859,12 @@ class Atlas:
         Returns
         -------
         pandas.DataFrame
-            Query result from ``obs``. The default index is ``atlas_cell_id``.
+            Query result from ``obs`` indexed by ``atlas_cell_id``.
 
         Notes
         -----
         Even if ``atlas_cell_id`` is not explicitly included in ``columns``, the
-        function automatically places ``atlas_cell_id`` as the first column to set
-        the DataFrame index.
+        function automatically reads ``atlas_cell_id`` to set the DataFrame index.
 
         Examples
         --------
@@ -1890,8 +1888,7 @@ class Atlas:
         This function reads all columns or selected columns from the ``var`` table
         into a pandas DataFrame. It is suitable for checking gene metadata,
         exporting gene-level statistics, or aligning external gene-level results.
-        The returned result uses ``atlas_gene_id`` as the pandas index while also
-        preserving the ``atlas_gene_id`` column itself.
+        The returned result uses ``atlas_gene_id`` as the pandas index.
 
         Parameters
         ----------
@@ -1903,13 +1900,12 @@ class Atlas:
         Returns
         -------
         pandas.DataFrame
-            Query result from ``var``. The default index is ``atlas_gene_id``.
+            Query result from ``var`` indexed by ``atlas_gene_id``.
 
         Notes
         -----
         Even if ``atlas_gene_id`` is not explicitly included in ``columns``, the
-        function automatically places ``atlas_gene_id`` as the first column to set
-        the DataFrame index.
+        function automatically reads ``atlas_gene_id`` to set the DataFrame index.
 
         Examples
         --------
@@ -1935,8 +1931,7 @@ class Atlas:
 
         This function reads cell-level multidimensional results, such as
         ``obsm_X_pca`` or ``obsm_X_umap``, into a pandas DataFrame. The returned
-        result uses ``atlas_cell_id`` as the pandas index while also preserving
-        the ``atlas_cell_id`` column itself.
+        result uses ``atlas_cell_id`` as the pandas index.
 
         Parameters
         ----------
@@ -1990,8 +1985,7 @@ class Atlas:
 
         This function reads gene-level multidimensional results, such as
         ``varm_PCs``, into a pandas DataFrame. The returned result uses
-        ``atlas_gene_id`` as the pandas index while also preserving the
-        ``atlas_gene_id`` column itself.
+        ``atlas_gene_id`` as the pandas index.
 
         Parameters
         ----------

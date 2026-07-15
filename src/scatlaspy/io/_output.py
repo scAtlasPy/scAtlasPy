@@ -49,10 +49,7 @@ def _get_axis_df(
     ]
 
     if id_column not in table_columns:
-        raise ValueError(
-            f"The {id_column} field does not exist in the {table_name} table, "
-            "so the pandas index cannot be set"
-        )
+        raise ValueError(f"The {id_column} field does not exist in the {table_name} table")
 
     if columns is None:
         select_columns = table_columns
@@ -77,7 +74,7 @@ def _get_axis_df(
         FROM {table_sql}
     """).df()
 
-    return df.set_index(id_column, drop=False)
+    return df.set_index(id_column, drop=True)
 
 
 def write_h5ad(
@@ -417,8 +414,7 @@ def get_obs_df(
     This function reads all columns or selected columns from the ``obs`` table
     into a pandas DataFrame. It is suitable for quickly checking cell metadata,
     exporting statistical results, or merging with external analysis results.
-    The returned result uses ``atlas_cell_id`` as the pandas index while also
-    preserving the ``atlas_cell_id`` column itself.
+    The returned result uses ``atlas_cell_id`` as the pandas index.
 
     Parameters
     ----------
@@ -433,13 +429,12 @@ def get_obs_df(
     Returns
     -------
     pandas.DataFrame
-        Query result from ``obs``. The default index is ``atlas_cell_id``.
+        Query result from ``obs`` indexed by ``atlas_cell_id``.
 
     Notes
     -----
     Even if ``atlas_cell_id`` is not explicitly included in ``columns``, the
-    function automatically places ``atlas_cell_id`` as the first column to set
-    the DataFrame index.
+    function automatically reads ``atlas_cell_id`` to set the DataFrame index.
 
     Examples
     --------
@@ -475,8 +470,7 @@ def get_var_df(
     This function reads all columns or selected columns from the ``var`` table
     into a pandas DataFrame. It is suitable for checking gene metadata,
     exporting gene-level statistics, or aligning external gene-level results.
-    The returned result uses ``atlas_gene_id`` as the pandas index while also
-    preserving the ``atlas_gene_id`` column itself.
+    The returned result uses ``atlas_gene_id`` as the pandas index.
 
     Parameters
     ----------
@@ -491,13 +485,12 @@ def get_var_df(
     Returns
     -------
     pandas.DataFrame
-        Query result from ``var``. The default index is ``atlas_gene_id``.
+        Query result from ``var`` indexed by ``atlas_gene_id``.
 
     Notes
     -----
     Even if ``atlas_gene_id`` is not explicitly included in ``columns``, the
-    function automatically places ``atlas_gene_id`` as the first column to set
-    the DataFrame index.
+    function automatically reads ``atlas_gene_id`` to set the DataFrame index.
 
     Examples
     --------
@@ -534,8 +527,7 @@ def get_obsm_df(
 
     This function reads cell-level multidimensional results, such as
     ``obsm_X_pca`` or ``obsm_X_umap``, into a pandas DataFrame. The returned
-    result uses ``atlas_cell_id`` as the pandas index while also preserving the
-    ``atlas_cell_id`` column itself.
+    result uses ``atlas_cell_id`` as the pandas index.
 
     Parameters
     ----------
@@ -606,8 +598,7 @@ def get_obsm_df(
 
     if "atlas_cell_id" not in table_columns:
         raise ValueError(
-            f"The atlas_cell_id field does not exist in the {table_name} table, "
-            "so the pandas index cannot be set"
+            f"The atlas_cell_id field does not exist in the {table_name} table"
         )
 
     if columns is None:
@@ -663,7 +654,7 @@ def get_obsm_df(
 
     logger.info(f" get_obsm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
-    return df.set_index("atlas_cell_id", drop=False)
+    return df.set_index("atlas_cell_id", drop=True)
 
 
 def get_varm_df(
@@ -676,8 +667,7 @@ def get_varm_df(
 
     This function reads gene-level multidimensional results, such as
     ``varm_PCs``, into a pandas DataFrame. The returned result uses
-    ``atlas_gene_id`` as the pandas index while also preserving the
-    ``atlas_gene_id`` column itself.
+    ``atlas_gene_id`` as the pandas index.
 
     Parameters
     ----------
@@ -747,8 +737,7 @@ def get_varm_df(
 
     if "atlas_gene_id" not in table_columns:
         raise ValueError(
-            f"The atlas_gene_id field does not exist in the {table_name} table, "
-            "so the pandas index cannot be set"
+            f"The atlas_gene_id field does not exist in the {table_name} table"
         )
 
     if columns is None:
@@ -804,7 +793,7 @@ def get_varm_df(
 
     logger.info(f" get_varm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
-    return df.set_index("atlas_gene_id", drop=False)
+    return df.set_index("atlas_gene_id", drop=True)
 
 
 def get_uns_df(
