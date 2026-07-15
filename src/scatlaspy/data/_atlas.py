@@ -1511,6 +1511,8 @@ class Atlas:
         load_type: Literal["order", "random"] = "random",
         cells_per_block: int | None = None,
         import_window_memory_factor: float = 1.0,
+        cell_name_col: str | None = None,
+        gene_name_col: str | None = None,
     ) -> Any:
         """Import h5ad files into an Atlas database.
 
@@ -1554,6 +1556,12 @@ class Atlas:
         import_window_memory_factor
             Empirical scaling factor used to estimate the Python-side h5ad import
             window size. This does not change DuckDB's own memory limit.
+        cell_name_col
+            Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``,
+            the AnnData obs index is used.
+        gene_name_col
+            Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``,
+            the AnnData var index is used.
 
         Returns
         -------
@@ -1591,6 +1599,8 @@ class Atlas:
             load_type=load_type,
             cells_per_block=cells_per_block,
             import_window_memory_factor=import_window_memory_factor,
+            cell_name_col=cell_name_col,
+            gene_name_col=gene_name_col,
         )
 
     def load_anndata(self, adata: AnnData) -> None:

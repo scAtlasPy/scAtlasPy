@@ -290,6 +290,8 @@ def load_h5ad(
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
     import_window_memory_factor: float = 1.0,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ) -> None:
     """Import h5ad files into an Atlas database.
 
@@ -324,6 +326,12 @@ def load_h5ad(
     import_window_memory_factor
         Empirical scaling factor used to estimate the Python-side h5ad import window.
         This controls the import window size only; it does not change DuckDB's own memory limit.
+    cell_name_col
+        Column in ``adata.obs`` to use as ``atlas_cell_name``. If ``None``, the
+        AnnData obs index is used.
+    gene_name_col
+        Column in ``adata.var`` to use as ``atlas_gene_name``. If ``None``, the
+        AnnData var index is used.
 
     Returns
     -------
@@ -385,6 +393,18 @@ def load_h5ad(
     if import_window_memory_factor <= 0:
         raise ValueError("import_window_memory_factor must be > 0")
 
+    if cell_name_col is not None and not isinstance(cell_name_col, str):
+        raise TypeError(
+            "cell_name_col must be str or None, "
+            f"current type: {type(cell_name_col)}"
+        )
+
+    if gene_name_col is not None and not isinstance(gene_name_col, str):
+        raise TypeError(
+            "gene_name_col must be str or None, "
+            f"current type: {type(gene_name_col)}"
+        )
+
 
     # =====================================================
     # 2. Multi-file import: automatically select ordered or random logic based on load_type
@@ -397,6 +417,8 @@ def load_h5ad(
                 atlas=atlas,
                 cells_per_block=cells_per_block,
                 import_window_memory_factor=import_window_memory_factor,
+                cell_name_col=cell_name_col,
+                gene_name_col=gene_name_col,
             )
         else:
             logger.info("[INFO] load_type = random, multi-file random import")
@@ -405,6 +427,8 @@ def load_h5ad(
                 atlas=atlas,
                 cells_per_block=cells_per_block,
                 import_window_memory_factor=import_window_memory_factor,
+                cell_name_col=cell_name_col,
+                gene_name_col=gene_name_col,
             )
     else:
         # =====================================================
@@ -433,6 +457,8 @@ def load_h5ad(
                 atlas=atlas,
                 cells_per_block=cells_per_block,
                 import_window_memory_factor=import_window_memory_factor,
+                cell_name_col=cell_name_col,
+                gene_name_col=gene_name_col,
             )
         elif load_type == "random":
             # =====================================================
@@ -444,6 +470,8 @@ def load_h5ad(
                 atlas=atlas,
                 cells_per_block=cells_per_block,
                 import_window_memory_factor=import_window_memory_factor,
+                cell_name_col=cell_name_col,
+                gene_name_col=gene_name_col,
             )
 
     logger.info(f"load_h5ad Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
@@ -689,6 +717,8 @@ def _load_h5ad_list_random(
     cells_per_block: int | None = None,
     *,
     import_window_memory_factor: float = 1.0,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
     shuffle_blocks: bool = True,
     shuffle_cells: bool = True,
 ):
@@ -882,6 +912,7 @@ def _load_h5ad_list_random(
         # Dynamically create tables: use only the first file to create tables
         first_backed = file_states[0]["reader"].adata_backed
 
+        _validate_name_columns(first_backed, cell_name_col, gene_name_col)
         _create_obs_table_from_adata(conn, first_backed[:1])
         _create_var_table_from_adata(conn, first_backed[:1])
         _create_hys_tables(conn)
@@ -972,11 +1003,12 @@ def _load_h5ad_list_random(
                 pool_adata,
                 conn,
                 start_cell_id=global_cell_id,
+                cell_name_col=cell_name_col,
             )
 
             # 4. Write var, only once
             if not var_written:
-                _append_var(pool_adata, conn)
+                _append_var(pool_adata, conn, gene_name_col=gene_name_col)
                 var_written = True
 
             # 5. Write X_CSRO using the Arrow-accelerated version
@@ -1154,6 +1186,8 @@ def _load_h5ad_list_order(
     atlas: Atlas,
     cells_per_block: int | None = None,
     import_window_memory_factor: float = 1.0,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ):
     """Import multiple h5ad files into an Atlas database in file-list order.
 
@@ -1187,6 +1221,8 @@ def _load_h5ad_list_order(
         atlas=atlas,
         cells_per_block=cells_per_block,
         import_window_memory_factor=import_window_memory_factor,
+        cell_name_col=cell_name_col,
+        gene_name_col=gene_name_col,
         shuffle_blocks=False,
         shuffle_cells=False,
     )
@@ -1232,6 +1268,8 @@ def _load_h5ad_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     import_window_memory_factor: float = 1.0,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ):
     """Randomly import a single h5ad file using a shuffle-window strategy.
 
@@ -1290,6 +1328,7 @@ def _load_h5ad_random(
     block_reader = FastH5adBlockReader(h5ad_path)
     adata_backed = block_reader.adata_backed
     n_cells = adata_backed.n_obs
+    _validate_name_columns(adata_backed, cell_name_col, gene_name_col)
 
     x_info = _inspect_x_from_backed(
         adata_backed,
@@ -1427,6 +1466,8 @@ def _load_h5ad_random(
                     global_indptr_offset=global_indptr_offset,
                     global_data_id=global_data_id,
                     var_written=var_written,
+                    cell_name_col=cell_name_col,
+                    gene_name_col=gene_name_col,
                 )
                 global_cell_id = result["global_cell_id"]
                 global_indptr_id = result["global_indptr_id"]
@@ -1476,6 +1517,8 @@ def _load_h5ad_random(
                 global_indptr_offset=global_indptr_offset,
                 global_data_id=global_data_id,
                 var_written=var_written,
+                cell_name_col=cell_name_col,
+                gene_name_col=gene_name_col,
                 is_final=True,
             )
             global_cell_id = result["global_cell_id"]
@@ -1538,6 +1581,8 @@ def _load_h5ad_order(
     atlas: Atlas,
     cells_per_block: int | None = None,
     import_window_memory_factor: float = 1.0,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ):
 
     """Import a single h5ad file in the original cell order.
@@ -1591,6 +1636,7 @@ def _load_h5ad_order(
     block_reader = FastH5adBlockReader(h5ad_path)
     adata_backed = block_reader.adata_backed
     n_cells = adata_backed.n_obs
+    _validate_name_columns(adata_backed, cell_name_col, gene_name_col)
 
     # Simply detect the underlying format of h5ad.X
     x_format = _print_h5ad_x_format(h5ad_path)
@@ -1668,11 +1714,12 @@ def _load_h5ad_order(
                 mega,
                 conn,
                 start_cell_id=global_cell_id,
+                cell_name_col=cell_name_col,
             )
 
             # ---------------- import var (once) ----------------
             if not var_written:
-                _append_var(mega, conn)
+                _append_var(mega, conn, gene_name_col=gene_name_col)
                 var_written = True
 
             # ---------------- window import X (HyS) ----------------
@@ -1740,6 +1787,8 @@ def _write_shuffle_window_to_duckdb(
     global_data_id: int,
     var_written: bool,
     source_x_scale: XScale,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ):
     """Write one shuffle window into the Atlas database.
 
@@ -1838,6 +1887,7 @@ def _write_shuffle_window_to_duckdb(
         adata_window,
         conn,
         start_cell_id=global_cell_id,
+        cell_name_col=cell_name_col,
     )
     t_obs = time.time() - t_obs0
     logger.info(
@@ -1848,7 +1898,7 @@ def _write_shuffle_window_to_duckdb(
     # 5. Write var, only once
     if not var_written:
         t_var0 = time.time()
-        _append_var(adata_window, conn)
+        _append_var(adata_window, conn, gene_name_col=gene_name_col)
         t_var = time.time() - t_var0
         logger.info(
             f"[window var append] vars={adata_window.n_vars:,}, "
@@ -1933,6 +1983,8 @@ def _write_prepared_adata_to_duckdb(
     global_indptr_offset: int,
     global_data_id: int,
     var_written: bool,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
 ):
     """Write one already shuffled and count-scale AnnData window into DuckDB."""
 
@@ -1947,6 +1999,7 @@ def _write_prepared_adata_to_duckdb(
         adata_window,
         conn,
         start_cell_id=global_cell_id,
+        cell_name_col=cell_name_col,
     )
     t_obs = time.time() - t_obs0
     logger.info(
@@ -1956,7 +2009,7 @@ def _write_prepared_adata_to_duckdb(
 
     if not var_written:
         t_var0 = time.time()
-        _append_var(adata_window, conn)
+        _append_var(adata_window, conn, gene_name_col=gene_name_col)
         t_var = time.time() - t_var0
         logger.info(
             f"[window var append] vars={adata_window.n_vars:,}, "
@@ -2005,6 +2058,8 @@ def _write_rolling_shuffle_window_to_duckdb(
     global_data_id: int,
     var_written: bool,
     carry_target_cells: int | None = None,
+    cell_name_col: str | None = None,
+    gene_name_col: str | None = None,
     is_final: bool = False,
 ):
     """Mix carry cells with new cells, then write enough cells to keep a stable carry."""
@@ -2044,6 +2099,8 @@ def _write_rolling_shuffle_window_to_duckdb(
         global_indptr_offset=global_indptr_offset,
         global_data_id=global_data_id,
         var_written=var_written,
+        cell_name_col=cell_name_col,
+        gene_name_col=gene_name_col,
     )
 
     carry_cells = 0 if next_carry is None else next_carry.n_obs
@@ -2864,8 +2921,31 @@ def _create_hys_tables(conn: DuckDBPyConnection):
     )
 
 
+def _validate_name_columns(
+    adata: AnnData,
+    cell_name_col: str | None,
+    gene_name_col: str | None,
+) -> None:
+    """Validate optional obs/var columns used as Atlas cell and gene names."""
+
+    if cell_name_col is not None and cell_name_col not in adata.obs.columns:
+        raise ValueError(
+            f"cell_name_col={cell_name_col!r} is not a column in adata.obs"
+        )
+
+    if gene_name_col is not None and gene_name_col not in adata.var.columns:
+        raise ValueError(
+            f"gene_name_col={gene_name_col!r} is not a column in adata.var"
+        )
+
+
 # Import the obs table
-def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: int) -> int:
+def _append_obs_rows(
+    adata: AnnData,
+    conn: DuckDBPyConnection,
+    start_cell_id: int,
+    cell_name_col: str | None = None,
+) -> int:
 
     """Append ``obs`` rows from one AnnData block.
 
@@ -2889,11 +2969,20 @@ def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: in
 
     Notes
     -----
-    ``atlas_cell_name`` comes from the current block's ``adata.obs.index``.
+    ``atlas_cell_name`` comes from ``cell_name_col`` when provided, otherwise
+    from the current block's ``adata.obs.index``.
     """
     n = adata.n_obs
 
     obs_df = adata.obs.copy()
+    if cell_name_col is not None and cell_name_col not in obs_df.columns:
+        raise ValueError(
+            f"cell_name_col={cell_name_col!r} is not a column in adata.obs"
+        )
+    if cell_name_col is None:
+        cell_names = adata.obs.index.astype(str)
+    else:
+        cell_names = obs_df[cell_name_col].astype(str).to_numpy()
 
     # Remove old system fields already present in the source h5ad
     for c in ["atlas_cell_id", "atlas_cell_name"]:
@@ -2907,7 +2996,7 @@ def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: in
         dtype=np.int32,
     )
 
-    obs_df["atlas_cell_name"] = adata.obs.index.astype(str)
+    obs_df["atlas_cell_name"] = cell_names
 
     # Fix the column order: system fields are always placed first
     obs_df = obs_df[
@@ -2924,7 +3013,11 @@ def _append_obs_rows(adata: AnnData, conn: DuckDBPyConnection, start_cell_id: in
 
 
 # Import the var table
-def _append_var(adata: AnnData, conn: DuckDBPyConnection):
+def _append_var(
+    adata: AnnData,
+    conn: DuckDBPyConnection,
+    gene_name_col: str | None = None,
+):
 
     """Write AnnData ``var`` gene metadata.
 
@@ -2949,6 +3042,14 @@ def _append_var(adata: AnnData, conn: DuckDBPyConnection):
     During multi-block import, ``var`` only needs to be written once.
     """
     var_df = adata.var.copy()
+    if gene_name_col is not None and gene_name_col not in var_df.columns:
+        raise ValueError(
+            f"gene_name_col={gene_name_col!r} is not a column in adata.var"
+        )
+    if gene_name_col is None:
+        gene_names = adata.var.index.astype(str)
+    else:
+        gene_names = var_df[gene_name_col].astype(str).to_numpy()
 
     # Remove old system fields already present in the source h5ad
     for c in ["atlas_gene_id", "atlas_gene_name"]:
@@ -2961,7 +3062,7 @@ def _append_var(adata: AnnData, conn: DuckDBPyConnection):
         dtype=np.uint16,
     )
 
-    var_df["atlas_gene_name"] = adata.var.index.astype(str)
+    var_df["atlas_gene_name"] = gene_names
 
     # Fix the column order: system fields are always placed first
     var_df = var_df[
