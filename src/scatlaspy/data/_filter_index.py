@@ -168,13 +168,13 @@ class FilterIndexBuilder:
         return f"X_HyS_data_{self.use_data}"
 
 
-    def _expression_source_for_read_index(self) -> tuple[str, str, str, str]:
+    def _expression_source_for_read_index(self) -> tuple[str, str, str]:
         """Resolve where ``use_data`` is stored for read-index construction.
 
         Returns
         -------
         tuple
-            ``from_sql``, ``value_sql``, ``order_sql``, and ``count_table``.
+            ``from_sql``, ``value_sql``, and ``count_table``.
 
         Notes
         -----
@@ -190,7 +190,6 @@ class FilterIndexBuilder:
             return (
                 "X_HyS_data AS X",
                 f"X.{self.use_data}",
-                "X.rowid",
                 "X_HyS_data",
             )
 
@@ -205,7 +204,6 @@ class FilterIndexBuilder:
             return (
                 f"{data_table} AS X",
                 f"X.{self.use_data}",
-                "X.rowid",
                 data_table,
             )
 
@@ -218,7 +216,6 @@ class FilterIndexBuilder:
         return (
             f"X_HyS_data AS X JOIN {data_table} AS D ON X.id = D.id",
             f"D.{self.use_data}",
-            "X.rowid",
             data_table,
         )
 
@@ -477,7 +474,7 @@ class FilterIndexBuilder:
         )
         """)
 
-        from_sql, value_sql, order_sql, count_table = self._expression_source_for_read_index()
+        from_sql, value_sql, count_table = self._expression_source_for_read_index()
         total_rows = conn.execute(f"SELECT COUNT(*) FROM {count_table}").fetchone()[0]
 
         if total_rows == 0:
@@ -507,7 +504,7 @@ class FilterIndexBuilder:
         JOIN _var_keep AS var
           ON X.atlas_gene_id = var.atlas_gene_id
         WHERE {value_sql} IS NOT NULL
-        ORDER BY {order_sql}
+        ORDER BY obs.filter_cell_id, var.filter_gene_id
         """)
 
         pbar.update(total_rows)

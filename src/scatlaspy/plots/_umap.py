@@ -51,6 +51,12 @@ DEFAULT_DISCRETE_PALETTES = (
 _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 
+def _default_point_size(n_points: int) -> float:
+    """Estimate UMAP point size using Scanpy's default rule."""
+
+    return 120_000 / max(int(n_points), 1)
+
+
 def umap(
     atlas: Atlas,
     color: str | list[str] = "kmeans",
@@ -63,7 +69,7 @@ def umap(
 
     # Plotting parameters
     figsize: tuple[float, float] | None = (22, 8),
-    point_size: float = 5,
+    point_size: float | None = None,
     alpha: float = 0.85,
     cmap: str = "viridis",
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -112,7 +118,8 @@ def umap(
         Figure size. If ``None``, the function default size is used.
 
     point_size
-        Scatter point size.
+        Scatter point size. If ``None``, the size is estimated as
+        ``120_000 / n_plotted_cells``, following Scanpy's default behavior.
 
     alpha
         Transparency of graphical elements.
@@ -290,7 +297,7 @@ def _plot_umap_obs(
     legend_loc: str = "right_margin",
     title: str | None = None,
     figsize: tuple[float, float] | None=(22, 8),
-    point_size: float = 1.0,
+    point_size: float | None = None,
     alpha: float = 0.7,
     cmap: str = "viridis",
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -457,6 +464,9 @@ def _plot_umap_obs(
     if len(plot_df) == 0:
         raise ValueError("No cells are available for plotting after filtering")
 
+    if point_size is None:
+        point_size = _default_point_size(len(plot_df))
+
     # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
     unique_labels = _sort_categories_natural(
@@ -522,7 +532,7 @@ def _plot_umap_obs(
             bbox_to_anchor=(1.03, 0.5),
             loc="center left",
             frameon=False,
-            markerscale=8.0,
+            markerscale=4.0,
             fontsize=legend_fontsize,
             borderaxespad=0.0,
             ncol=legend_ncol,
@@ -535,9 +545,9 @@ def _plot_umap_obs(
         # Force-enlarge legend dots to match PCA
         for h in leg.legend_handles:
             if hasattr(h, "set_sizes"):
-                h.set_sizes([100])
+                h.set_sizes([36])
 
-        leg.set_in_layout(False)
+        leg.set_in_layout(True)
 
     elif legend_loc == "on_data":
         center_rows = []
@@ -613,7 +623,7 @@ def _draw_umap_obs_streaming(
     legend_loc: str = "right_margin",
     title: str | None = None,
     figsize: tuple[float, float] | None=(22, 8),
-    point_size: float = 1.0,
+    point_size: float | None = None,
     alpha: float = 0.7,
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
     frameon: bool = True,
@@ -686,6 +696,17 @@ def _draw_umap_obs_streaming(
 
     if len(label_df) == 0:
         raise ValueError("No cells are available for plotting after filtering")
+
+    total_points = conn.execute(f"""
+        SELECT COUNT(*)
+        FROM obsm_X_umap u
+        JOIN obs o
+          ON u.atlas_cell_id = o.atlas_cell_id
+        WHERE {where_sql}
+    """).fetchone()[0]
+
+    if point_size is None:
+        point_size = _default_point_size(total_points)
 
     # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
@@ -785,7 +806,7 @@ def _draw_umap_obs_streaming(
                 color="w",
                 label=str(lab),
                 markerfacecolor=label_to_color[lab],
-                markersize=10,
+                markersize=6,
             )
             for lab in unique_labels
         ]
@@ -805,7 +826,7 @@ def _draw_umap_obs_streaming(
             handlelength=0.8,
         )
 
-        leg.set_in_layout(False)
+        leg.set_in_layout(True)
 
     elif legend_loc == "on_data":
         center_df = conn.execute(f"""
@@ -890,7 +911,7 @@ def _plot_umap_features(
     use_data: str = "data_scale",
     ncols: int = 3,
     figsize: tuple[float, float] | None=None,
-    point_size: float = 8,
+    point_size: float | None = None,
     alpha: float = 0.9,
     cmap: str = "viridis",
     save_path: PathLike[str] | str | None = None,
@@ -1031,6 +1052,9 @@ def _plot_umap_features(
 
     if len(umap_df) == 0:
         raise ValueError("No cells are available for plotting after filtering / sampling")
+
+    if point_size is None:
+        point_size = _default_point_size(len(umap_df))
 
     # Query gene_id
     gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
@@ -1221,7 +1245,7 @@ def _plot_umap_mixed(
     use_data: str = "data_log1p",
     ncols: int = 3,
     figsize: tuple[float, float] | None = None,
-    point_size: float = 5,
+    point_size: float | None = None,
     alpha: float = 0.85,
     cmap: str = "viridis",
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -1417,6 +1441,9 @@ def _plot_umap_mixed(
     if len(umap_df) == 0:
         raise ValueError("No cells are available for plotting after filtering / sampling")
 
+    if point_size is None:
+        point_size = _default_point_size(len(umap_df))
+
     # -----------------------------------------------------
     # 3. Read gene expression
     # -----------------------------------------------------
@@ -1611,7 +1638,7 @@ def _plot_umap_mixed(
                 color="w",
                 label=str(lab),
                 markerfacecolor=label_to_color[lab],
-                markersize=8,
+                markersize=6,
             )
             for lab in unique_labels
         ]

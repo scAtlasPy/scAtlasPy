@@ -127,19 +127,25 @@ class StreamingRandomizedPCA:
         self,
         atlas: Atlas,
         X_batch: np.ndarray,
-        cell_offset: int,
+        atlas_cell_ids: np.ndarray,
         table_name: str = "obsm_X_pca",
-    ) -> int:
+    ) -> None:
         """Write one PCA embedding batch."""
 
         n = X_batch.shape[0]
+        atlas_cell_ids = np.asarray(atlas_cell_ids, dtype=np.int32)
+        if atlas_cell_ids.shape[0] != n:
+            raise ValueError(
+                "atlas_cell_ids length must match the number of PCA rows: "
+                f"{atlas_cell_ids.shape[0]} != {n}"
+            )
+
         df = pd.DataFrame(
             X_batch.astype(np.float32, copy=False),
             columns=[f"pc{i}" for i in range(X_batch.shape[1])],
         )
-        df.insert(0, "atlas_cell_id", np.arange(cell_offset, cell_offset + n, dtype=np.int32))
+        df.insert(0, "atlas_cell_id", atlas_cell_ids)
         atlas.connection.append(table_name, df)
-        return cell_offset + n
 
     def _writer_varm_pcs(self, atlas: Atlas, table_name: str = "varm_PCs") -> None:
         """Write PCA components to ``varm_PCs``."""
@@ -324,18 +330,20 @@ class StreamingRandomizedPCA:
         if self.components_ is None:
             raise RuntimeError("components_ is None. Please run fit first.")
 
-        cell_offset = 0
         start = time.time()
 
-        for X_batch in progress(
+        for batch in progress(
             atlas.get_minibatch_dense(
                 batch_size=self.batch_size,
                 pass_mode="single-pass",
+                get_obs_col="atlas_cell_id",
             ),
             desc="Randomized PCA transform",
         ):
+            X_batch = batch["X"]
+            atlas_cell_ids = batch["atlas_cell_id"]
             X_pca = np.asarray(X_batch, dtype=np.float32) @ self.components_.T
-            cell_offset = self._writer_obsm_x_pca(atlas, X_pca, cell_offset)
+            self._writer_obsm_x_pca(atlas, X_pca, atlas_cell_ids)
 
         self.transform_scan_time_ = time.time() - start
         logger.info(f"[RandomizedPCA] transform scan time = {self.transform_scan_time_:.2f} seconds")

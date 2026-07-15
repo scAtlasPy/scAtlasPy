@@ -1,6 +1,7 @@
 from typing import *
 from _duckdb import DuckDBPyConnection
 import duckdb
+import gc
 import os
 import logging
 import numpy as np
@@ -686,6 +687,7 @@ class Atlas:
         if self.__connection is not None: # Close any existing connection first.
             logger.debug("Existing database connection found; closing it first")
             self.close()
+            gc.collect()
 
         try:
             if mode == "r":  # Read-only mode.

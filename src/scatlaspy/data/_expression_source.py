@@ -44,7 +44,6 @@ class ExpressionSource:
     id_sql: str
     cell_sql: str
     gene_sql: str
-    order_sql: str
     source_table: str
 
 
@@ -65,7 +64,6 @@ def resolve_expression_source(
             id_sql=f"{x_alias}.id",
             cell_sql=f"{x_alias}.atlas_cell_id",
             gene_sql=f"{x_alias}.atlas_gene_id",
-            order_sql=f"{x_alias}.rowid",
             source_table="X_HyS_data",
         )
 
@@ -84,7 +82,6 @@ def resolve_expression_source(
             id_sql=f"{x_alias}.id",
             cell_sql=f"{x_alias}.atlas_cell_id",
             gene_sql=f"{x_alias}.atlas_gene_id",
-            order_sql=f"{x_alias}.rowid",
             source_table=table_name,
         )
 
@@ -100,6 +97,5 @@ def resolve_expression_source(
         id_sql=f"{x_alias}.id",
         cell_sql=f"{x_alias}.atlas_cell_id",
         gene_sql=f"{x_alias}.atlas_gene_id",
-        order_sql=f"{x_alias}.rowid",
         source_table=table_name,
     )

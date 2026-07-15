@@ -738,7 +738,7 @@ class MultiThreadedMinibatchFetcher:
                 data
             FROM X_HyS_data_filtered
             WHERE tid = {tid}
-            -- ORDER BY rowid
+            ORDER BY rowid
         """
 
         result = conn.execute(query).fetch_record_batch(
