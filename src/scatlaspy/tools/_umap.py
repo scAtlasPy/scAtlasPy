@@ -319,7 +319,7 @@ def umap(
     fit_sample_n: int = 200_000,
     transform_batch_size: int = 100_000,
     torch_batch_size: int = 1024,
-    torch_epochs: int = 20,
+    torch_epochs: int = 100,
     n_components: int = 2,
     n_pcs: int | None = None,
     n_neighbors: int = 15,
