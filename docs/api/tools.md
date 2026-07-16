@@ -38,11 +38,13 @@ Common stored outputs include:
 Example:
 
 ```python
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True)
+
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
-    use_data="data_log1p",
+    use_data="data_scale",
 )
 
 sap.tl.pca(
@@ -50,6 +52,11 @@ sap.tl.pca(
     n_components=30,
 )
 ```
+
+Use `sap.pp.scale(..., mode="center_only")` when PCA should preserve
+gene-level variance and expression-strength differences. Use the default
+`mode="center_and_scale"` when selected genes should be put on comparable
+expression scales before PCA.
 
 Accuracy and runtime are mainly controlled by `oversample` and `n_iter`.
 The defaults are tuned for atlas-scale use:
@@ -224,11 +231,13 @@ function reference above.
 A common downstream workflow is:
 
 ```python
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True)
+
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
-    use_data="data_log1p",
+    use_data="data_scale",
 )
 
 sap.tl.pca(

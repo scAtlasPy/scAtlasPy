@@ -504,6 +504,9 @@ def pca(
     ``sap.pp.scale(..., mode="center_and_scale")`` first, then build the read
     index with the corresponding scaled expression field, for example
     ``atlas.build_read_index(use_hvg=True, use_data="data_scale")``.
+    Use ``mode="center_only"`` when PCA should preserve gene-level variance and
+    expression-strength differences. Use ``mode="center_and_scale"`` when gene
+    expression scales should be normalized before PCA.
 
     Examples
     --------

@@ -300,6 +300,9 @@ atlas.build_read_index(
 )
 ```
 
+For PCA, build the read index from a centered representation such as
+`data_scale` after running `sap.pp.scale(...)`.
+
 ```{important}
 A read index defines an active data view; it does not create another complete
 copy of the expression matrix.

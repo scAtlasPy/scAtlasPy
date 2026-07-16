@@ -22,11 +22,15 @@ sap.pp.filter_genes(atlas, min_cells=3)
 sap.pp.normalize_total(atlas)
 sap.pp.log1p(atlas)
 sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+# Default mode="center_and_scale" normalizes gene scales before PCA.
+# Use mode="center_only" to preserve gene-level variance differences.
+sap.pp.scale(atlas)
 
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
+    use_data="data_scale",
 )
 
 sap.tl.pca(atlas)
@@ -118,6 +122,7 @@ atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
+    use_data="data_scale",
 )
 
 sap.tl.pca(atlas)
@@ -209,9 +214,12 @@ atlas.load_h5ad("large_dataset.h5ad", cells_per_block=2000)
 
 sap.pp.filter_cells(atlas, min_genes=200)
 sap.pp.filter_genes(atlas, min_cells=3)
+sap.pp.normalize_total(atlas)
+sap.pp.log1p(atlas)
 sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
+sap.pp.scale(atlas)
 
-atlas.build_read_index(use_hvg=True)
+atlas.build_read_index(use_hvg=True, use_data="data_scale")
 sap.tl.pca(atlas)
 ```
 

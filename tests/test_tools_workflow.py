@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.linalg import subspace_angles
 from sklearn.decomposition import PCA
+from sklearn.neighbors import NearestNeighbors
 
 import scatlaspy as sap
 from scatlaspy.tools._pca import StreamingRandomizedPCA
@@ -19,6 +20,37 @@ class _ArrayAtlas:
         assert pass_mode == "single-pass"
         for start in range(0, self.X.shape[0], self.batch_size):
             yield self.X[start:start + self.batch_size]
+
+
+def _knn_indices(X: np.ndarray, k: int) -> np.ndarray:
+    """Return k nearest-neighbor indices, excluding each point itself."""
+
+    neighbors = NearestNeighbors(n_neighbors=k + 1)
+    neighbors.fit(X)
+    return neighbors.kneighbors(X, return_distance=False)[:, 1:]
+
+
+def _mean_knn_jaccard(reference: np.ndarray, candidate: np.ndarray, k: int) -> float:
+    """Return the mean Jaccard overlap between two kNN graphs."""
+
+    ref_knn = _knn_indices(reference, k)
+    cand_knn = _knn_indices(candidate, k)
+
+    overlaps = []
+    for ref_row, cand_row in zip(ref_knn, cand_knn):
+        ref_set = set(ref_row.tolist())
+        cand_set = set(cand_row.tolist())
+        overlaps.append(len(ref_set & cand_set) / len(ref_set | cand_set))
+
+    return float(np.mean(overlaps))
+
+
+def _mean_knn_label_purity(embedding: np.ndarray, labels: np.ndarray, k: int) -> float:
+    """Return the mean fraction of k nearest neighbors sharing each cell label."""
+
+    knn = _knn_indices(embedding, k)
+    purity = labels[knn] == labels[:, None]
+    return float(np.mean(purity))
 
 
 def test_pca_kmeans_rank_and_manual_annotation_smoke(atlas_from_adata, workflow_adata):
@@ -114,6 +146,48 @@ def test_randomized_streaming_pca_matches_reference_subspace_on_low_rank_matrix(
         rtol=0.05,
         atol=0.01,
     )
+
+
+def test_randomized_streaming_pca_preserves_knn_and_label_purity():
+    rng = np.random.default_rng(1)
+
+    n_groups = 3
+    cells_per_group = 60
+    n_latent = 5
+    n_features = 36
+    labels = np.repeat(np.arange(n_groups), cells_per_group)
+
+    centers = np.zeros((n_groups, n_latent), dtype=np.float32)
+    centers[0, 0] = 5.0
+    centers[1, 1] = 5.0
+    centers[2, 2] = 5.0
+
+    latent = centers[labels] + rng.normal(scale=0.35, size=(labels.size, n_latent))
+    loadings = rng.normal(size=(n_latent, n_features))
+    X = (latent @ loadings + 0.05 * rng.normal(size=(labels.size, n_features))).astype(np.float32)
+    X -= X.mean(axis=0, keepdims=True)
+
+    reference = PCA(n_components=5, svd_solver="randomized", random_state=0)
+    reference_embedding = reference.fit_transform(X)
+
+    model = StreamingRandomizedPCA(
+        n_components=5,
+        oversample=8,
+        batch_size=23,
+        random_state=0,
+        n_iter=2,
+    )
+    model.fit(_ArrayAtlas(X, batch_size=23))
+    streaming_embedding = X @ model.components_.T
+
+    knn_jaccard = _mean_knn_jaccard(reference_embedding, streaming_embedding, k=10)
+    reference_purity = _mean_knn_label_purity(reference_embedding, labels, k=10)
+    streaming_purity = _mean_knn_label_purity(streaming_embedding, labels, k=10)
+
+    assert knn_jaccard >= 0.85
+    assert reference_purity >= 0.95
+    assert streaming_purity >= 0.95
+    assert streaming_purity >= reference_purity - 0.02
 
 
 def test_public_preprocessing_surface_matches_count_only_transform_design():

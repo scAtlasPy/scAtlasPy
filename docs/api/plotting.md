@@ -193,8 +193,9 @@ sap.pl.dotplot(atlas, var_names=["NKG7", "CST3", "MS4A1"], groupby="kmeans")
 
 For routine marker-expression visualization, a log-normalized expression field
 such as `data_log1p` is generally more interpretable than scaled values.
-Scaled expression is centered and standardized and therefore does not preserve
-the original expression magnitude.
+`data_scale` may be centered only or centered and standardized depending on the
+`sap.pp.scale(mode=...)` setting, so it is primarily an analysis representation
+rather than a direct expression-magnitude representation.
 
 ## Large-atlas Visualization
 

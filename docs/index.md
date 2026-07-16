@@ -35,9 +35,11 @@ sap.pp.filter_cells(atlas, min_genes=200)
 sap.pp.filter_genes(atlas, min_cells=3)
 sap.pp.normalize_and_log1p(atlas)
 sap.pp.highly_variable_genes(atlas, n_top_genes=2000)
+# Use mode="center_only" here if PCA should preserve gene-level variance differences.
+sap.pp.scale(atlas)
 
-# Prepare the default analysis view: filtered cells, filtered HVGs, and log1p data.
-atlas.build_read_index()
+# Prepare the PCA analysis view: filtered cells, filtered HVGs, and scaled data.
+atlas.build_read_index(use_hvg=True, use_data="data_scale")
 
 # Dimensionality reduction, clustering, and visualization
 sap.tl.pca(atlas)

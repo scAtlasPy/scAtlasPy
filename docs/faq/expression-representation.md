@@ -56,15 +56,16 @@ The log1p transformation compresses the dynamic range:
 x' = log(1 + x)
 ```
 
-When scaling is not used, scAtlasPy generally recommends normalized
-log1p-transformed HVGs rather than raw counts:
+When scaling is not used, normalized log1p-transformed HVGs are useful for
+non-PCA streaming workflows that should preserve expression-magnitude
+structure:
 
 ```text
 raw counts
 -> library-size normalization
 -> log1p transformation
 -> highly variable gene selection
--> PCA
+-> downstream minibatch or model-specific workflow
 ```
 
 In scAtlasPy, this means building the analysis view from `data_log1p` and
@@ -79,6 +80,13 @@ atlas.build_read_index(
 )
 ```
 
+For `sap.tl.pca()`, the active read index must use a centered representation.
+Run `sap.pp.scale(..., mode="center_only")` if you want PCA to preserve
+gene-level variance and expression-strength differences. Run the default
+`sap.pp.scale(..., mode="center_and_scale")` if you want to normalize gene
+expression scales before PCA. In both cases, build the PCA read index from
+`data_scale`.
+
 ## Scaled Data
 
 Scaling usually means centering and standardizing each gene:
@@ -87,9 +95,13 @@ Scaling usually means centering and standardizing each gene:
 z_ij = (x_ij - mean_j) / sd_j
 ```
 
-After scaling, each selected gene has approximately zero mean and unit variance.
-PCA therefore focuses more on coordinated expression patterns among genes and
-less on differences in their absolute variance.
+With `mode="center_and_scale"`, each selected gene has approximately zero mean
+and unit variance. PCA therefore focuses more on coordinated expression
+patterns among genes and less on differences in their absolute variance.
+
+With `mode="center_only"`, each selected gene is centered but not divided by
+its standard deviation. This satisfies PCA's centering requirement while
+preserving gene-level variance and expression-strength differences.
 
 Scaling can be useful when you want to:
 
@@ -100,7 +112,7 @@ Scaling can be useful when you want to:
 - allow lower-expression but biologically informative genes to contribute more
   strongly.
 
-Scaling is not inherently better than using unscaled data. It changes the
+Standardizing is not inherently better than center-only scaling. It changes the
 weighting of the analysis by making selected genes contribute approximately
 equal variance.
 
@@ -128,9 +140,17 @@ raw counts
 -> PCA
 ```
 
-In scAtlasPy, this corresponds to using `data_scale` together with `use_hvg=True`:
+In scAtlasPy, this corresponds to running `scale()` and then using
+`data_scale` together with `use_hvg=True`. Choose the scale mode according to
+the intended PCA weighting:
 
 ```python
+# Option 1: preserve gene-level variance differences after centering.
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True, mode="center_only")
+
+# Option 2: normalize gene expression scales.
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True, mode="center_and_scale")
+
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
@@ -148,26 +168,22 @@ Without scaling, variance may be concentrated in a small number of highly
 expressed or highly variable genes. These genes can create a few dominant
 directions, producing large explained variance ratios for the first PCs.
 
-After scaling, each selected gene contributes approximately the same total
-variance. The variance is distributed more evenly across genes and principal
-components. A lower explained variance ratio after scaling does not necessarily
-indicate a worse PCA representation; it may simply mean that the representation
-is no longer dominated by a small number of high-variance genes.
+After `mode="center_and_scale"`, each selected gene contributes approximately
+the same total variance. The variance is distributed more evenly across genes
+and principal components. A lower explained variance ratio after standardizing
+does not necessarily indicate a worse PCA representation; it may simply mean
+that the representation is no longer dominated by a small number of
+high-variance genes.
 
-For PBMC3K, the same pattern appears in both Scanpy and scAtlasPy. The values
-below are cumulative explained variance ratios recomputed on PBMC3K after the
-same cell and gene filters and HVG selection:
+This behavior is expected when comparing PCA inputs that preserve gene-level
+variance with inputs that standardize each gene. Log-normalized HVGs can
+concentrate more variance in the leading PCs, while scaled HVGs distribute
+variance more evenly across components.
 
-| Implementation and PCA input | Cumulative explained variance, first 10 PCs | Cumulative explained variance, first 30 PCs |
-| --- | ---: | ---: |
-| scAtlasPy, log-normalized HVGs using `data_log1p` | 0.2045 | 0.2615 |
-| scAtlasPy, scaled HVGs using `data_scale` | 0.0713 | 0.1049 |
-| Scanpy, log-normalized HVGs, no scaling | 0.2045 | 0.2621 |
-| Scanpy, scaled HVGs | 0.0752 | 0.1132 |
-
-The comparison shows that explained variance changes primarily with the input
-representation: log-normalized HVGs concentrate more variance in the leading
-PCs, while scaled HVGs distribute variance more evenly across components.
+The public `sap.tl.pca()` workflow requires a centered read index, so use
+`data_scale` for scAtlasPy PCA. If you need to study unscaled log-normalized
+HVGs, export or stream `data_log1p` into a custom method that explicitly
+supports that input.
 
 For single-cell analysis, PCA quality should not be judged only by the variance
 explained by the first few PCs. Also check whether known cell types and states
@@ -181,21 +197,26 @@ populations are retained.
 | --- | --- |
 | Model the original sequencing count distribution | Raw counts |
 | Use a Poisson, negative binomial, or count-likelihood model | Raw counts |
-| Preserve differences in variability among selected genes | Normalized log1p-transformed highly variable genes |
-| Reduce the dominance of highly expressed genes without equalizing all gene variances | Normalized log1p-transformed highly variable genes |
-| Give selected genes more comparable influence in PCA | Scaled highly variable genes |
-| Emphasize coordinated expression patterns rather than absolute variance | Scaled highly variable genes |
-| Perform routine PCA and clustering without scaling | Normalized log1p-transformed highly variable genes |
-| Perform routine PCA and clustering with scaling | Scaled highly variable genes |
+| Preserve differences in variability among selected genes for non-PCA workflows | Normalized log1p-transformed highly variable genes |
+| Reduce the dominance of highly expressed genes without equalizing all gene variances for non-PCA workflows | Normalized log1p-transformed highly variable genes |
+| Preserve gene-level expression-strength differences in PCA | Centered highly variable genes with `scale(mode="center_only")` |
+| Give selected genes more comparable influence in PCA | Centered and standardized highly variable genes with `scale(mode="center_and_scale")` |
+| Emphasize coordinated expression patterns rather than absolute variance | Centered and standardized highly variable genes |
+| Perform routine PCA and clustering with scale normalization | Centered and standardized highly variable genes |
 | Perform differential expression analysis | Follow the input requirements of the selected statistical method |
 
 ## Practical Recommendation
 
 For most routine analyses:
 
-- use **normalized log1p-transformed highly variable genes** when you want to
-  preserve meaningful differences in gene-level variance;
-- use **scaled highly variable genes** when you want selected genes to have more
+- use **normalized log1p-transformed highly variable genes** for non-PCA
+  workflows when you want to preserve meaningful differences in gene-level
+  variance;
+- use **centered highly variable genes** with `scale(mode="center_only")` for
+  PCA when you want to preserve gene-level variance and expression-strength
+  differences;
+- use **centered and standardized highly variable genes** with
+  `scale(mode="center_and_scale")` when you want selected genes to have more
   comparable influence;
 - use **raw counts only when the downstream method explicitly models count data**.
 
@@ -207,15 +228,20 @@ scAtlasPy stores multiple expression representations side by side, so you can
 choose the input field for each downstream task:
 
 ```python
-# Preserve expression-magnitude structure
+# Preserve expression-magnitude structure for non-PCA streaming workflows
 atlas.build_read_index(use_hvg=True, use_data="data_log1p")
 
-# Balance the contribution of selected HVGs
+# Build a centered PCA input while preserving gene-level variance differences.
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True, mode="center_only")
+atlas.build_read_index(use_hvg=True, use_data="data_scale")
+
+# Or build a centered and standardized PCA input.
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True, mode="center_and_scale")
 atlas.build_read_index(use_hvg=True, use_data="data_scale")
 ```
 
-When interpreting results, remember that `sap.tl.pca()` uses a streaming
-randomized covariance eigensolver so that PCA can run on atlas-scale data
-without materializing the full matrix in memory. Small differences from exact
-in-memory PCA implementations such as Scanpy or `sklearn.decomposition.PCA` are
-expected.
+When interpreting PCA results, remember that `sap.tl.pca()` uses a streaming
+randomized covariance eigensolver on the active centered read index so that PCA
+can run on atlas-scale data without materializing the full matrix in memory.
+Small differences from exact in-memory PCA implementations such as Scanpy or
+`sklearn.decomposition.PCA` are expected.

@@ -146,14 +146,18 @@ Common stored outputs include:
 - `var.highly_variable_genes`;
 - related `var.hvg_*` statistics.
 
-The selected genes can be used in a later analysis view:
+The selected genes can be used in a later analysis view. For PCA, first create
+a centered or standardized representation with `scale()`, then build the read
+index from `data_scale`:
 
 ```python
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True)
+
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
-    use_data="data_log1p",
+    use_data="data_scale",
 )
 ```
 
@@ -181,17 +185,22 @@ var.zero_scale_transform
 ```
 
 ```{note}
-Scaled values no longer represent the original expression magnitude. For
-marker-gene visualization and biological interpretation, log-normalized values
-are usually easier to interpret.
+For PCA, `data_scale` means the representation produced by `scale()`, not
+necessarily z-scores. Use `mode="center_only"` when you want PCA to preserve
+gene-level variance and expression-strength differences. Use the default
+`mode="center_and_scale"` when you want PCA to normalize gene expression scales
+so selected genes contribute more comparably.
+
+For marker-gene visualization and biological interpretation, log-normalized
+values are usually easier to interpret.
 ```
 
 Common `mode` choices are:
 
 | `mode` | Transformation |
 |---|---|
-| `"center_and_scale"` | subtract each gene mean and divide by its standard deviation |
-| `"center_only"` | subtract each gene mean without variance normalization |
+| `"center_and_scale"` | subtract each gene mean and divide by its standard deviation; useful when gene expression scales should be normalized |
+| `"center_only"` | subtract each gene mean without variance normalization; useful when PCA should preserve gene-level variance differences |
 | `"scale_only"` | divide by each gene standard deviation without centering |
 
 ## Typical Order

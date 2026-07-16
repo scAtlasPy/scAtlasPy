@@ -184,17 +184,25 @@ The appropriate field depends on the downstream analysis:
 
 - count-based models may require `data_count`;
 - exploratory analysis and marker visualization commonly use `data_log1p`;
-- PCA or model training may use `data_log1p` or `data_scale`, depending on
-  whether genes should retain variance-dependent weighting or be standardized.
+- PCA uses `data_scale`, because the PCA backend requires a centered read
+  index. Use `scale(mode="center_only")` to preserve gene-level variance
+  differences, or `scale(mode="center_and_scale")` to normalize gene expression
+  scales;
+- other model-training workflows may use `data_log1p` or `data_scale`,
+  depending on whether genes should retain variance-dependent weighting or be
+  standardized.
 
-The selected expression field becomes part of an analysis view:
+The selected expression field becomes part of an analysis view. For a PCA input
+view, create `data_scale` first and build the index from that representation:
 
 ```python
+sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True, mode="center_only")
+
 atlas.build_read_index(
     cell_condition="filter_cells",
     gene_condition="filter_genes",
     use_hvg=True,
-    use_data="data_log1p",
+    use_data="data_scale",
 )
 ```
 

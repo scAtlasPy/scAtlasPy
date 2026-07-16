@@ -1213,7 +1213,8 @@ class Atlas:
         Build a PCA input index using only highly variable genes::
 
             sap.pp.highly_variable_genes(atlas, n_top_genes=3000)
-            atlas.build_read_index(use_hvg=True)"""
+            sap.pp.scale(atlas, use_data="data_log1p", use_hvg=True)
+            atlas.build_read_index(use_hvg=True, use_data="data_scale")"""
 
         if self.connection is None:
             self.connect("r+")

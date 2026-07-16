@@ -1863,7 +1863,10 @@ def scale(
     and writes the result to the derived expression table for ``add_data``. By
     default, it centers and standardizes the data as z-scores. It can also be
     configured to only center the data or only normalize each gene by its
-    standard deviation.
+    standard deviation. For PCA, ``mode="center_only"`` preserves gene-level
+    variance and expression-strength differences after centering, while
+    ``mode="center_and_scale"`` normalizes gene expression scales so selected
+    genes contribute more comparably.
 
     For each target gene, the function first computes the mean and standard
     deviation across all cells based on ``use_data``. Then it transforms
@@ -1922,9 +1925,11 @@ def scale(
 
     mode
         Transformation mode. The default ``"center_and_scale"`` preserves the
-        previous z-score behavior. Use ``"center_only"`` to subtract gene means
-        without dividing by standard deviation. Use ``"scale_only"`` to divide
-        by standard deviation without subtracting gene means.
+        previous z-score behavior and normalizes gene expression scales. Use
+        ``"center_only"`` to subtract gene means without dividing by standard
+        deviation when PCA should preserve gene-level variance differences. Use
+        ``"scale_only"`` to divide by standard deviation without subtracting
+        gene means.
 
     Returns
     -------

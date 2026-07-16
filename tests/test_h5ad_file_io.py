@@ -56,7 +56,7 @@ def test_random_load_h5ad_preserves_expression_rows_after_shuffle(tmp_path, coun
     atlas = sap.Atlas(tmp_path / "random.sasql", db_memory_limit="1GB")
     try:
         atlas.load_h5ad(input_path, load_type="random", cells_per_block=2, import_window_memory_factor=1.0)
-        cell_ids = atlas.get_obs_df()["atlas_cell_id"].astype(int).tolist()
+        cell_ids = atlas.get_obs_df().index.astype(int).tolist()
         exported = atlas.get_anndata(cell_ids, use_data="data_count", include_obsm=False, include_varm=False)
     finally:
         atlas.close()
