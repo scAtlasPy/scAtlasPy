@@ -19,6 +19,7 @@ def rank_genes_groups(
     ncols: int = 4,
     figsize: tuple | None = None,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
     show: bool = True,
 ) -> None:
     """Plot the top marker gene ranking for each group.
@@ -60,6 +61,9 @@ def rank_genes_groups(
 
     save_path
         Path for saving the figure. If ``None``, the figure is not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     show
         Whether to display the figure immediately. If ``False``, the current figure is
@@ -267,7 +271,7 @@ def rank_genes_groups(
     # 6. Save / show
     # -------------------------------------------------
     if save_path is not None:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     if show:
         plt.show()
@@ -291,6 +295,7 @@ def rank_genes_groups_volcano(
     y_cap: float |  None = None,
     xlim_abs: float | None = None,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
     show: bool = True,
     label_fontsize: int = 7,
     label_offset_step: int = 12,
@@ -354,6 +359,9 @@ def rank_genes_groups_volcano(
 
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed or returned.
+
+    dpi
+        Resolution used when saving the figure.
 
     show
         Whether to display the figure immediately. If ``None``, the current Matplotlib
@@ -591,7 +599,7 @@ def rank_genes_groups_volcano(
     fig.tight_layout()
 
     if save_path is not None:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     if show:
         plt.show()
@@ -611,7 +619,8 @@ def rank_genes_groups_violin(
     n_genes: int = 8,
     use_expr_field: str = "data_log1p",
     sample_cells_per_group: int = DEFAULT_GROUP_PLOT_SAMPLE_N,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot violin plots of marker gene expression across different groups.
@@ -661,6 +670,9 @@ def rank_genes_groups_violin(
 
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed or returned.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -1008,6 +1020,6 @@ def rank_genes_groups_violin(
     plt.tight_layout()
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()

@@ -87,6 +87,7 @@ def umap(
     # Large-data / output parameters
     plot_batch_size: int = 200_000,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot cell UMAP embeddings.
@@ -152,6 +153,9 @@ def umap(
 
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -253,6 +257,7 @@ def umap(
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
+            dpi=dpi,
         )
         return None
 
@@ -271,6 +276,7 @@ def umap(
             cmap=cmap,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
+            dpi=dpi,
         )
         return None
 
@@ -291,6 +297,7 @@ def umap(
         frameon=frameon,
         save_path=save_path,
         plot_batch_size=plot_batch_size,
+        dpi=dpi,
     )
     return None
 
@@ -313,6 +320,7 @@ def _plot_umap_obs(
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
     plot_batch_size: int = 200_000,
+    dpi: int = 300,
     return_df: bool = False,
 ):
 
@@ -323,8 +331,9 @@ def _plot_umap_obs(
     Numeric fields use a continuous colormap; string, boolean, or categorical fields use
     discrete colors and a legend.
 
-    When the cell count for discrete categories is large and no DataFrame needs to be returned, this function delegates to
-    ``_draw_umap_obs_streaming`` to read and plot data in batches, reducing the amount of data loaded at once.
+    When all cells are requested and no DataFrame needs to be returned, this function
+    delegates to the shared streaming embedding helpers to draw data in batches,
+    reducing the amount of data loaded at once.
 
     Parameters
     ----------
@@ -441,6 +450,7 @@ def _plot_umap_obs(
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
+            dpi=dpi,
         )
 
     # Fetch data, optionally with sampling
@@ -500,6 +510,7 @@ def _plot_umap_obs(
             frameon=frameon,
             save_path=save_path,
             plot_batch_size=plot_batch_size,
+            dpi=dpi,
             spread_label_positions=_spread_on_data_label_positions,
         )
 
@@ -541,7 +552,7 @@ def _plot_umap_obs(
             ax.set_yticks([])
         plt.tight_layout(pad=0.8)
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.show()
         if return_df:
             return plot_df
@@ -684,7 +695,7 @@ def _plot_umap_obs(
         plt.tight_layout(pad=0.8)
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -692,294 +703,6 @@ def _plot_umap_obs(
         return plot_df
 
     return None
-
-
-# umap() - if color is an obs column -> plot_umap_obs()
-#          sample_n == None -> _draw_umap_obs_streaming()
-def _draw_umap_obs_streaming(
-    atlas: Atlas,
-    color: str,
-    where_sql: str,
-    legend_loc: str = "right_margin",
-    title: str | None = None,
-    figsize: tuple[float, float] | None = DEFAULT_EMBEDDING_FIGSIZE,
-    point_size: float | None = None,
-    alpha: float = 0.7,
-    palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-    frameon: bool = True,
-    save_path: PathLike[str] | str | None = None,
-    plot_batch_size: int = 200_000
-):
-
-    """Plot UMAP for a discrete ``obs`` categorical variable in batches.
-
-    This internal function is used for discrete categorical UMAP plotting in large-data scenarios.
-    It first reads all category labels to fix the color mapping,
-    then reads UMAP coordinates and category labels from DuckDB in batches according to ``plot_batch_size``,
-    and scatters them batch by batch onto the same axes, avoiding loading all cells into memory at once.
-
-    Parameters
-    ----------
-    atlas
-        Atlas object. It must already be connected to a DuckDB database and contain the ``obs`` and ``obsm_X_umap`` tables.
-
-    color
-        Discrete ``obs`` column name used for coloring.
-
-    where_sql
-        Pre-composed SQL ``WHERE`` condition, excluding the ``WHERE`` keyword.
-
-    legend_loc
-        Legend location.
-
-    title
-        Figure title.
-
-    figsize
-        Matplotlib figure size.
-
-    point_size
-        Scatter point size.
-
-    alpha
-        Plotting transparency.
-
-    palette
-        Color scheme used for discrete categorical variables.
-
-    frameon
-        Whether to show the plot frame.
-
-    save_path
-        Path for saving the figure. If ``None``, the figure is only displayed.
-
-    plot_batch_size
-        Number of cells read from the database per plotting batch.
-
-    Returns
-    -------
-    None
-        The function directly plots the figure and does not return plotting data.
-    """
-
-    conn = atlas.connection
-
-    # First fetch all categories to fix the colors
-    label_df = conn.execute(f"""
-        SELECT DISTINCT CAST(o.{color} AS TEXT) AS color_label
-        FROM obsm_X_umap u
-        JOIN obs o
-          ON u.atlas_cell_id = o.atlas_cell_id
-        WHERE {where_sql}
-        ORDER BY color_label
-    """).fetchdf()
-
-    if len(label_df) == 0:
-        raise ValueError("No cells are available for plotting after filtering")
-
-    total_points = conn.execute(f"""
-        SELECT COUNT(*)
-        FROM obsm_X_umap u
-        JOIN obs o
-          ON u.atlas_cell_id = o.atlas_cell_id
-        WHERE {where_sql}
-    """).fetchone()[0]
-
-    if point_size is None:
-        point_size = default_point_size(total_points)
-
-    # Use natural sorting by default
-    # embryo_1, embryo_2, ..., embryo_10
-    # Do not directly use SQL string sorting results
-    unique_labels = _sort_categories_natural(
-        label_df["color_label"].astype(str).tolist()
-    )
-
-    # Use the unified large discrete color pool
-    label_to_color = _build_discrete_color_map(
-        labels=unique_labels,
-        palette=palette,
-    )
-
-    # Create figure
-    fig, ax = plt.subplots(figsize=figsize, facecolor="white")
-    ax.set_facecolor("white")
-
-    # Read in batches + plot in batches
-    last_cell_id = -1
-    total_drawn = 0
-
-    while True:
-
-        batch_df = conn.execute(f"""
-            SELECT
-                u.atlas_cell_id,
-                u.umap1,
-                u.umap2,
-                CAST(o.{color} AS TEXT) AS color_label
-            FROM obsm_X_umap u
-            JOIN obs o
-              ON u.atlas_cell_id = o.atlas_cell_id
-            WHERE {where_sql}
-              AND u.atlas_cell_id > {int(last_cell_id)}
-            ORDER BY u.atlas_cell_id
-            LIMIT {int(plot_batch_size)}
-        """).fetchdf()
-
-        if len(batch_df) == 0:
-            break
-
-        last_cell_id = int(batch_df["atlas_cell_id"].iloc[-1])
-        total_drawn += len(batch_df)
-
-        for lab in unique_labels:
-            sub = batch_df[batch_df["color_label"].astype(str) == lab]
-
-            if len(sub) == 0:
-                continue
-
-            ax.scatter(
-                sub["umap1"].to_numpy(),
-                sub["umap2"].to_numpy(),
-                s=point_size,
-                alpha=alpha,
-                c=[label_to_color[lab]],
-                linewidths=0,
-                rasterized=True
-            )
-
-    # Title
-    if title is None:
-        title = color
-
-    ax.set_title(title, fontsize=14, weight="normal", pad=8)
-    ax.set_xlabel("UMAP1", fontsize=12)
-    ax.set_ylabel("UMAP2", fontsize=12)
-
-    # Legend
-    if legend_loc == "right_margin":
-        n_cat = len(unique_labels)
-        max_label_len = max([len(str(c)) for c in unique_labels], default=0)
-
-        if n_cat <= 14:
-            legend_ncol = 1
-            legend_fontsize = 20
-        elif n_cat <= 30:
-            legend_ncol = 2
-            legend_fontsize = 20
-        elif n_cat <= 60:
-            legend_ncol = 4
-            legend_fontsize = 20
-        else:
-            legend_ncol = 5
-            legend_fontsize = 12
-
-        if max_label_len >= 18:
-            legend_fontsize = min(legend_fontsize, 15)
-        if max_label_len >= 28:
-            legend_fontsize = min(legend_fontsize, 15)
-
-        legend_handles = [
-            Line2D(
-                [0], [0],
-                marker="o",
-                color="w",
-                label=str(lab),
-                markerfacecolor=label_to_color[lab],
-                markersize=6,
-            )
-            for lab in unique_labels
-        ]
-
-        leg = ax.legend(
-            handles=legend_handles,
-            title=None,
-            bbox_to_anchor=(1.03, 0.5),
-            loc="center left",
-            frameon=False,
-            fontsize=legend_fontsize,
-            borderaxespad=0.0,
-            ncol=legend_ncol,
-            columnspacing=1.0,
-            handletextpad=0.35,
-            labelspacing=0.35,
-            handlelength=0.8,
-        )
-
-        leg.set_in_layout(True)
-
-    elif legend_loc == "on_data":
-        center_df = conn.execute(f"""
-            SELECT
-                CAST(o.{color} AS TEXT) AS color_label,
-                MEDIAN(u.umap1) AS x_center,
-                MEDIAN(u.umap2) AS y_center
-            FROM obsm_X_umap u
-            JOIN obs o
-              ON u.atlas_cell_id = o.atlas_cell_id
-            WHERE {where_sql}
-            GROUP BY CAST(o.{color} AS TEXT)
-        """).fetchdf()
-        # Modified: apply simple collision avoidance to on_data label positions to prevent text crowding
-        center_df = _spread_on_data_label_positions(center_df)
-        for _, row in center_df.iterrows():
-            ax.text(
-                row["label_x"],
-                row["label_y"],
-                str(row["color_label"]),
-                fontsize=14,
-                weight="bold",
-                color="black",
-                ha="center",
-                va="center",
-                zorder=10,
-            )
-
-    else:
-        raise ValueError("legend_loc only supports 'right_margin' or 'on_data'")
-
-    ax.grid(False)
-
-    ax.set_xticks([])
-    ax.set_yticks([])
-
-    # ax.set_aspect("equal", adjustable="box")
-    ax.set_aspect("auto")
-
-    ax.margins(0.02)
-
-    if frameon:
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(1.0)
-            spine.set_color("black")
-    else:
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-    if legend_loc in ("right_margin", "on_data"):
-        # fig.subplots_adjust(
-        #     left=0.06,
-        #     right=0.42,
-        #     bottom=0.10,
-        #     top=0.90,
-        # )
-        fig.subplots_adjust(
-            left=0.08,
-            right=0.70,
-            bottom=0.10,
-            top=0.90,
-        )
-    else:
-        plt.tight_layout(pad=0.8)
-
-    if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
-
-    plt.show()
-
-    return None
-
 
 
 # umap() - if color is a gene name -> plot_umap_features()
@@ -996,6 +719,7 @@ def _plot_umap_features(
     cmap: str = "viridis",
     save_path: PathLike[str] | str | None = None,
     plot_batch_size: int = 200_000,
+    dpi: int = 300,
 ):
 
     """Plot UMAP feature plots by gene expression.
@@ -1162,6 +886,7 @@ def _plot_umap_features(
                 show=False,
                 adjust_layout=False,
                 plot_batch_size=plot_batch_size,
+                dpi=dpi,
             )
 
         for ax in axes_flat[n:]:
@@ -1176,7 +901,7 @@ def _plot_umap_features(
             hspace=0.35,
         )
         if save_path is not None:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.show()
         return None
 
@@ -1382,7 +1107,7 @@ def _plot_umap_features(
         hspace=0.35,
     )
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -1406,6 +1131,7 @@ def _plot_umap_mixed(
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
     plot_batch_size: int = 200_000,
+    dpi: int = 300,
 ):
     """Plot a mixed-type multi-panel UMAP figure.
 
@@ -1625,6 +1351,7 @@ def _plot_umap_mixed(
                     show=False,
                     adjust_layout=False,
                     plot_batch_size=plot_batch_size,
+                    dpi=dpi,
                 )
             else:
                 draw_embedding_scatter_streaming(
@@ -1646,6 +1373,7 @@ def _plot_umap_mixed(
                     show=False,
                     adjust_layout=False,
                     plot_batch_size=plot_batch_size,
+                    dpi=dpi,
                     spread_label_positions=_spread_on_data_label_positions,
                 )
 
@@ -1672,6 +1400,7 @@ def _plot_umap_mixed(
                 show=False,
                 adjust_layout=False,
                 plot_batch_size=plot_batch_size,
+                dpi=dpi,
             )
 
         for ax in axes_flat[n_panels:]:
@@ -1686,7 +1415,7 @@ def _plot_umap_mixed(
             hspace=0.35,
         )
         if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+            plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
         plt.show()
         return None
 
@@ -1988,7 +1717,7 @@ def _plot_umap_mixed(
     )
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 

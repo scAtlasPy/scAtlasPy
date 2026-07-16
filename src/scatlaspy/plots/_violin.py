@@ -62,6 +62,7 @@ def violin(
     order: list | None = None,
     ylim_quantile: tuple[float, float] | None = (0.01, 0.95),
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
     *,
     violinplot_kwargs: dict[str, Any] | None = None,
     body_kwargs: dict[str, Any] | None = None,
@@ -121,6 +122,9 @@ def violin(
 
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
+
+    dpi
+        Resolution used when saving the figure.
 
     violinplot_kwargs
         Additional keyword arguments passed to ``matplotlib.axes.Axes.violinplot``.
@@ -460,7 +464,7 @@ def violin(
     plt.tight_layout(pad=1.0)
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -480,6 +484,7 @@ def stacked_violin(
     color_vmax: float | None = 5.0,
     font_size: int = 14,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
     *,
     kde_kwargs: dict[str, Any] | None = None,
     fill_kwargs: dict[str, Any] | None = None,
@@ -547,6 +552,9 @@ def stacked_violin(
 
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
+
+    dpi
+        Resolution used when saving the figure.
 
     kde_kwargs
         Additional keyword arguments passed to ``scipy.stats.gaussian_kde``.
@@ -978,7 +986,7 @@ def stacked_violin(
     )
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 

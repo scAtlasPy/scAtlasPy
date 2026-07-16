@@ -63,7 +63,8 @@ def dotplot(
     colorbar_vmin: float | None = 0.0,
     colorbar_vmax: float | None = 5.0,
     font_size: int = 14,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot a dotplot of gene expression across different cell groups.
@@ -121,6 +122,8 @@ def dotplot(
         Font size for plotting.
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed.
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -560,7 +563,7 @@ def dotplot(
     )
 
     if save_path:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 

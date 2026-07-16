@@ -155,6 +155,7 @@ def draw_embedding_scatter_streaming(
     adjust_layout: bool = True,
     plot_batch_size: int = 200_000,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
     spread_label_positions: Callable[[Any], Any] | None = None,
 ) -> None:
     """Draw an embedding scatter plot in batches.
@@ -268,7 +269,7 @@ def draw_embedding_scatter_streaming(
     )
 
     if save_path:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     if show and owns_figure:
         plt.show()
@@ -298,6 +299,7 @@ def draw_embedding_obs_continuous_streaming(
     range_sample_n: int = 100_000,
     range_quantiles: tuple[float, float] = (0.01, 0.99),
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Draw an embedding colored by one numeric ``obs`` column in batches."""
 
@@ -381,7 +383,7 @@ def draw_embedding_obs_continuous_streaming(
     if adjust_layout:
         fig.tight_layout(pad=0.8)
     if save_path:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
     if show and owns_figure:
         plt.show()
 
@@ -412,6 +414,7 @@ def draw_embedding_gene_expression_streaming(
     range_sample_n: int = 100_000,
     range_quantiles: tuple[float, float] = (0.01, 0.99),
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Draw an embedding colored by one sparse gene expression vector."""
 
@@ -502,7 +505,7 @@ def draw_embedding_gene_expression_streaming(
     if adjust_layout:
         fig.tight_layout(pad=0.8)
     if save_path:
-        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
     if show and owns_figure:
         plt.show()
 

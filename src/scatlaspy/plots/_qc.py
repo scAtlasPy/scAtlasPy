@@ -16,7 +16,8 @@ def highest_expr_genes(
     figsize: tuple[float, float] | None=(12, 10),
     approx_quantile: bool = True,
     sample_cells: int | None = None,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot a QC figure showing the percentage of total counts occupied by the highest expressed genes.
@@ -71,6 +72,9 @@ def highest_expr_genes(
         very large datasets.
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -588,7 +592,7 @@ def highest_expr_genes(
 
     plt.tight_layout(pad=0.8)
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -635,7 +639,8 @@ def violin_qc_metrics(
     filter_key: str = "filter_cells",
     sample_n: int | None = 50_000,
     random_state: int = 0,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot violin plots for QC metrics in ``obs``.
@@ -685,6 +690,9 @@ def violin_qc_metrics(
         Random seed; using a fixed integer improves reproducibility.
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Notes
     -----
@@ -849,7 +857,7 @@ def violin_qc_metrics(
 
     plt.tight_layout(pad=1.0)
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -863,7 +871,8 @@ def scatter_qc_metrics(
     sample_n: int | None = 50_000,
     point_size: float = 8,
     alpha: float = 0.7,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot scatter plots for pairwise relationships between QC metrics in ``obs``.
@@ -910,6 +919,9 @@ def scatter_qc_metrics(
 
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Notes
     -----
@@ -1036,6 +1048,6 @@ def scatter_qc_metrics(
 
     plt.tight_layout(pad=1.0)
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()

@@ -10,7 +10,8 @@ def kmeans_cluster_size(
     figsize: tuple[float, float] | None=(7, 4),
     show_percent: bool = True,
     title: str | None = None,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot the cell count distribution of K-means or another grouping column.
@@ -46,6 +47,8 @@ def kmeans_cluster_size(
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and
         not saved.
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -128,6 +131,6 @@ def kmeans_cluster_size(
 
     plt.tight_layout()
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()

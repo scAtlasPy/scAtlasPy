@@ -71,7 +71,8 @@ def pca(
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
     legend_loc: str | None = None,
     frameon: bool = True,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
 
     """Plot a cell PCA embedding scatter plot.
@@ -127,6 +128,9 @@ def pca(
 
     alpha
         Transparency of graphical elements.
+
+    dpi
+        Resolution used when saving the figure.
 
     cmap
         Matplotlib colormap name used for continuous variables or gene expression.
@@ -275,6 +279,7 @@ def pca(
                 frameon=frameon,
                 hide_ticks=False,
                 save_path=save_path,
+                dpi=dpi,
             )
             return None
         if color in obs_cols_for_stream:
@@ -295,6 +300,7 @@ def pca(
                     frameon=frameon,
                     hide_ticks=False,
                     save_path=save_path,
+                    dpi=dpi,
                 )
             else:
                 draw_embedding_scatter_streaming(
@@ -314,6 +320,7 @@ def pca(
                     frameon=frameon,
                     hide_ticks=False,
                     save_path=save_path,
+                    dpi=dpi,
                 )
             return None
         gene_row = conn.execute("""
@@ -348,6 +355,7 @@ def pca(
                 frameon=frameon,
                 hide_ticks=False,
                 save_path=save_path,
+                dpi=dpi,
             )
             return None
         var_cols = [
@@ -703,7 +711,7 @@ def pca(
         plt.tight_layout(pad=0.8)
 
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
 
     plt.show()
 
@@ -716,6 +724,7 @@ def pca_variance_ratio(
     show: bool | None = None,
     figsize: tuple[float, float] | None = (7, 6),
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Plot the variance explained ratio of each PCA component.
 
@@ -749,6 +758,9 @@ def pca_variance_ratio(
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and
         not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -855,7 +867,7 @@ def pca_variance_ratio(
 
     # 6. Save figure
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
 
     # 7. Show or close
     if show is None:
@@ -875,6 +887,7 @@ def pca_variance_ratio_cumsum(
     show: bool | None = None,
     figsize: tuple[float, float] | None=(16, 8),
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Plot the cumulative PCA variance explained ratio.
 
@@ -910,6 +923,9 @@ def pca_variance_ratio_cumsum(
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and
         not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -974,7 +990,7 @@ def pca_variance_ratio_cumsum(
 
     # 5. Save figure
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
 
     # 6. Show or close figure
     if show is None:
@@ -998,6 +1014,7 @@ def pca_loadings(
     figsize: tuple[float, float] | None = (14, 8),
     show: bool | None = None,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Plot PCA loadings.
 
@@ -1038,6 +1055,9 @@ def pca_loadings(
     save_path
         Path for saving the figure. If ``None``, the figure is only displayed and
         not saved.
+
+    dpi
+        Resolution used when saving the figure.
 
     Returns
     -------
@@ -1352,7 +1372,7 @@ def pca_loadings(
     # 7. Save figure
     # -------------------------------------------------
     if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
 
     # -------------------------------------------------
     # 8. Show or close

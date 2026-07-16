@@ -27,6 +27,7 @@ def highly_variable_genes(
     alpha_other: float = 0.6,
 
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ) -> None:
     """Plot diagnostic figures for highly variable gene selection results.
 
@@ -90,6 +91,9 @@ def highly_variable_genes(
         Path for saving the figure. If ``None``, the figure is only displayed and
         not saved.
 
+    dpi
+        Resolution used when saving the figure.
+
     Returns
     -------
     None
@@ -127,6 +131,7 @@ def highly_variable_genes(
             hvg_key=hvg_key,
             sample_other=sample_other,
             save_path=save_path,
+            dpi=dpi,
         )
         return None
 
@@ -145,6 +150,7 @@ def highly_variable_genes(
             alpha_hvg=alpha_hvg,
             alpha_other=alpha_other,
             save_path=save_path,
+            dpi=dpi,
         )
         return None
 
@@ -169,7 +175,8 @@ def _highly_variable_genes_plot(
     point_size_other: float = 6,
     alpha_hvg: float = 0.9,
     alpha_other: float = 0.6,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ):
 
     """Plot a cv/var-style diagnostic figure for highly variable gene selection.
@@ -371,7 +378,7 @@ def _highly_variable_genes_plot(
 
     plt.tight_layout(pad=1.0)
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
 
@@ -381,6 +388,7 @@ def _highly_variable_genes_plot_seurat(
     hvg_key: str = "highly_variable_genes",
     sample_other: int | None = 20_000,
     save_path: PathLike[str] | str | None = None,
+    dpi: int = 300,
 ):
 
     """Plot a Seurat-style diagnostic figure for highly variable gene selection.
@@ -626,6 +634,6 @@ def _highly_variable_genes_plot_seurat(
     plt.tight_layout(pad=1.0)
 
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.savefig(save_path, dpi=dpi, bbox_inches="tight")
 
     plt.show()
