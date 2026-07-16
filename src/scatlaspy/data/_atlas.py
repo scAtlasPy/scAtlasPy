@@ -1162,7 +1162,7 @@ class Atlas:
 
         conn.commit()
 
-    @duckdb_memory_limit("3G")
+    @duckdb_memory_limit("10G")
     def build_read_index(
         self,
         cell_condition: str | None = "filter_cells",

@@ -280,7 +280,8 @@ def umap(
     fit_sample_n: int = 200_000,
     transform_batch_size: int = 100_000,
     parametric_batch_size: int = 1024,
-    training_epochs: int = 1,
+    keras_epochs: int = 10,
+    training_epochs: int | None = None,
     n_components: int = 2,
     n_pcs: int | None = None,
     n_neighbors: int = 15,
@@ -310,6 +311,7 @@ def umap(
         fit_sample_n=fit_sample_n,
         transform_batch_size=transform_batch_size,
         parametric_batch_size=parametric_batch_size,
+        keras_epochs=keras_epochs,
         training_epochs=training_epochs,
         n_components=n_components,
         n_pcs=n_pcs,
@@ -334,7 +336,8 @@ def parametric_umap(
     fit_sample_n: int = 200_000,
     transform_batch_size: int = 100_000,
     parametric_batch_size: int = 1024,
-    training_epochs: int = 1,
+    keras_epochs: int = 10,
+    training_epochs: int | None = None,
     n_components: int = 2,
     n_pcs: int | None = None,
     n_neighbors: int = 15,
@@ -374,10 +377,18 @@ def parametric_umap(
     parametric_batch_size
         Keras training batch size used inside ParametricUMAP.
 
+    keras_epochs
+        Number of Keras epochs shown by the internal Keras ``fit`` call. In
+        umap-learn's ParametricUMAP, ``loss_report_frequency`` controls how one
+        UMAP training epoch is split into Keras reporting epochs. scAtlasPy sets
+        ``loss_report_frequency`` to this value and keeps ``n_training_epochs``
+        at one by default, so the displayed ``Epoch 1/keras_epochs`` count is
+        intuitive without changing the total training work from the historical
+        default.
+
     training_epochs
-        ParametricUMAP training epoch multiplier. In umap-learn, one unit here
-        corresponds to ``loss_report_frequency`` Keras epochs, which is currently
-        10 by default.
+        Deprecated alias for ``keras_epochs``. It is kept temporarily for
+        compatibility with older scripts.
 
     n_components
         Number of UMAP dimensions. scAtlasPy currently writes ``umap1`` and
@@ -406,7 +417,7 @@ def parametric_umap(
 
     keras_fit_kwargs
         Optional keyword arguments passed to the internal Keras ``fit`` call.
-        Do not pass ``epochs`` here; use ``training_epochs`` instead.
+        Do not pass ``epochs`` here; use ``keras_epochs`` instead.
 
     verbose
         Verbosity passed to ParametricUMAP and Keras prediction.
@@ -443,7 +454,17 @@ def parametric_umap(
     if parametric_batch_size <= 0:
         raise ValueError("parametric_batch_size must be greater than 0")
 
-    if training_epochs <= 0:
+    n_training_epochs = 1
+    if training_epochs is not None:
+        logger.warning(
+            "training_epochs is deprecated and will be removed in a future "
+            "release; use keras_epochs instead."
+        )
+        n_training_epochs = int(training_epochs)
+
+    if keras_epochs <= 0:
+        raise ValueError("keras_epochs must be greater than 0")
+    if n_training_epochs <= 0:
         raise ValueError("training_epochs must be greater than 0")
 
     if float(spread) < float(min_dist):
@@ -458,7 +479,7 @@ def parametric_umap(
 
     if "epochs" in keras_fit_kwargs:
         raise ValueError(
-            "Do not pass keras_fit_kwargs['epochs']; use training_epochs instead."
+            "Do not pass keras_fit_kwargs['epochs']; use keras_epochs instead."
         )
 
     keras_fit_kwargs.setdefault("verbose", verbose)
@@ -480,7 +501,7 @@ def parametric_umap(
     logger.info(f"[ParametricUMAP] n_pcs = {len(pc_cols)}")
     logger.info(f"[ParametricUMAP] transform_batch_size = {transform_batch_size:,}")
     logger.info(f"[ParametricUMAP] parametric_batch_size = {parametric_batch_size:,}")
-    logger.info(f"[ParametricUMAP] training_epochs = {training_epochs}")
+    logger.info(f"[ParametricUMAP] keras_epochs = {keras_epochs}")
     logger.info(f"[ParametricUMAP] device = {device_name}")
 
     fit_df = conn.execute(f"""
@@ -508,7 +529,8 @@ def parametric_umap(
             verbose=verbose,
             keras_fit_kwargs=keras_fit_kwargs,
         )
-        reducer.n_training_epochs = int(training_epochs)
+        reducer.loss_report_frequency = int(keras_epochs)
+        reducer.n_training_epochs = int(n_training_epochs)
 
         logger.info("[ParametricUMAP] fitting model")
         reducer.fit(X_fit)
@@ -573,7 +595,7 @@ def parametric_umap(
             "fit_sample_n",
             "transform_batch_size",
             "parametric_batch_size",
-            "training_epochs",
+            "keras_epochs",
             "device",
             "input_table",
             "output_table",
@@ -591,7 +613,7 @@ def parametric_umap(
             str(sample_n),
             str(transform_batch_size),
             str(parametric_batch_size),
-            str(training_epochs),
+            str(keras_epochs),
             str(device_name),
             "obsm_X_pca",
             add_table,

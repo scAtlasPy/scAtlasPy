@@ -145,7 +145,12 @@ sap.tl.umap(atlas)
 ```
 
 For large datasets, set `fit_sample_n` to control the training subset and
-`transform_batch_size` to control full-atlas prediction batches.
+`transform_batch_size` to control full-atlas prediction batches. The
+`keras_epochs` parameter controls the number of Keras epochs shown in the
+training log. Internally, scAtlasPy maps this to ParametricUMAP's
+`loss_report_frequency`, so the displayed `Epoch 1/keras_epochs` count matches
+the value passed to `sap.tl.umap()` without increasing the default total
+training work.
 
 The stored coordinates can be visualized with:
 
