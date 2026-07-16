@@ -2384,25 +2384,37 @@ def _cleanup_transform_after_step(
         try:
             conn.unregister(t)
         except Exception:
-            pass
+            logger.debug(
+                "Failed to unregister temporary object %s during transformation cleanup",
+                t,
+                exc_info=True,
+            )
 
     # 2. Drop DuckDB temporary tables
     for t in temp_tables:
         try:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
         except Exception:
-            pass
+            logger.debug(
+                "Failed to drop temporary table %s during transformation cleanup",
+                t,
+                exc_info=True,
+            )
 
     # 3. Checkpoint is recommended after large-table UPDATE / DROP / RENAME operations
     if checkpoint:
         try:
             conn.execute("CHECKPOINT")
         except Exception:
-            pass
+            logger.exception("DuckDB CHECKPOINT failed during transformation cleanup")
+            raise
 
     # 4. Python-level garbage collection
     if collect:
         try:
             gc.collect()
         except Exception:
-            pass
+            logger.debug(
+                "Python garbage collection failed during transformation cleanup",
+                exc_info=True,
+            )

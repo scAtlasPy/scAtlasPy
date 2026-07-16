@@ -178,7 +178,7 @@ class StreamingRandomizedPCA:
         cols = ",\n".join([f"pc{i} FLOAT" for i in range(n_components)])
         atlas.connection.execute(f"""
             CREATE TABLE IF NOT EXISTS {table_name} (
-                atlas_gene_id USMALLINT,
+                atlas_gene_id INTEGER,
                 {cols}
             );
         """)
@@ -226,8 +226,21 @@ class StreamingRandomizedPCA:
             raise RuntimeError("components_ is None. Please run fit first.")
 
         pcs = self.components_.T.astype(np.float32)
+        gene_ids = atlas.connection.execute("""
+            SELECT atlas_gene_id
+            FROM var
+            WHERE filter_gene_id IS NOT NULL
+            ORDER BY filter_gene_id
+        """).fetchnumpy()["atlas_gene_id"].astype(np.int32, copy=False)
+        if gene_ids.shape[0] != pcs.shape[0]:
+            raise ValueError(
+                "The number of PCA loading rows does not match the active gene "
+                f"index: components={pcs.shape[0]}, active_genes={gene_ids.shape[0]}. "
+                "Please rebuild the read index before running PCA."
+            )
+
         df = pd.DataFrame(pcs, columns=[f"pc{i}" for i in range(pcs.shape[1])])
-        df.insert(0, "atlas_gene_id", np.arange(pcs.shape[0], dtype=np.int32))
+        df.insert(0, "atlas_gene_id", gene_ids)
         atlas.connection.append(table_name, df)
 
     def _writer_uns_pca_stats(self, atlas: Atlas, table_name: str = "uns_pca_stats") -> None:

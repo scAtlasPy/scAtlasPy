@@ -143,7 +143,7 @@ class FastH5adBlockReader:
         try:
             self.adata_backed.file.close()
         except Exception:
-            pass
+            logger.debug("Failed to close backed AnnData file", exc_info=True)
         self._is_supported = False
 
     @staticmethod
@@ -280,6 +280,31 @@ class FastH5adBlockReader:
         var = self.adata_backed.var.copy()
         obsm = self._read_obsm_block(block_start, block_end)
         return AnnData(X=X, obs=obs, var=var, obsm=obsm)
+
+
+def _rollback_if_possible(conn) -> None:
+    """Best-effort rollback used when import fails.
+
+    Import functions commit data window by window. If a later operation fails
+    after the most recent commit, there may be no active transaction left to
+    roll back. In that case rollback itself can fail and should not mask the
+    original import error, but the rollback traceback is still useful for
+    diagnosing lock or transaction-state problems.
+    """
+
+    try:
+        conn.execute("ROLLBACK")
+    except Exception:
+        logger.exception("Rollback failed while handling load_h5ad import error")
+
+
+def _close_if_possible(obj) -> None:
+    """Best-effort close helper for h5ad readers and file handles."""
+
+    try:
+        obj.close()
+    except Exception:
+        logger.debug("Failed to close h5ad reader during cleanup", exc_info=True)
 
 
 # Unified h5ad import interface
@@ -1130,42 +1155,42 @@ def _load_h5ad_list_random(
             # Final commit
             conn.execute("COMMIT")
 
+            # Primary keys
+            conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+            conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+
+            # varm is gene-dimensional. When var is consistent across multiple
+            # files, only the varm from the first file needs to be imported.
+            _add_varm_from_h5ad(h5ad_paths[0], atlas)
+
+            # Clean up the DuckDB file state after import is complete. A
+            # checkpoint failure means the imported database is not in the
+            # expected finalized state, so it must be reported to the caller.
+            conn.execute("CHECKPOINT")
+            # Release large objects such as the global block index pool.
+            try:
+                del all_block_refs
+            except Exception:
+                pass
+            try:
+                del first_backed
+            except Exception:
+                pass
+            gc.collect()
+
+            return {
+                "files": file_num,
+                "cells": global_cell_id,
+                "genes": ref_n_genes,
+                "nnz": global_data_id,
+                "blocks": total_blocks,
+                "flush": flush_counter,
+            }
+
         except Exception:
             pbar.close()
-            conn.execute("ROLLBACK")
+            _rollback_if_possible(conn)
             raise
-
-        # Primary keys
-        conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-        conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-
-        # varm is gene-dimensional. When var is consistent across multiple files, only the varm from the first file needs to be imported.
-        _add_varm_from_h5ad(h5ad_paths[0], atlas)
-
-        # Clean up the DuckDB file state after import is complete
-        try:
-            conn.execute("CHECKPOINT")
-        except Exception:
-            pass
-        # Release large objects such as the global block index pool
-        try:
-            del all_block_refs
-        except Exception:
-            pass
-        try:
-            del first_backed
-        except Exception:
-            pass
-        gc.collect()
-
-        return {
-            "files": file_num,
-            "cells": global_cell_id,
-            "genes": ref_n_genes,
-            "nnz": global_data_id,
-            "blocks": total_blocks,
-            "flush": flush_counter,
-        }
 
 
     finally:
@@ -1565,33 +1590,27 @@ def _load_h5ad_random(
             carry_adata = None
 
         conn.execute("COMMIT")
-    except Exception:
-        conn.execute("ROLLBACK")
-        try:
-            block_reader.close()
-        except Exception:
-            pass
-        raise
 
-    # Primary keys
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+        # Primary keys
+        conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+        conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
 
-    # It is not recommended to import obsm during random import
-    # Because obs / X have already been randomly reordered, directly importing obsm in the original h5ad order will cause misalignment; varm is gene-dimensional and is usually fine
-    # _add_obsm_from_h5ad(h5ad_path, atlas)
-    _add_varm_from_h5ad(h5ad_path, atlas)
+        # It is not recommended to import obsm during random import.
+        # obs / X have already been randomly reordered, so directly importing
+        # obsm in original h5ad order would cause misalignment. varm is
+        # gene-dimensional and remains safe to import.
+        # _add_obsm_from_h5ad(h5ad_path, atlas)
+        _add_varm_from_h5ad(h5ad_path, atlas)
 
-    # Clean up the DuckDB file state after import is complete
-    try:
+        # Clean up the DuckDB file state after import is complete. A checkpoint
+        # failure means the imported database is not in the expected finalized
+        # state, so it must be reported to the caller.
         conn.execute("CHECKPOINT")
     except Exception:
-        pass
-
-    try:
-        block_reader.close()
-    except Exception:
-        pass
+        _rollback_if_possible(conn)
+        raise
+    finally:
+        _close_if_possible(block_reader)
 
 
 def _load_h5ad_order(
@@ -1775,30 +1794,23 @@ def _load_h5ad_order(
         # Final commit
         conn.execute("COMMIT")
 
+        # Primary keys: must be added after all data has been written.
+        conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
+        conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
+
+        # Ordered import does not shuffle cells, so obsm can be imported normally.
+        _add_obsm_from_h5ad(
+            h5ad_path,
+            atlas,
+            cells_per_block=cells_per_block,
+        )
+        _add_varm_from_h5ad(h5ad_path, atlas)
+
     except Exception:
-        conn.execute("ROLLBACK")
-        try:
-            block_reader.close()
-        except Exception:
-            pass
+        _rollback_if_possible(conn)
         raise
-
-    # Primary keys: must be added after all data has been written
-    conn.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")
-    conn.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")
-
-    # Ordered import does not shuffle cells, so obsm can be imported normally
-    _add_obsm_from_h5ad(
-        h5ad_path,
-        atlas,
-        cells_per_block=cells_per_block,
-    )
-    _add_varm_from_h5ad(h5ad_path, atlas)
-
-    try:
-        block_reader.close()
-    except Exception:
-        pass
+    finally:
+        _close_if_possible(block_reader)
 
 
 def _concat_and_shuffle_adatas(adatas: list[AnnData]) -> AnnData:
@@ -3636,7 +3648,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
 
         return True
 
-    except Exception as e:
-        conn.execute("ROLLBACK")
-        logger.error(f"CSR import failed: {e}")
+    except Exception:
+        _rollback_if_possible(conn)
+        logger.exception("CSR import failed")
         raise

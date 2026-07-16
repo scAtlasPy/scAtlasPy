@@ -1098,16 +1098,17 @@ def _cleanup_qc_after_step(
         try:
             conn.execute(f"DROP TABLE IF EXISTS {t}")
         except Exception:
-            pass
+            logger.debug("Failed to drop temporary table %s during QC cleanup", t, exc_info=True)
 
     if checkpoint:
         try:
             conn.execute("CHECKPOINT")
         except Exception:
-            pass
+            logger.exception("DuckDB CHECKPOINT failed during QC cleanup")
+            raise
 
     if collect:
         try:
             gc.collect()
         except Exception:
-            pass
+            logger.debug("Python garbage collection failed during QC cleanup", exc_info=True)
