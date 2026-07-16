@@ -53,9 +53,7 @@ dependencies = [
 
 [project.optional-dependencies]
 parametric = [
-    "umap-learn[parametric_umap]>=0.5.12",
-    "tensorflow[and-cuda]>=2.21.0; platform_system == 'Linux'",
-    "tensorflow>=2.21.0; platform_system != 'Linux'",
+    "torch>=2.2.0",
 ]
 
 test = [

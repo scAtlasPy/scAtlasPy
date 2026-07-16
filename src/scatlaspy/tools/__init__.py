@@ -8,7 +8,6 @@ from ._kmeans import (
 
 from ._umap import (
     umap,
-    parametric_umap,
 )
 
 from ._annotation import (
@@ -24,7 +23,6 @@ __all__ = [
     "pca",
     "kmeans",
     "umap",
-    "parametric_umap",
     "manual_annotate_clusters",
     "rank_genes_groups",
 ]

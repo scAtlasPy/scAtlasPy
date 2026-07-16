@@ -81,15 +81,15 @@ available hardware and CUDA configuration.
 The documentation for each optional workflow identifies any additional
 dependencies that are required.
 
-For ParametricUMAP support, install the parametric extra:
+For the PyTorch UMAP backend, install the parametric extra:
 
 ```bash
 pip install "scatlaspy[parametric]"
 ```
 
-On Linux, this extra includes TensorFlow with its CUDA runtime dependencies
-through `tensorflow[and-cuda]`, so TensorFlow can use compatible NVIDIA GPUs
-when drivers are available.
+This extra installs PyTorch. GPU support depends on the PyTorch build installed
+in the analysis environment. For CUDA or Apple Silicon MPS acceleration, follow
+the PyTorch installation instructions for your hardware.
 
 (install-from-source)=
 ## Install from Source

@@ -129,8 +129,9 @@ sap.tl.kmeans(
 ```
 
 `umap()` calculates a two-dimensional visualization from stored PCA
-coordinates. The current implementation fits a parameterized UMAP model on a
-sampled subset, then predicts coordinates for the full Atlas in batches.
+coordinates. The current implementation fits standard UMAP on a sampled subset
+as a teacher, trains a PyTorch neural network to learn the PCA-to-UMAP mapping,
+and then predicts coordinates for the full Atlas in batches.
 
 The resulting cell coordinates are commonly stored in:
 
@@ -144,13 +145,23 @@ Example:
 sap.tl.umap(atlas)
 ```
 
-For large datasets, set `fit_sample_n` to control the training subset and
-`transform_batch_size` to control full-atlas prediction batches. The
-`keras_epochs` parameter controls the number of Keras epochs shown in the
-training log. Internally, scAtlasPy maps this to ParametricUMAP's
-`loss_report_frequency`, so the displayed `Epoch 1/keras_epochs` count matches
-the value passed to `sap.tl.umap()` without increasing the default total
-training work.
+For large datasets, set `fit_sample_n` to control the teacher-training subset
+and `transform_batch_size` to control full-atlas prediction batches. The
+`torch_epochs` parameter controls how many epochs the PyTorch student model is
+trained for. By default, `device="auto"` selects CUDA first, then MPS, then CPU.
+Use a PyTorch device string such as `device="cuda:0"` or `device="mps"` to
+select a specific accelerator.
+
+Key parameters:
+
+| Parameter | Description |
+|---|---|
+| `fit_sample_n` | Number of cells sampled to fit the teacher UMAP. Default ``200_000``. |
+| `transform_batch_size` | Number of cells predicted per full-atlas batch. Default ``100_000``. |
+| `torch_batch_size` | PyTorch training batch size for the student model. Default ``1024``. |
+| `torch_epochs` | PyTorch student training epochs. Default ``20``. |
+| `torch_hidden_dim` | Hidden width of the student MLP. Default ``512``. |
+| `device` | PyTorch device. Default ``"auto"``; explicit values can be ``"cuda:0"``, ``"mps"``, or ``"cpu"``. |
 
 The stored coordinates can be visualized with:
 
