@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 import matplotlib as mpl
 from matplotlib.colorbar import ColorbarBase
 from typing import Any
+from ._utils import estimate_dotplot_sample_per_group
 
 
 # =====================================================
@@ -53,7 +54,7 @@ def dotplot(
     genes: str | list[str],
     groupby: str = "kmeans",
     use_data: str = "data_log1p",
-    sample_cells_per_group: int | None = None,
+    sample_cells_per_group: int | str | None = "auto",
     groups: list | None = None,
     where: str | None = None,
     order: list | None = None,
@@ -91,8 +92,11 @@ def dotplot(
         Expression value field read from the resolved expression source, such as
         ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
     sample_cells_per_group
-        Maximum number of cells sampled from each group for plotting.
-        If ``None``, all cells are used.
+        Maximum number of cells sampled from each group for plotting. The
+        default ``"auto"`` estimates a per-group sample size from the number of
+        groups and genes, targeting about 5 million sampled cell-gene values
+        while keeping the result between 2,000 and 50,000 cells per group. If
+        ``None``, all cells are used and statistics are aggregated in DuckDB.
     groups
         List of groups to display. If ``None``, all groups satisfying the conditions
         are used.
@@ -257,19 +261,17 @@ def dotplot(
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
-    # Sample cells from each group
-    sampled_parts = []
-    for g in group_labels:
-        if sample_cells_per_group is None:
-            q = f"""
-                SELECT
-                    atlas_cell_id,
-                    CAST({groupby} AS TEXT) AS group_label
-                FROM obs
-                WHERE {where_sql}
-                  AND CAST({groupby} AS TEXT) = '{g}'
-            """
-        else:
+    if isinstance(sample_cells_per_group, str) and sample_cells_per_group.lower().strip() == "auto":
+        sample_cells_per_group = estimate_dotplot_sample_per_group(
+            n_groups=len(group_labels),
+            n_genes=len(genes),
+        )
+
+    # Sample cells from each group unless full-data aggregation was requested.
+    # The full-data path stays in DuckDB and returns only group x gene statistics.
+    if sample_cells_per_group is not None:
+        sampled_parts = []
+        for g in group_labels:
             q = f"""
                 SELECT
                     atlas_cell_id,
@@ -280,56 +282,105 @@ def dotplot(
                 ORDER BY random()
                 LIMIT {int(sample_cells_per_group)}
             """
-        sampled_parts.append(conn.execute(q).fetchdf())
+            sampled_parts.append(conn.execute(q).fetchdf())
 
-    cells_df = pd.concat(sampled_parts, ignore_index=True)
-    if len(cells_df) == 0:
-        raise ValueError("No cells remain after sampling")
+        cells_df = pd.concat(sampled_parts, ignore_index=True)
+        if len(cells_df) == 0:
+            raise ValueError("No cells remain after sampling")
 
-    # Register temporary tables
-    conn.register("_dotplot_cells_tmp", cells_df)
+        conn.register("_dotplot_cells_tmp", cells_df)
+        cells_source_sql = "_dotplot_cells_tmp"
+    else:
+        conn.execute(f"""
+            CREATE OR REPLACE TEMP VIEW _dotplot_cells_tmp AS
+            SELECT
+                atlas_cell_id,
+                CAST({groupby} AS TEXT) AS group_label
+            FROM obs
+            WHERE {where_sql}
+        """)
+        cells_source_sql = "_dotplot_cells_tmp"
+
     conn.register("_dotplot_genes_tmp", gene_map_df[["atlas_gene_id", "atlas_gene_name"]])
 
-    # Fetch expression long table and fill implicit zeros
-    expr_df = conn.execute(f"""
-        SELECT
-            c.group_label,
-            g.atlas_gene_name AS gene,
-            COALESCE(xexpr.expr, 0.0) AS expr
-        FROM _dotplot_cells_tmp c
-        CROSS JOIN _dotplot_genes_tmp g
-        LEFT JOIN (
+    try:
+        stat_df = conn.execute(f"""
+            WITH cell_counts AS (
+                SELECT
+                    group_label,
+                    COUNT(*) AS n_cells
+                FROM {cells_source_sql}
+                GROUP BY group_label
+            ),
+            group_gene_grid AS (
+                SELECT
+                    cc.group_label,
+                    cc.n_cells,
+                    g.atlas_gene_id,
+                    g.atlas_gene_name AS gene
+                FROM cell_counts cc
+                CROSS JOIN _dotplot_genes_tmp g
+            ),
+            nonzero_stats AS (
+                SELECT
+                    c.group_label,
+                    xexpr.atlas_gene_id,
+                    SUM(
+                        CASE
+                            WHEN xexpr.expr IS NOT NULL
+                            THEN xexpr.expr ELSE 0.0
+                        END
+                    ) AS sum_expr,
+                    SUM(
+                        CASE
+                            WHEN xexpr.expr > {float(expression_cutoff)}
+                            THEN 1 ELSE 0
+                        END
+                    ) AS n_expr
+                FROM {cells_source_sql} c
+                JOIN (
+                    SELECT
+                        {expr_source.cell_sql} AS atlas_cell_id,
+                        {expr_source.gene_sql} AS atlas_gene_id,
+                        {expr_source.value_sql} AS expr
+                    FROM {expr_source.from_sql}
+                    WHERE {expr_source.value_sql} IS NOT NULL
+                ) AS xexpr
+                  ON c.atlas_cell_id = xexpr.atlas_cell_id
+                JOIN _dotplot_genes_tmp g
+                  ON xexpr.atlas_gene_id = g.atlas_gene_id
+                GROUP BY c.group_label, xexpr.atlas_gene_id
+            )
             SELECT
-                {expr_source.cell_sql} AS atlas_cell_id,
-                {expr_source.gene_sql} AS atlas_gene_id,
-                {expr_source.value_sql} AS expr
-            FROM {expr_source.from_sql}
-            WHERE {expr_source.value_sql} IS NOT NULL
-        ) AS xexpr
-          ON c.atlas_cell_id = xexpr.atlas_cell_id
-         AND g.atlas_gene_id = xexpr.atlas_gene_id
-    """).fetchdf()
+                grid.group_label,
+                grid.gene,
+                COALESCE(s.sum_expr, 0.0) / NULLIF(grid.n_cells, 0) AS mean_expr,
+                COALESCE(s.n_expr, 0.0) * 100.0 / NULLIF(grid.n_cells, 0) AS pct_expr,
+                grid.n_cells AS n
+            FROM group_gene_grid grid
+            LEFT JOIN nonzero_stats s
+              ON grid.group_label = s.group_label
+             AND grid.atlas_gene_id = s.atlas_gene_id
+        """).fetchdf()
+    finally:
+        try:
+            conn.unregister("_dotplot_genes_tmp")
+        except Exception:
+            pass
+        try:
+            conn.unregister("_dotplot_cells_tmp")
+        except Exception:
+            pass
+        try:
+            conn.execute("DROP VIEW IF EXISTS _dotplot_cells_tmp")
+        except Exception:
+            pass
 
-    conn.unregister("_dotplot_cells_tmp")
-    conn.unregister("_dotplot_genes_tmp")
+    if len(stat_df) == 0:
+        raise ValueError("stat_df is empty, unable to plot")
 
-    if len(expr_df) == 0:
-        raise ValueError("expr_df is empty, unable to plot")
-
-    expr_df["gene"] = pd.Categorical(expr_df["gene"], categories=genes, ordered=True)
-    expr_df["group_label"] = pd.Categorical(expr_df["group_label"], categories=group_labels, ordered=True)
-
-    # Aggregate statistics
-    stat_df = (
-        expr_df
-        .groupby(["group_label", "gene"], observed=True)
-        .agg(
-            mean_expr=("expr", "mean"),
-            pct_expr=("expr", lambda x: (x > expression_cutoff).mean() * 100.0),
-            n=("expr", "size")
-        )
-        .reset_index()
-    )
+    stat_df["gene"] = pd.Categorical(stat_df["gene"], categories=genes, ordered=True)
+    stat_df["group_label"] = pd.Categorical(stat_df["group_label"], categories=group_labels, ordered=True)
 
     if standard_scale == "var":
         stat_df["mean_expr_scaled"] = (

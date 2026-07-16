@@ -94,6 +94,12 @@ If `point_size=None`, `sap.pl.pca()` estimates a default point size from the
 number of plotted cells. Pass `point_size` explicitly when you want a fixed
 marker size across figures.
 
+`sap.pl.pca()` samples 1,000,000 cells by default. Set `sample_n` to another
+finite value for denser or lighter figures. Setting `sample_n=None` requests a
+full-cell plot. PCA embedding plots use streaming drawing for uncolored plots,
+metadata coloring, and gene-expression coloring with `use_data="data_count"` or
+`use_data="data_log1p"`.
+
 ## Clustering and UMAP
 
 ```{eval-rst}
@@ -137,6 +143,12 @@ sap.pl.umap(
 If `point_size=None`, `sap.pl.umap()` estimates a default point size from the
 number of plotted cells. Pass `point_size` explicitly when you want a fixed
 marker size across figures.
+
+`sap.pl.umap()` samples 1,000,000 cells by default. Setting `sample_n=None`
+requests a full-cell plot. UMAP embedding plots use streaming drawing for
+uncolored plots, metadata coloring, gene-expression coloring, and mixed panels.
+Full-cell gene-expression coloring supports `use_data="data_count"` and
+`use_data="data_log1p"`.
 
 ```{note}
 UMAP is primarily a visualization of local neighborhood structure. Apparent
@@ -187,8 +199,8 @@ Use these functions to compare selected genes across clusters, annotations,
 conditions, or other cell groups.
 
 ```python
-sap.pl.violin(atlas, keys=["NKG7", "CST3"], groupby="kmeans")
-sap.pl.dotplot(atlas, var_names=["NKG7", "CST3", "MS4A1"], groupby="kmeans")
+sap.pl.violin(atlas, genes=["NKG7", "CST3"], groupby="kmeans")
+sap.pl.dotplot(atlas, genes=["NKG7", "CST3", "MS4A1"], groupby="kmeans")
 ```
 
 For routine marker-expression visualization, a log-normalized expression field
@@ -207,12 +219,27 @@ number of displayed cells:
 sap.pl.umap(
     atlas,
     color="cell_type_manual",
-    sample_n=100000,
+    sample_n=1000000,
 )
 ```
 
-With `sample_n=None`, UMAP metadata plots use the streaming plotting path and
-avoid materializing the full plot table at once.
+With `sample_n=None`, PCA and UMAP embedding plots use streaming plotting paths
+where possible and avoid materializing the full plot table at once.
+`sap.pl.dotplot()`, `sap.pl.violin()`, and `sap.pl.stacked_violin()` use
+automatic group-aware sampling by default, choosing a larger per-group sample
+for small group-by-gene panels and a smaller one for very broad panels. Pass
+`sample_cells_per_group=None` for full dotplot aggregation. For violin-style
+plots, pass `sample_n_per_group=None, allow_full=True` only when a full
+cell-by-gene plotting table is intended.
+
+Violin-style plots use a robust visible expression range by default so that a
+small number of extreme values does not compress the main distribution into a
+thin line. Set `ylim_quantile=None` for `sap.pl.violin()` or
+`value_quantile=None` for `sap.pl.stacked_violin()` to use the full range.
+For additional styling, `sap.pl.violin()` accepts `violinplot_kwargs`,
+`body_kwargs`, `median_kwargs`, and `jitter_kwargs`; `sap.pl.stacked_violin()`
+accepts `kde_kwargs`, `fill_kwargs`, `median_line_kwargs`, and
+`constant_line_kwargs`.
 
 ```{warning}
 A random sample may underrepresent rare cell populations. Use a focused subset

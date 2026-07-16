@@ -9,6 +9,7 @@ import matplotlib as mpl
 from matplotlib.colorbar import ColorbarBase
 from scipy.stats import gaussian_kde
 from typing import Any
+from ._utils import estimate_dotplot_sample_per_group
 
 
 # =====================================================
@@ -54,11 +55,18 @@ def violin(
     genes: str | list[str],
     groupby: str = "kmeans",
     use_data: str = "data_log1p",
-    sample_n_per_group: int | None = 2000,
+    sample_n_per_group: int | str | None = "auto",
+    allow_full: bool = False,
     groups: list | None = None,
     where: str | None = None,
     order: list | None = None,
-    save_path: PathLike[str] | str | None = None
+    ylim_quantile: tuple[float, float] | None = (0.01, 0.95),
+    save_path: PathLike[str] | str | None = None,
+    *,
+    violinplot_kwargs: dict[str, Any] | None = None,
+    body_kwargs: dict[str, Any] | None = None,
+    median_kwargs: dict[str, Any] | None = None,
+    jitter_kwargs: dict[str, Any] | None = None,
 ) -> None:
 
     """Plot violin plots of gene expression across different cell groups.
@@ -87,7 +95,13 @@ def violin(
         ``"data_count"``, or ``"data_scale"``.
 
     sample_n_per_group
-        Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
+        Maximum number of cells sampled per group for plotting. The default
+        ``"auto"`` estimates a per-group sample size from the number of groups
+        and genes. If ``None``, all cells are used only when ``allow_full=True``.
+
+    allow_full
+        Whether to allow ``sample_n_per_group=None``. Full violin plots may
+        materialize a large cell-by-gene long table in pandas.
 
     groups
         List of groups to display. If ``None``, all groups that satisfy the conditions are used.
@@ -98,8 +112,28 @@ def violin(
     order
         Display order of groups. If ``None``, natural sorting is used.
 
+    ylim_quantile
+        Quantile range used to set the visible y-axis range. The default
+        ``(0.01, 0.95)`` reduces compression from extreme expression outliers.
+        For count and log1p expression, the lower bound is 0 and the upper
+        bound is estimated from nonzero expression values. Set to ``None`` to
+        use the full nonzero value range.
+
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
+
+    violinplot_kwargs
+        Additional keyword arguments passed to ``matplotlib.axes.Axes.violinplot``.
+
+    body_kwargs
+        Additional style keyword arguments applied to each violin body.
+
+    median_kwargs
+        Additional style keyword arguments applied to the median line collection.
+
+    jitter_kwargs
+        Additional keyword arguments passed to ``matplotlib.axes.Axes.scatter``
+        for the overlaid jitter points.
 
     Returns
     -------
@@ -235,6 +269,22 @@ def violin(
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
+    if isinstance(sample_n_per_group, str):
+        if sample_n_per_group.lower().strip() != "auto":
+            raise ValueError("sample_n_per_group only supports an integer, 'auto', or None")
+        sample_n_per_group = estimate_dotplot_sample_per_group(
+            n_groups=len(group_labels),
+            n_genes=len(genes),
+        )
+
+    if sample_n_per_group is None and not allow_full:
+        raise ValueError(
+            "sample_n_per_group=None requests a full-cell violin plot and may "
+            "materialize a large cell-by-gene table in memory. Pass "
+            "allow_full=True to confirm this, or use sample_n_per_group='auto' "
+            "or a finite integer."
+        )
+
     # Sample each group separately, then union
     sampled_parts = []
     for g in group_labels:
@@ -299,6 +349,12 @@ def violin(
     plot_df["group_label"] = pd.Categorical(plot_df["group_label"], categories=group_labels, ordered=True)
     plot_df = plot_df.sort_values(["gene", "group_label"]).reset_index(drop=True)
 
+    y_limits = _robust_value_range(
+        plot_df["expr"].to_numpy(dtype=float),
+        ylim_quantile,
+        nonnegative=(use_data != "data_scale"),
+    )
+
     # Plot
     n_panels = len(genes)
     fig, axes = plt.subplots(
@@ -316,6 +372,10 @@ def violin(
         "#17becf", "#7f7f7f", "#aec7e8", "#ffbb78"
     ]
     color_map = {g: default_colors[i % len(default_colors)] for i, g in enumerate(group_labels)}
+    violinplot_kwargs = dict(violinplot_kwargs or {})
+    body_kwargs = dict(body_kwargs or {})
+    median_kwargs = dict(median_kwargs or {})
+    jitter_kwargs = dict(jitter_kwargs or {})
 
     for ax, gene in zip(axes, genes):
         sub = plot_df[plot_df["gene"] == gene].copy()
@@ -325,6 +385,7 @@ def violin(
         violin_data = []
         for g in group_labels:
             vals = sub[sub["group_label"] == g]["expr"].to_numpy()
+            vals = vals[np.isfinite(vals)]
             violin_data.append(vals)
 
         vp = ax.violinplot(
@@ -333,37 +394,51 @@ def violin(
             widths=0.85,
             showmeans=False,
             showmedians=True,
-            showextrema=False
+            showextrema=False,
+            **violinplot_kwargs,
         )
 
         for i, body in enumerate(vp["bodies"]):
-            body.set_facecolor(color_map[group_labels[i]])
-            body.set_edgecolor("#4a4a4a")
-            body.set_alpha(0.9)
-            body.set_linewidth(1.0)
+            style = {
+                "facecolor": color_map[group_labels[i]],
+                "edgecolor": "#4a4a4a",
+                "alpha": 0.9,
+                "linewidth": 1.0,
+            }
+            style.update(body_kwargs)
+            body.set(**style)
 
         if "cmedians" in vp:
-            vp["cmedians"].set_color("#2f2f2f")
-            vp["cmedians"].set_linewidth(1.2)
+            style = {
+                "color": "#2f2f2f",
+                "linewidth": 1.2,
+            }
+            style.update(median_kwargs)
+            vp["cmedians"].set(**style)
 
         # jitter points
         for pos, g in zip(positions, group_labels):
             vals = sub[sub["group_label"] == g]["expr"].to_numpy()
+            vals = vals[np.isfinite(vals)]
             if len(vals) == 0:
                 continue
 
             n_dot = min(250, len(vals))
             dot_idx = np.random.choice(len(vals), size=n_dot, replace=False)
-            vals_dot = vals[dot_idx]
+            vals_dot = np.clip(vals[dot_idx], y_limits[0], y_limits[1])
             jitter = (np.random.rand(n_dot) - 0.5) * 0.18
 
+            style = {
+                "s": 3,
+                "c": "#2f2f2f",
+                "alpha": 0.6,
+                "linewidths": 0,
+            }
+            style.update(jitter_kwargs)
             ax.scatter(
                 np.full(n_dot, pos) + jitter,
                 vals_dot,
-                s=3,
-                c="#2f2f2f",
-                alpha=0.6,
-                linewidths=0
+                **style,
             )
 
         ax.set_title(gene, fontsize=14, weight="normal", pad=8)
@@ -371,6 +446,7 @@ def violin(
         ax.set_ylabel("expression", fontsize=12)
         ax.set_xticks(positions)
         ax.set_xticklabels(group_labels, fontsize=11)
+        ax.set_ylim(y_limits)
 
         ax.set_facecolor("white")
         ax.grid(True, axis="y", color="#d9d9d9", linewidth=0.8, alpha=0.8)
@@ -394,14 +470,21 @@ def stacked_violin(
     genes: str | list[str],
     groupby: str = "cell_type_auto",
     use_data: str = "data_log1p",
-    sample_n_per_group: int | None = 2000,
+    sample_n_per_group: int | str | None = "auto",
+    allow_full: bool = False,
     groups: list | None = None,
     where: str | None = None,
     order: list | None = None,
+    value_quantile: tuple[float, float] | None = (0.01, 0.95),
     color_vmin: float | None = 0.0,
     color_vmax: float | None = 5.0,
     font_size: int = 14,
-    save_path: PathLike[str] | str | None = None
+    save_path: PathLike[str] | str | None = None,
+    *,
+    kde_kwargs: dict[str, Any] | None = None,
+    fill_kwargs: dict[str, Any] | None = None,
+    median_line_kwargs: dict[str, Any] | None = None,
+    constant_line_kwargs: dict[str, Any] | None = None,
 ) -> None:
 
     """Plot a stacked violin plot for multiple marker genes.
@@ -429,7 +512,13 @@ def stacked_violin(
         ``"data_count"``, or ``"data_scale"``.
 
     sample_n_per_group
-        Maximum number of cells sampled per group for plotting. If ``None``, all cells are used.
+        Maximum number of cells sampled per group for plotting. The default
+        ``"auto"`` estimates a per-group sample size from the number of groups
+        and genes. If ``None``, all cells are used only when ``allow_full=True``.
+
+    allow_full
+        Whether to allow ``sample_n_per_group=None``. Full stacked-violin plots
+        may materialize a large cell-by-gene long table in pandas.
 
     groups
         List of groups to display. If ``None``, all groups that satisfy the conditions are used.
@@ -439,6 +528,13 @@ def stacked_violin(
 
     order
         Display order of groups. If ``None``, natural sorting is used.
+
+    value_quantile
+        Quantile range used for the visible shape of each small violin. The
+        default ``(0.01, 0.95)`` reduces compression from extreme expression
+        outliers. For count and log1p expression, the lower bound is 0 and the
+        upper bound is estimated from nonzero expression values. Median
+        expression coloring still uses the original values.
 
     color_vmin
         Minimum expression value for color mapping. If ``None``, the minimum median expression in the current data is used.
@@ -451,6 +547,21 @@ def stacked_violin(
 
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
+
+    kde_kwargs
+        Additional keyword arguments passed to ``scipy.stats.gaussian_kde``.
+
+    fill_kwargs
+        Additional style keyword arguments passed to ``matplotlib.axes.Axes.fill``
+        for each small violin body.
+
+    median_line_kwargs
+        Additional style keyword arguments passed to ``matplotlib.axes.Axes.plot``
+        for median lines.
+
+    constant_line_kwargs
+        Additional style keyword arguments passed to ``matplotlib.axes.Axes.plot``
+        for all-zero or constant distributions.
 
     Returns
     -------
@@ -588,6 +699,22 @@ def stacked_violin(
 
     group_labels = group_df["group_label"].astype(str).tolist()
 
+    if isinstance(sample_n_per_group, str):
+        if sample_n_per_group.lower().strip() != "auto":
+            raise ValueError("sample_n_per_group only supports an integer, 'auto', or None")
+        sample_n_per_group = estimate_dotplot_sample_per_group(
+            n_groups=len(group_labels),
+            n_genes=len(genes),
+        )
+
+    if sample_n_per_group is None and not allow_full:
+        raise ValueError(
+            "sample_n_per_group=None requests a full-cell stacked violin plot "
+            "and may materialize a large cell-by-gene table in memory. Pass "
+            "allow_full=True to confirm this, or use sample_n_per_group='auto' "
+            "or a finite integer."
+        )
+
     # Sample cells for each group
     sampled_parts = []
     for g in group_labels:
@@ -703,6 +830,10 @@ def stacked_violin(
 
     cell_half_height = 0.34
     cell_half_width = 0.33
+    kde_kwargs = dict(kde_kwargs or {})
+    fill_kwargs = dict(fill_kwargs or {})
+    median_line_kwargs = dict(median_line_kwargs or {})
+    constant_line_kwargs = dict(constant_line_kwargs or {})
 
     grouped_expr = expr_df.groupby(["group_label", "gene"], observed=True)
 
@@ -719,23 +850,31 @@ def stacked_violin(
         med_val = float(np.median(vals))
         facecolor = cmap(norm(med_val))
 
-        vmin = float(np.min(vals))
-        vmax = float(np.max(vals))
+        vmin, vmax = _robust_value_range(
+            vals,
+            value_quantile,
+            nonnegative=(use_data != "data_scale"),
+        )
+        vals_for_shape = np.clip(vals, vmin, vmax)
 
         # All-zero / constant distribution: draw a thin vertical line
         if vmax - vmin < 1e-12:
+            style = {
+                "color": "#b0b0b0",
+                "linewidth": 1.0,
+                "zorder": 3,
+            }
+            style.update(constant_line_kwargs)
             ax.plot(
                 [x0, x0],
                 [y0 - cell_half_height * 0.35, y0 + cell_half_height * 0.35],
-                color="#b0b0b0",
-                linewidth=1.0,
-                zorder=3
+                **style,
             )
             continue
 
         # KDE estimation
         try:
-            kde = gaussian_kde(vals)
+            kde = gaussian_kde(vals_for_shape, **kde_kwargs)
             ys = np.linspace(vmin, vmax, 120)
             dens = kde(ys)
         except Exception:
@@ -757,22 +896,30 @@ def stacked_violin(
         poly_x = np.concatenate([x_left, x_right[::-1]])
         poly_y = np.concatenate([ys_scaled, ys_scaled[::-1]])
 
+        style = {
+            "facecolor": facecolor,
+            "edgecolor": "#b0b0b0",
+            "linewidth": 0.9,
+            "zorder": 2,
+        }
+        style.update(fill_kwargs)
         ax.fill(
             poly_x, poly_y,
-            facecolor=facecolor,
-            edgecolor="#b0b0b0",
-            linewidth=0.9,
-            zorder=2
+            **style,
         )
 
         # Median horizontal line
         med_y = y0 + ((med_val - vmin) / (vmax - vmin) - 0.5) * (2 * cell_half_height)
+        style = {
+            "color": "#808080",
+            "linewidth": 0.9,
+            "zorder": 3,
+        }
+        style.update(median_line_kwargs)
         ax.plot(
             [x0 - cell_half_width * 0.45, x0 + cell_half_width * 0.45],
             [med_y, med_y],
-            color="#808080",
-            linewidth=0.9,
-            zorder=3
+            **style,
         )
 
     # Main plot styling
@@ -876,6 +1023,60 @@ def _natural_sort_key(value: Any):
             key.append((1, part.casefold()))
 
     return (0, tuple(key))
+
+
+def _robust_value_range(
+    values: Any,
+    quantile: tuple[float, float] | None,
+    *,
+    nonnegative: bool = False,
+) -> tuple[float, float]:
+    """Return a plotting range that is not dominated by extreme outliers."""
+
+    arr = np.asarray(values, dtype=float)
+    arr = arr[np.isfinite(arr)]
+
+    if arr.size == 0:
+        return (0.0, 1.0)
+
+    if nonnegative:
+        arr = arr[arr >= 0]
+        positive = arr[arr > 0]
+
+        if positive.size == 0:
+            return (0.0, 0.1)
+
+        if quantile is None:
+            vmax = float(np.nanmax(positive))
+        else:
+            vmax = float(np.nanquantile(positive, quantile[1]))
+
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = float(np.nanmax(positive))
+
+        if not np.isfinite(vmax) or vmax <= 0:
+            vmax = 0.1
+
+        return (0.0, vmax)
+
+    if quantile is None:
+        vmin = float(np.nanmin(arr))
+        vmax = float(np.nanmax(arr))
+    else:
+        q_low, q_high = quantile
+        vmin = float(np.nanquantile(arr, q_low))
+        vmax = float(np.nanquantile(arr, q_high))
+
+    if not np.isfinite(vmin) or not np.isfinite(vmax):
+        vmin = float(np.nanmin(arr))
+        vmax = float(np.nanmax(arr))
+
+    if vmax <= vmin:
+        pad = abs(vmin) * 0.05 if vmin != 0 else 1.0
+        vmin -= pad
+        vmax += pad
+
+    return (vmin, vmax)
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:

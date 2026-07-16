@@ -7,7 +7,15 @@ from datetime import datetime
 from os import PathLike
 import re
 from typing import Any
-from ._utils import default_point_size
+from ._utils import (
+    DEFAULT_CELL_PLOT_SAMPLE_N,
+    DEFAULT_EMBEDDING_FIGSIZE,
+    default_point_size,
+    draw_embedding_gene_expression_streaming,
+    draw_embedding_obs_continuous_streaming,
+    draw_embedding_scatter_streaming,
+    is_numeric_obs_column,
+)
 
 
 # =====================================================
@@ -54,9 +62,9 @@ def pca(
     x_pc: int = 0,
     y_pc: int = 1,
     annotate_var_explained: bool = True,
-    sample_n: int | None = None,
+    sample_n: int | None = DEFAULT_CELL_PLOT_SAMPLE_N,
     use_data: str = "data_log1p",
-    figsize: tuple[float, float] | None=(6, 5),
+    figsize: tuple[float, float] | None = DEFAULT_EMBEDDING_FIGSIZE,
     point_size: float | None = None,
     alpha: float = 0.8,
     cmap: str = "viridis",
@@ -101,7 +109,9 @@ def pca(
         Whether to annotate the variance explained ratio of each principal component on the axes.
 
     sample_n
-        Maximum number of cells to sample for plotting. If ``None``, all cells are used.
+        Maximum number of cells to sample for plotting. The default is ``1_000_000``
+        to keep atlas-scale plotting memory-bounded. If ``None``, all cells are
+        used through streaming plotting paths when possible.
 
     use_data
         Expression value field read from the resolved expression source when
@@ -240,18 +250,129 @@ def pca(
         if y_pc in evr_map:
             y_label += f" ({evr_map[y_pc] * 100:.2f}%)"
 
-    # First sample PCA coordinates by SQL
     if sample_n is None:
-        pca_query = f"""
-            SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
-            FROM obsm_X_pca
-        """
-    else:
-        pca_query = f"""
-            SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
-            FROM obsm_X_pca
-            USING SAMPLE {int(sample_n)} ROWS
-        """
+        obs_cols_for_stream = []
+        if color is not None:
+            obs_cols_for_stream = [
+                r[1]
+                for r in conn.execute("PRAGMA table_info(obs)").fetchall()
+            ]
+        if color is None:
+            draw_embedding_scatter_streaming(
+                conn,
+                embedding_table="obsm_X_pca",
+                x_col=pcx,
+                y_col=pcy,
+                x_label=x_label,
+                y_label=y_label,
+                color=color,
+                title="PCA" if color is None else str(color),
+                figsize=figsize,
+                point_size=point_size,
+                alpha=alpha,
+                palette=palette,
+                legend_loc=legend_loc,
+                frameon=frameon,
+                hide_ticks=False,
+                save_path=save_path,
+            )
+            return None
+        if color in obs_cols_for_stream:
+            if is_numeric_obs_column(conn, color):
+                draw_embedding_obs_continuous_streaming(
+                    conn,
+                    embedding_table="obsm_X_pca",
+                    x_col=pcx,
+                    y_col=pcy,
+                    x_label=x_label,
+                    y_label=y_label,
+                    color=color,
+                    title=str(color),
+                    figsize=figsize,
+                    point_size=point_size,
+                    alpha=alpha,
+                    cmap=cmap,
+                    frameon=frameon,
+                    hide_ticks=False,
+                    save_path=save_path,
+                )
+            else:
+                draw_embedding_scatter_streaming(
+                    conn,
+                    embedding_table="obsm_X_pca",
+                    x_col=pcx,
+                    y_col=pcy,
+                    x_label=x_label,
+                    y_label=y_label,
+                    color=color,
+                    title=str(color),
+                    figsize=figsize,
+                    point_size=point_size,
+                    alpha=alpha,
+                    palette=palette,
+                    legend_loc=legend_loc,
+                    frameon=frameon,
+                    hide_ticks=False,
+                    save_path=save_path,
+                )
+            return None
+        gene_row = conn.execute("""
+            SELECT atlas_gene_id
+            FROM var
+            WHERE atlas_gene_name = ?
+            LIMIT 1
+        """, [color]).fetchone()
+        if gene_row is not None:
+            if use_data not in {"data_count", "data_log1p"}:
+                raise ValueError(
+                    "Full-cell streaming PCA feature plots only support "
+                    "use_data='data_count' or use_data='data_log1p'. "
+                    "Use a finite sample_n to plot other expression fields."
+                )
+            expr_source = resolve_expression_source(conn, use_data)
+            draw_embedding_gene_expression_streaming(
+                conn,
+                embedding_table="obsm_X_pca",
+                x_col=pcx,
+                y_col=pcy,
+                x_label=x_label,
+                y_label=y_label,
+                gene_id=int(gene_row[0]),
+                gene_name=str(color),
+                expr_source=expr_source,
+                title=str(color),
+                figsize=figsize,
+                point_size=point_size,
+                alpha=alpha,
+                cmap=cmap,
+                frameon=frameon,
+                hide_ticks=False,
+                save_path=save_path,
+            )
+            return None
+        var_cols = [
+            r[1]
+            for r in conn.execute("PRAGMA table_info(var)").fetchall()
+        ]
+        if color in var_cols:
+            raise ValueError(
+                f"color='{color}' is a column in the var table.\n"
+                f"However, each point in a PCA plot is a cell, while a var column is gene-level information, "
+                f"so it cannot be directly used to color cell PCA points.\n"
+                f"If you want to color by gene expression, please pass a gene name from var.atlas_gene_name."
+            )
+        raise ValueError(
+            f"Cannot find color='{color}'.\n"
+            f"It is neither an obs table column name nor a gene name in var.atlas_gene_name."
+        )
+
+    # Finite-sample plotting path. Full-cell plots are handled above by
+    # streaming helpers, so this branch intentionally only handles sample_n.
+    pca_query = f"""
+        SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
+        FROM obsm_X_pca
+        USING SAMPLE {int(sample_n)} ROWS
+    """
 
     pca_df = conn.execute(pca_query).fetchdf()
 

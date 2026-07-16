@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 from typing import Any
 from ..data import Atlas
 from ..data._expression_source import resolve_expression_source
+from ._utils import DEFAULT_GROUP_PLOT_SAMPLE_N
 
 
 def rank_genes_groups(
@@ -609,7 +610,7 @@ def rank_genes_groups_violin(
     genes: list[str] | None = None,
     n_genes: int = 8,
     use_expr_field: str = "data_log1p",
-    sample_cells_per_group: int = 2000,
+    sample_cells_per_group: int = DEFAULT_GROUP_PLOT_SAMPLE_N,
     save_path: PathLike[str] | str | None = None
 ) -> None:
 

@@ -9,7 +9,17 @@ from datetime import datetime
 import pandas as pd
 import matplotlib.pyplot as plt
 from typing import Any
-from ._utils import default_point_size
+from ._utils import (
+    DEFAULT_CELL_PLOT_SAMPLE_N,
+    DEFAULT_EMBEDDING_FIGSIZE,
+    default_point_size,
+    estimate_embedding_grid_figsize,
+    draw_embedding_gene_expression_streaming,
+    draw_embedding_obs_continuous_streaming,
+    draw_embedding_scatter_streaming,
+    is_numeric_obs_column,
+    quote_identifier,
+)
 import logging
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
@@ -56,14 +66,14 @@ def umap(
     atlas: Atlas,
     color: str | list[str] = "kmeans",
     *,
-    sample_n: int | None = None,
+    sample_n: int | None = DEFAULT_CELL_PLOT_SAMPLE_N,
     where: str | None = None,
 
     # gene feature parameters
     use_data: str = "data_log1p",
 
     # Plotting parameters
-    figsize: tuple[float, float] | None = (22, 8),
+    figsize: tuple[float, float] | None = None,
     point_size: float | None = None,
     alpha: float = 0.85,
     cmap: str = "viridis",
@@ -99,7 +109,9 @@ def umap(
         a mixed list uses multi-panel mixed plotting.
 
     sample_n
-        Maximum number of cells sampled for plotting. If ``None``, all cells are used.
+        Maximum number of cells sampled for plotting. The default is ``1_000_000``
+        to keep atlas-scale plotting memory-bounded. If ``None``, all cells are
+        used through streaming plotting paths when possible.
 
     where
         Additional SQL filtering condition used to restrict cells participating in plotting.
@@ -258,6 +270,7 @@ def umap(
             alpha=alpha,
             cmap=cmap,
             save_path=save_path,
+            plot_batch_size=plot_batch_size,
         )
         return None
 
@@ -277,6 +290,7 @@ def umap(
         palette=palette,
         frameon=frameon,
         save_path=save_path,
+        plot_batch_size=plot_batch_size,
     )
     return None
 
@@ -291,7 +305,7 @@ def _plot_umap_obs(
     where: str | None = None,
     legend_loc: str = "right_margin",
     title: str | None = None,
-    figsize: tuple[float, float] | None=(22, 8),
+    figsize: tuple[float, float] | None = None,
     point_size: float | None = None,
     alpha: float = 0.7,
     cmap: str = "viridis",
@@ -392,26 +406,56 @@ def _plot_umap_obs(
     if "atlas_cell_id" not in umap_cols or "umap1" not in umap_cols or "umap2" not in umap_cols:
         raise ValueError("obsm_X_umap needs to contain atlas_cell_id / umap1 / umap2")
 
+    if figsize is None:
+        figsize = DEFAULT_EMBEDDING_FIGSIZE
+
+    is_numeric_color = is_numeric_obs_column(conn, color)
+
     # Build filtering conditions
-    where_clauses = [f"o.{color} IS NOT NULL"]
+    where_clauses = [f"o.{quote_identifier(color)} IS NOT NULL"]
 
     if where is not None and str(where).strip() != "":
         where_clauses.append(f"({where})")
 
     if groups is not None:
         groups_sql = ", ".join([f"'{str(g)}'" for g in groups])
-        where_clauses.append(f"CAST(o.{color} AS TEXT) IN ({groups_sql})")
+        where_clauses.append(f"CAST(o.{quote_identifier(color)} AS TEXT) IN ({groups_sql})")
 
     where_sql = " AND ".join(where_clauses)
 
+    if sample_n is None and is_numeric_color and groups is None and not return_df:
+        return draw_embedding_obs_continuous_streaming(
+            conn,
+            embedding_table="obsm_X_umap",
+            x_col="umap1",
+            y_col="umap2",
+            x_label="UMAP1",
+            y_label="UMAP2",
+            color=color,
+            where_sql=where,
+            title=title if title is not None else color,
+            figsize=figsize,
+            point_size=point_size,
+            alpha=alpha,
+            cmap=cmap,
+            frameon=frameon,
+            save_path=save_path,
+            plot_batch_size=plot_batch_size,
+        )
+
     # Fetch data, optionally with sampling
+    color_select = (
+        f"CAST(o.{quote_identifier(color)} AS DOUBLE) AS color_value"
+        if is_numeric_color and groups is None
+        else f"CAST(o.{quote_identifier(color)} AS TEXT) AS color_label"
+    )
     if sample_n is None:
         query = f"""
             SELECT
                 u.atlas_cell_id,
                 u.umap1,
                 u.umap2,
-                CAST(o.{color} AS TEXT) AS color_label
+                {color_select}
             FROM obsm_X_umap u
             JOIN obs o
               ON u.atlas_cell_id = o.atlas_cell_id
@@ -426,7 +470,7 @@ def _plot_umap_obs(
                     u.atlas_cell_id,
                     u.umap1,
                     u.umap2,
-                    CAST(o.{color} AS TEXT) AS color_label
+                    {color_select}
                 FROM obsm_X_umap u
                 JOIN obs o
                   ON u.atlas_cell_id = o.atlas_cell_id
@@ -438,8 +482,13 @@ def _plot_umap_obs(
 
     # When sample_n=None, use full streaming plotting to avoid loading all data with fetchdf at once and exhausting memory
     if sample_n is None:
-        return _draw_umap_obs_streaming(
-            atlas=atlas,
+        return draw_embedding_scatter_streaming(
+            conn,
+            embedding_table="obsm_X_umap",
+            x_col="umap1",
+            y_col="umap2",
+            x_label="UMAP1",
+            y_label="UMAP2",
             color=color,
             where_sql=where_sql,
             legend_loc=legend_loc,
@@ -450,7 +499,8 @@ def _plot_umap_obs(
             palette=palette,
             frameon=frameon,
             save_path=save_path,
-            plot_batch_size=plot_batch_size
+            plot_batch_size=plot_batch_size,
+            spread_label_positions=_spread_on_data_label_positions,
         )
 
     # When sample_n is not None, still use the original sampled plotting path
@@ -461,6 +511,41 @@ def _plot_umap_obs(
 
     if point_size is None:
         point_size = default_point_size(len(plot_df))
+
+    if is_numeric_color and groups is None:
+        fig, ax = plt.subplots(figsize=figsize, facecolor="white")
+        ax.set_facecolor("white")
+        sc = ax.scatter(
+            plot_df["umap1"].to_numpy(),
+            plot_df["umap2"].to_numpy(),
+            s=point_size,
+            c=plot_df["color_value"].to_numpy(dtype=float),
+            cmap=cmap,
+            alpha=alpha,
+            linewidths=0,
+            rasterized=True,
+        )
+        cbar = plt.colorbar(sc, ax=ax, pad=0.02)
+        cbar.set_label(color, fontsize=12)
+        cbar.ax.tick_params(labelsize=10)
+        if title is None:
+            title = color
+        ax.set_title(title, fontsize=18, weight="normal", pad=10)
+        ax.set_xlabel("UMAP1", fontsize=16)
+        ax.set_ylabel("UMAP2", fontsize=16)
+        ax.grid(False)
+        if not frameon:
+            for spine in ax.spines.values():
+                spine.set_visible(False)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        plt.tight_layout(pad=0.8)
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.show()
+        if return_df:
+            return plot_df
+        return None
 
     # Use natural sorting by default
     # embryo_1, embryo_2, ..., embryo_10
@@ -617,7 +702,7 @@ def _draw_umap_obs_streaming(
     where_sql: str,
     legend_loc: str = "right_margin",
     title: str | None = None,
-    figsize: tuple[float, float] | None=(22, 8),
+    figsize: tuple[float, float] | None = DEFAULT_EMBEDDING_FIGSIZE,
     point_size: float | None = None,
     alpha: float = 0.7,
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
@@ -910,6 +995,7 @@ def _plot_umap_features(
     alpha: float = 0.9,
     cmap: str = "viridis",
     save_path: PathLike[str] | str | None = None,
+    plot_batch_size: int = 200_000,
 ):
 
     """Plot UMAP feature plots by gene expression.
@@ -1014,8 +1100,89 @@ def _plot_umap_features(
     if where is not None and str(where).strip() != "":
         where_sql = f"WHERE {where}"
 
+    gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
+
     if sample_n is None:
-        umap_query = f"""
+        if use_data not in {"data_count", "data_log1p"}:
+            raise ValueError(
+                "Full-cell streaming UMAP feature plots only support "
+                "use_data='data_count' or use_data='data_log1p'. "
+                "Use a finite sample_n to plot other expression fields."
+            )
+
+        gene_map_df = conn.execute(f"""
+            SELECT
+                atlas_gene_id,
+                atlas_gene_name
+            FROM var
+            WHERE atlas_gene_name IN ({gene_name_sql})
+        """).fetchdf()
+        gene_map = {
+            row["atlas_gene_name"]: int(row["atlas_gene_id"])
+            for _, row in gene_map_df.iterrows()
+        }
+        missing_genes = [g for g in genes if g not in gene_map]
+        if missing_genes:
+            raise ValueError(f"These genes were not found in var: {missing_genes}")
+
+        n = len(genes)
+        ncols_eff = min(int(ncols), n)
+        nrows_eff = math.ceil(n / ncols_eff)
+        if figsize is None:
+            figsize = estimate_embedding_grid_figsize(n, ncols_eff)
+
+        fig, axes = plt.subplots(
+            nrows_eff,
+            ncols_eff,
+            figsize=figsize,
+            facecolor="white",
+            squeeze=False,
+        )
+        axes_flat = axes.reshape(-1)
+
+        for ax, gene in zip(axes_flat, genes):
+            draw_embedding_gene_expression_streaming(
+                conn,
+                embedding_table="obsm_X_umap",
+                x_col="umap1",
+                y_col="umap2",
+                x_label="UMAP1",
+                y_label="UMAP2",
+                gene_id=gene_map[gene],
+                gene_name=str(gene),
+                expr_source=expr_source,
+                where_sql=where,
+                title=str(gene),
+                point_size=point_size,
+                alpha=alpha,
+                cmap=cmap,
+                frameon=True,
+                hide_ticks=True,
+                ax=ax,
+                show=False,
+                adjust_layout=False,
+                plot_batch_size=plot_batch_size,
+            )
+
+        for ax in axes_flat[n:]:
+            ax.set_visible(False)
+
+        fig.subplots_adjust(
+            left=0.06,
+            right=0.96,
+            bottom=0.10,
+            top=0.90,
+            wspace=0.40,
+            hspace=0.35,
+        )
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.show()
+        return None
+
+    umap_query = f"""
+        SELECT *
+        FROM (
             SELECT
                 u.atlas_cell_id,
                 u.umap1,
@@ -1024,24 +1191,10 @@ def _plot_umap_features(
             JOIN obs o
               ON u.atlas_cell_id = o.atlas_cell_id
             {where_sql}
-            ORDER BY u.atlas_cell_id
-        """
-    else:
-        umap_query = f"""
-            SELECT *
-            FROM (
-                SELECT
-                    u.atlas_cell_id,
-                    u.umap1,
-                    u.umap2
-                FROM obsm_X_umap u
-                JOIN obs o
-                  ON u.atlas_cell_id = o.atlas_cell_id
-                {where_sql}
-            ) t
-            USING SAMPLE {int(sample_n)} ROWS
-            ORDER BY atlas_cell_id
-        """
+        ) t
+        USING SAMPLE {int(sample_n)} ROWS
+        ORDER BY atlas_cell_id
+    """
 
     umap_df = conn.execute(umap_query).fetchdf()
 
@@ -1052,8 +1205,6 @@ def _plot_umap_features(
         point_size = default_point_size(len(umap_df))
 
     # Query gene_id
-    gene_name_sql = ", ".join([f"'{str(g)}'" for g in genes])
-
     if use_data == "data_scale":
         if "zero_scale_transform" not in var_cols:
             raise ValueError(
@@ -1165,23 +1316,24 @@ def _plot_umap_features(
 
     # Automatic layout
     n = len(genes)
-    nrows = math.ceil(n / ncols)
+    ncols_eff = min(int(ncols), n)
+    nrows = math.ceil(n / ncols_eff)
 
     if figsize is None:
-        figsize = (5.3 * ncols, 5.0 * nrows)
+        figsize = estimate_embedding_grid_figsize(n, ncols_eff)
 
     fig, axes = plt.subplots(
         nrows,
-        ncols,
+        ncols_eff,
         figsize=figsize,
         facecolor="white"
     )
 
-    if nrows == 1 and ncols == 1:
+    if nrows == 1 and ncols_eff == 1:
         axes = [[axes]]
     elif nrows == 1:
         axes = [axes]
-    elif ncols == 1:
+    elif ncols_eff == 1:
         axes = [[ax] for ax in axes]
 
     axes_flat = [ax for row in axes for ax in row]
@@ -1221,7 +1373,14 @@ def _plot_umap_features(
     for ax in axes_flat[len(genes):]:
         ax.set_visible(False)
 
-    plt.tight_layout(pad=1.0)
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.96,
+        bottom=0.10,
+        top=0.90,
+        wspace=0.40,
+        hspace=0.35,
+    )
     if save_path is not None:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
 
@@ -1246,6 +1405,7 @@ def _plot_umap_mixed(
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
+    plot_batch_size: int = 200_000,
 ):
     """Plot a mixed-type multi-panel UMAP figure.
 
@@ -1401,7 +1561,138 @@ def _plot_umap_mixed(
         where_sql = f"WHERE {where}"
 
     if sample_n is None:
-        umap_query = f"""
+        if len(gene_colors) > 0 and use_data not in {"data_count", "data_log1p"}:
+            raise ValueError(
+                "Full-cell streaming UMAP mixed plots only support gene "
+                "features with use_data='data_count' or use_data='data_log1p'. "
+                "Use a finite sample_n to plot other expression fields."
+            )
+
+        gene_map = {}
+        if len(gene_colors) > 0:
+            gene_name_sql = ", ".join([f"'{str(g)}'" for g in gene_colors])
+            gene_map_df = conn.execute(f"""
+                SELECT
+                    atlas_gene_id,
+                    atlas_gene_name
+                FROM var
+                WHERE atlas_gene_name IN ({gene_name_sql})
+            """).fetchdf()
+            gene_map = {
+                row["atlas_gene_name"]: int(row["atlas_gene_id"])
+                for _, row in gene_map_df.iterrows()
+            }
+            missing_genes = [g for g in gene_colors if g not in gene_map]
+            if missing_genes:
+                raise ValueError(f"These genes were not found in var: {missing_genes}")
+
+        panel_names = obs_colors + gene_colors
+        n_panels = len(panel_names)
+        ncols_eff = min(int(ncols), n_panels)
+        nrows_eff = math.ceil(n_panels / ncols_eff)
+        if figsize is None:
+            figsize = estimate_embedding_grid_figsize(n_panels, ncols_eff)
+
+        fig, axes = plt.subplots(
+            nrows_eff,
+            ncols_eff,
+            figsize=figsize,
+            facecolor="white",
+            squeeze=False,
+        )
+        axes_flat = axes.reshape(-1)
+
+        ax_id = 0
+        for obs_col in obs_colors:
+            ax = axes_flat[ax_id]
+            ax_id += 1
+            if is_numeric_obs_column(conn, obs_col):
+                draw_embedding_obs_continuous_streaming(
+                    conn,
+                    embedding_table="obsm_X_umap",
+                    x_col="umap1",
+                    y_col="umap2",
+                    x_label="UMAP1",
+                    y_label="UMAP2",
+                    color=obs_col,
+                    where_sql=where,
+                    title=obs_col,
+                    point_size=point_size,
+                    alpha=alpha,
+                    cmap=cmap,
+                    frameon=frameon,
+                    ax=ax,
+                    show=False,
+                    adjust_layout=False,
+                    plot_batch_size=plot_batch_size,
+                )
+            else:
+                draw_embedding_scatter_streaming(
+                    conn,
+                    embedding_table="obsm_X_umap",
+                    x_col="umap1",
+                    y_col="umap2",
+                    x_label="UMAP1",
+                    y_label="UMAP2",
+                    color=obs_col,
+                    where_sql=where,
+                    title=obs_col,
+                    point_size=point_size,
+                    alpha=alpha,
+                    palette=palette,
+                    legend_loc="right_margin",
+                    frameon=frameon,
+                    ax=ax,
+                    show=False,
+                    adjust_layout=False,
+                    plot_batch_size=plot_batch_size,
+                    spread_label_positions=_spread_on_data_label_positions,
+                )
+
+        for gene in gene_colors:
+            ax = axes_flat[ax_id]
+            ax_id += 1
+            draw_embedding_gene_expression_streaming(
+                conn,
+                embedding_table="obsm_X_umap",
+                x_col="umap1",
+                y_col="umap2",
+                x_label="UMAP1",
+                y_label="UMAP2",
+                gene_id=gene_map[gene],
+                gene_name=str(gene),
+                expr_source=expr_source,
+                where_sql=where,
+                title=str(gene),
+                point_size=point_size,
+                alpha=alpha,
+                cmap=cmap,
+                frameon=frameon,
+                ax=ax,
+                show=False,
+                adjust_layout=False,
+                plot_batch_size=plot_batch_size,
+            )
+
+        for ax in axes_flat[n_panels:]:
+            ax.set_visible(False)
+
+        fig.subplots_adjust(
+            left=0.06,
+            right=0.96,
+            bottom=0.10,
+            top=0.90,
+            wspace=0.40,
+            hspace=0.35,
+        )
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
+        plt.show()
+        return None
+
+    umap_query = f"""
+        SELECT *
+        FROM (
             SELECT
                 u.atlas_cell_id,
                 u.umap1,
@@ -1411,25 +1702,10 @@ def _plot_umap_mixed(
             JOIN obs o
               ON u.atlas_cell_id = o.atlas_cell_id
             {where_sql}
-            ORDER BY u.atlas_cell_id
-        """
-    else:
-        umap_query = f"""
-            SELECT *
-            FROM (
-                SELECT
-                    u.atlas_cell_id,
-                    u.umap1,
-                    u.umap2
-                    {obs_select}
-                FROM obsm_X_umap u
-                JOIN obs o
-                  ON u.atlas_cell_id = o.atlas_cell_id
-                {where_sql}
-            ) t
-            USING SAMPLE {int(sample_n)} ROWS
-            ORDER BY atlas_cell_id
-        """
+        ) t
+        USING SAMPLE {int(sample_n)} ROWS
+        ORDER BY atlas_cell_id
+    """
 
     umap_df = conn.execute(umap_query).fetchdf()
 
@@ -1567,7 +1843,7 @@ def _plot_umap_mixed(
     nrows_eff = math.ceil(n_panels / ncols_eff)
 
     if figsize is None:
-        figsize = (5.3 * ncols_eff, 5.0 * nrows_eff)
+        figsize = estimate_embedding_grid_figsize(n_panels, ncols_eff)
 
     fig, axes = plt.subplots(
         nrows_eff,
@@ -1702,7 +1978,14 @@ def _plot_umap_mixed(
     for ax in axes_flat[n_panels:]:
         ax.set_visible(False)
 
-    plt.tight_layout(pad=1.0)
+    fig.subplots_adjust(
+        left=0.06,
+        right=0.96,
+        bottom=0.10,
+        top=0.90,
+        wspace=0.40,
+        hspace=0.35,
+    )
 
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches="tight")
