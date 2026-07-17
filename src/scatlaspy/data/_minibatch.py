@@ -432,7 +432,7 @@ class MultiThreadedMinibatchFetcher:
         self.X_type = x_type  # Output X table format: "CSR" or "dense" (wide table)
         self.file_path = fspath(file_path)  # Absolute path to the sasql file
         self.batch_size = batch_size
-        self.producer_num = 10  # Number of threads
+        self.producer_num = 10  # Number of producer threads
         self.gene_num = self._get_gene_num()  # Get the number of genes
         self.index_data = self._get_index_data()  # Read the information saved by build_read_index(use_data=...) from the database, such as "data_log1p" or "data_scale"
         self.zero_scale_transform = self._get_zero_scale_transform()
@@ -445,7 +445,7 @@ class MultiThreadedMinibatchFetcher:
 
         self.out_queue = queue.Queue(maxsize=20)  # Output queue
 
-        self.fetch_size = 500_0000  # Size for streaming reading with fetch_record_batch
+        self.fetch_size = 500_0000  # Number of sparse records in one rowid block.
         self.pass_mode = pass_mode  # single-pass: single traversal; multi-pass: multiple traversals
         self.buffer_batch_num = buffer_batch_num  # For multiple traversals, buffer capacity; n means batch_size * n
 
@@ -731,53 +731,56 @@ class MultiThreadedMinibatchFetcher:
         conn = duckdb.connect(self.file_path)
         conn.execute("PRAGMA enable_progress_bar=false")
 
-        query = f"""
-            SELECT
-                rowid,
-                filter_gene_id,
-                data
-            FROM X_HyS_data_filtered
-            WHERE tid = {tid}
-            ORDER BY rowid
-        """
-
-        result = conn.execute(query).fetch_record_batch(
-            rows_per_batch=self.fetch_size
-        )
-
-        rb_count = 0
-        nnz_count = 0
-
         try:
-            for rb in result:
+            total_rows = conn.execute(
+                "SELECT COUNT(*) FROM X_HyS_data_filtered"
+            ).fetchone()[0]
+            total_blocks = (int(total_rows) + self.fetch_size - 1) // self.fetch_size
 
-                # New: stop early
+            for seq_id in range(tid, total_blocks, self.producer_num):
                 if self.stop_event.is_set():
                     break
 
-                # Read rowid / gene_id / data
-                rowids = rb.column(0).to_numpy().astype(np.int64)
-                gene_id = rb.column(1).to_numpy().astype(np.uint16)
-                data = rb.column(2).to_numpy().astype(np.float32)
+                start = seq_id * self.fetch_size
+                end = min(start + self.fetch_size, int(total_rows))
+
+                query = f"""
+                    SELECT
+                        rowid,
+                        filter_gene_id,
+                        data
+                    FROM X_HyS_data_filtered
+                    WHERE rowid >= {start}
+                      AND rowid < {end}
+                """
+                arrow_table = conn.execute(query).fetch_arrow_table()
+                rowids = arrow_table.column(0).to_numpy(
+                    zero_copy_only=False
+                ).astype(np.int64)
+                gene_id = arrow_table.column(1).to_numpy(
+                    zero_copy_only=False
+                ).astype(np.uint16)
+                data = arrow_table.column(2).to_numpy(
+                    zero_copy_only=False
+                ).astype(np.float32)
 
                 if len(rowids) == 0:
                     continue
 
-                # Calculate seq_id using the real rowid
-                seq_start = int(rowids[0] // self.fetch_size)  # Which block the first rowid of the current rb belongs to
-                seq_end = int(rowids[-1] // self.fetch_size)  # Which block the last rowid of the current rb belongs to
-
-                # Safety check: in theory, one rb should belong to only one seq block
-                # If it crosses blocks, rows_per_batch / tid sharding does not match
-                if seq_start != seq_end:
+                if rowids.min() < start or rowids.max() >= end:
                     raise RuntimeError(
-                        f"[Producer-{tid}] one record batch spans multiple seq blocks: "
-                        f"{seq_start} -> {seq_end}, "
-                        f"rowid_start={rowids[0]}, rowid_end={rowids[-1]}, "
-                        f"fetch_size={self.fetch_size}"
+                        f"[Producer-{tid}] rowid block out of range: "
+                        f"seq_id={seq_id}, expected=[{start}, {end}), "
+                        f"rowid_min={rowids.min()}, rowid_max={rowids.max()}"
                     )
 
-                seq_id = seq_start
+                # DuckDB usually returns rowid-ordered table scans here, but SQL does
+                # not guarantee row order without ORDER BY. Sort only this bounded
+                # rowid block when needed.
+                if len(rowids) > 1 and not np.all(rowids[1:] >= rowids[:-1]):
+                    order = np.argsort(rowids, kind="stable")
+                    gene_id = gene_id[order]
+                    data = data[order]
 
                 while not self.stop_event.is_set():
                     try:
@@ -786,13 +789,9 @@ class MultiThreadedMinibatchFetcher:
                     except queue.Full:
                         continue
 
-                rb_count += 1
-                nnz_count += len(gene_id)
-
         finally:
             conn.close()
 
-            # Notify the consumer that this producer has finished
             try:
                 self.queue.put(None, timeout=0.5)
             except queue.Full:
