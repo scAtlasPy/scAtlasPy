@@ -103,7 +103,8 @@ class StreamingRandomizedPCA:
         self,
         n_components: int = 30,
         oversample: int = 200,
-        batch_size: int = 2048,
+        fit_batch_size: int = 2048,
+        transform_batch_size: int = 10_000,
         random_state: int | None = 0,
         n_iter: int = 2,
     ):
@@ -118,8 +119,12 @@ class StreamingRandomizedPCA:
             Additional random projection dimensions. The internal projection
             dimension is ``n_components + oversample``.
 
-        batch_size
-            Number of cells per dense minibatch.
+        fit_batch_size
+            Number of cells per dense minibatch during covariance fitting.
+
+        transform_batch_size
+            Number of cells per dense minibatch when writing the final PCA
+            embedding.
 
         random_state
             Seed used to generate the Gaussian random projection matrix.
@@ -134,15 +139,18 @@ class StreamingRandomizedPCA:
             raise ValueError("n_components must be greater than 0")
         if oversample < 0:
             raise ValueError("oversample must be non-negative")
-        if batch_size <= 0:
-            raise ValueError("batch_size must be greater than 0")
+        if fit_batch_size <= 0:
+            raise ValueError("fit_batch_size must be greater than 0")
+        if transform_batch_size <= 0:
+            raise ValueError("transform_batch_size must be greater than 0")
         if n_iter < 0:
             raise ValueError("n_iter must be non-negative")
 
         self.n_components = int(n_components)
         self.oversample = int(oversample)
         self.projection_dim = self.n_components + self.oversample
-        self.batch_size = int(batch_size)
+        self.fit_batch_size = int(fit_batch_size)
+        self.transform_batch_size = int(transform_batch_size)
         self.random_state = random_state
         self.n_iter = int(n_iter)
 
@@ -277,7 +285,7 @@ class StreamingRandomizedPCA:
             for batch_id, X_batch in enumerate(
                 progress(
                     atlas.get_minibatch_dense(
-                        batch_size=self.batch_size,
+                        batch_size=self.fit_batch_size,
                         pass_mode="single-pass",
                     ),
                     desc=f"Randomized PCA covariance pass {pass_id + 1}",
@@ -351,7 +359,7 @@ class StreamingRandomizedPCA:
         for batch_id, X_batch in enumerate(
             progress(
                 atlas.get_minibatch_dense(
-                    batch_size=self.batch_size,
+                    batch_size=self.fit_batch_size,
                     pass_mode="single-pass",
                 ),
                 desc="Randomized PCA compact covariance",
@@ -419,7 +427,7 @@ class StreamingRandomizedPCA:
 
         for batch in progress(
             atlas.get_minibatch_dense(
-                batch_size=self.batch_size,
+                batch_size=self.transform_batch_size,
                 pass_mode="single-pass",
                 get_obs_col="atlas_cell_id",
             ),
@@ -455,7 +463,9 @@ class StreamingRandomizedPCA:
 def pca(
     atlas: Atlas,
     n_components: int = 30,
-    batch_size: int = 2048,
+    batch_size: int | None = None,
+    fit_batch_size: int = 2048,
+    transform_batch_size: int = 10_000,
     oversample: int = 200,
     random_state: int | None = 0,
     n_iter: int = 2,
@@ -488,8 +498,15 @@ def pca(
         The default value is ``30``.
 
     batch_size
-        Number of cells contained in each minibatch. A larger value usually gives
-        higher throughput, but increases per-batch memory usage.
+        Backward-compatible alias for ``fit_batch_size``. New code should use
+        ``fit_batch_size`` and ``transform_batch_size`` explicitly.
+
+    fit_batch_size
+        Number of cells contained in each minibatch during covariance fitting.
+
+    transform_batch_size
+        Number of cells contained in each minibatch when writing final PCA
+        coordinates.
 
     oversample
         Additional random projection dimensions. The internal projection
@@ -534,10 +551,14 @@ def pca(
     t_start = time.time()
     _require_centered_read_index(atlas)
 
+    if batch_size is not None:
+        fit_batch_size = batch_size
+
     pca_runner = StreamingRandomizedPCA(
         n_components=n_components,
         oversample=oversample,
-        batch_size=batch_size,
+        fit_batch_size=fit_batch_size,
+        transform_batch_size=transform_batch_size,
         random_state=random_state,
         n_iter=n_iter,
     )
