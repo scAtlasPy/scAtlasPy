@@ -56,10 +56,10 @@ or `obs` columns together with each batch, pass `get_obs_col`:
 for batch in atlas.get_minibatch_dense(
     pass_mode="multi-pass",
     batch_size=4096,
-    get_obs_col="kmeans",
+    get_obs_col="scatlas_cluster",
 ):
     X_batch = batch["X"]
-    labels = batch["kmeans"]
+    labels = batch["scatlas_cluster"]
     filter_cell_ids = batch["filter_cell_ids"]
 ```
 

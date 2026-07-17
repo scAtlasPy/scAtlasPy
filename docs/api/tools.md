@@ -82,18 +82,38 @@ expression field are supplied to PCA.
    :toctree: generated/
    :nosignatures:
 
-   tl.kmeans
    tl.graph_clustering
+   tl.kmeans
 ```
 
-`kmeans()` clusters cells using a stored low-dimensional representation and
-writes the resulting labels to `obs`. By default it uses `obsm_X_umap`; pass
-`use_rep="X_pca"` to cluster PCA coordinates instead.
+`graph_clustering()` is the default scalable clustering workflow. It fits a Louvain teacher in PCA space, trains a PyTorch classifier to
+reproduce the teacher labels, and predicts labels for the full Atlas in batches.
 
-The default output is commonly stored in:
+Example:
+
+```python
+sap.tl.graph_clustering(
+    atlas,
+    fit_sample_n=200_000,
+    add_obs_col="scatlas_cluster",
+)
+```
+
+The default workflow output is commonly stored in:
 
 ```text
-obs.kmeans
+obs.scatlas_cluster
+```
+
+`kmeans()` remains available as an optional fast partitioning method. It clusters
+cells using a stored low-dimensional representation and writes the resulting
+labels to `obs`. By default it uses `obsm_X_umap`; pass `use_rep="X_pca"` to
+cluster PCA coordinates instead.
+
+The KMeans-specific output is commonly stored in:
+
+```text
+obs.<add_obs_col>
 ```
 
 Key parameters:
@@ -116,23 +136,7 @@ sap.tl.kmeans(
     n_components=30,
     n_clusters=10,
     batch_size=2048,
-    add_obs_col="kmeans",
-)
-```
-
-`graph_clustering()` provides a graph-like scalable alternative through
-distillation. With `mode="distilled_louvain"`, it fits a Louvain teacher in PCA
-space, trains a PyTorch classifier to reproduce the teacher labels, and predicts
-labels for the full Atlas in batches.
-
-Example:
-
-```python
-sap.tl.graph_clustering(
-    atlas,
-    mode="distilled_louvain",
-    fit_sample_n=200_000,
-    add_obs_col="louvain_distilled",
+    add_obs_col="partition_optional",
 )
 ```
 
@@ -188,7 +192,7 @@ The stored coordinates can be visualized with:
 ```python
 sap.pl.umap(
     atlas,
-    color="kmeans",
+    color="scatlas_cluster",
 )
 ```
 
@@ -212,7 +216,7 @@ Example:
 ```python
 sap.tl.rank_genes_groups(
     atlas,
-    groupby="kmeans",
+    groupby="scatlas_cluster",
     n_genes=20,
 )
 ```
@@ -254,7 +258,7 @@ cluster_annotations = {
 sap.tl.manual_annotate_clusters(
     atlas,
     cluster_to_cell_type=cluster_annotations,
-    groupby="kmeans",
+    groupby="scatlas_cluster",
     obs_col="cell_type_manual",
 )
 ```
@@ -283,14 +287,14 @@ sap.tl.pca(
 
 sap.tl.umap(atlas)
 
-sap.tl.kmeans(
+sap.tl.graph_clustering(
     atlas,
-    n_clusters=10,
+    add_obs_col="scatlas_cluster",
 )
 
 sap.tl.rank_genes_groups(
     atlas,
-    groupby="kmeans",
+    groupby="scatlas_cluster",
     n_genes=20,
 )
 ```
@@ -302,7 +306,7 @@ manual annotations:
 sap.tl.manual_annotate_clusters(
     atlas,
     cluster_to_cell_type=cluster_annotations,
-    groupby="kmeans",
+    groupby="scatlas_cluster",
     obs_col="cell_type_manual",
 )
 ```
@@ -312,7 +316,7 @@ sap.tl.manual_annotate_clusters(
 | Analysis | Common output |
 |---|---|
 | PCA | `obsm_X_pca`, `varm_PCs`, and explained-variance statistics |
-| KMeans | Cluster labels in an `obs` column, commonly `kmeans` |
+| scAtlasPy clustering | Cluster labels in an `obs` column, commonly `scatlas_cluster` |
 | UMAP | Two-dimensional coordinates in `obsm_X_umap` |
 | Marker ranking | Ranked gene statistics stored in Atlas result tables |
 | Manual annotation | User-defined labels in an `obs` annotation column |

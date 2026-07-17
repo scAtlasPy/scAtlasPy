@@ -21,7 +21,7 @@ from ._utils import (
 # Unified discrete categorical color palette pool
 # -----------------------------------------------------
 # Used for coloring obs categorical variables, such as:
-# kmeans / cell_type / batch / organ, etc.
+# scatlas_cluster / cell_type / batch / organ, etc.
 #
 # These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
@@ -155,10 +155,10 @@ def pca(
 
     Examples
     --------
-    Plot PC1 and PC2 colored by K-means clusters::
+    Plot PC1 and PC2 colored by distilled Louvain clusters::
 
         sap.tl.pca(atlas)
-        sap.pl.pca(atlas, color="kmeans")
+        sap.pl.pca(atlas, color="scatlas_cluster")
 
     Plot PC2 and PC3 colored by a QC metric continuously::
 

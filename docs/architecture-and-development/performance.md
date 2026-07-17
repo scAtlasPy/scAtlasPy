@@ -274,7 +274,8 @@ runtime and resource use.
 | Workflow | Parameters to inspect | Typical trade-off |
 |---|---|---|
 | PCA | `batch_size`, `oversample`, `n_iter` | Larger randomized subspaces and more subspace iterations improve accuracy but increase scan time |
-| KMeans | `batch_size`, `fit_batches` | More updates may improve stability but increase computation |
+| Distilled Louvain | `fit_sample_n`, `torch_epochs`, `transform_batch_size` | Larger teacher fitting budgets and longer student training can improve label fidelity but increase runtime |
+| KMeans | `batch_size`, `fit_batches` | Optional fast partitioning backend; more updates may improve stability but increase computation |
 | UMAP | `fit_sample_n`, `transform_batch_size` | A smaller teacher fitting budget is faster; smaller transform batches reduce memory |
 | Large embedding plots | sampling and filtering parameters | Fewer displayed cells improve rendering speed and readability |
 | External in-memory analysis | selected cells, genes, and expression field | Smaller focused subsets reduce materialization and downstream memory |
@@ -376,7 +377,7 @@ When iterative results vary more than expected:
 1. Confirm the read-index definition.
 2. Verify the selected expression representation.
 3. Record random seeds used by scikit-learn, PyTorch, or other libraries.
-4. Increase method-specific accuracy settings, such as PCA `n_iter` or KMeans `fit_batches`, where appropriate.
+4. Increase method-specific accuracy settings, such as PCA `n_iter` or distilled Louvain `fit_sample_n`, where appropriate.
 5. Check whether the shuffle buffer provides sufficient mixing.
 6. Confirm that labels remain aligned with expression batches.
 7. Do not interpret a truncated single-pass run as a full-population result.

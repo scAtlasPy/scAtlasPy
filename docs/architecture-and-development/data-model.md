@@ -76,7 +76,7 @@ obs
 ├── donor
 ├── condition
 ├── filter_cells
-├── kmeans
+├── scatlas_cluster
 └── cell_type_manual
 ```
 

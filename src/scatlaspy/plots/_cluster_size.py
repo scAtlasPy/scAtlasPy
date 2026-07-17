@@ -4,17 +4,16 @@ from os import PathLike
 from ..data import Atlas
 
 
-def kmeans_cluster_size(
+def cluster_size(
     atlas: Atlas,
-    use_obs_col: str = "kmeans",
+    use_obs_col: str = "scatlas_cluster",
     figsize: tuple[float, float] | None=(7, 4),
     show_percent: bool = True,
     title: str | None = None,
     save_path: PathLike[str] | str | None = None,
     dpi: int = 300,
 ) -> None:
-
-    """Plot the cell count distribution of K-means or another grouping column.
+    """Plot the cell count distribution of a grouping column.
 
     This function reads the grouping column specified by ``use_obs_col`` from the
     ``obs`` table, counts the number of cells in each group, and displays the group
@@ -23,10 +22,9 @@ def kmeans_cluster_size(
 
     This plot is commonly used to check whether clustering results are overly
     imbalanced, whether very small clusters exist, or whether the group sizes under
-    different clustering parameters meet expectations. Although the default column
-    name is ``"kmeans"``, it can also be used for any ``obs`` grouping column such
-    as ``leiden`` or ``cell_type``, as long as the column can be converted to integer
-    labels.
+    different clustering parameters meet expectations. It can be used for any
+    ``obs`` grouping column such as ``scatlas_cluster``, ``leiden``, or
+    ``cell_type``, as long as the column can be displayed as discrete labels.
 
     Parameters
     ----------
@@ -34,8 +32,8 @@ def kmeans_cluster_size(
         Atlas object. It must already be connected to a DuckDB database, and the
         database must contain the ``obs`` table.
     use_obs_col
-        Column name in ``obs`` used to count group sizes. By default, ``"kmeans"``
-        is read.
+        Column name in ``obs`` used to count group sizes. By default,
+        ``"scatlas_cluster"`` is read.
     figsize
         Matplotlib figure size. Defaults to ``(7, 4)``.
     show_percent
@@ -56,29 +54,29 @@ def kmeans_cluster_size(
 
     Examples
     --------
-    Plot the default K-means cluster sizes::
+    Plot the default distilled Louvain cluster sizes::
 
-        sap.tl.kmeans(atlas, n_clusters=20)
-        sap.pl.kmeans_cluster_size(atlas)
+        sap.tl.graph_clustering(atlas)
+        sap.pl.cluster_size(atlas)
 
-    Plot a custom clustering column and display percentages::
+    Plot a custom grouping column and display percentages::
 
-        sap.pl.kmeans_cluster_size(
+        sap.pl.cluster_size(
             atlas,
-            use_obs_col="kmeans_50",
+            use_obs_col="cell_type",
             show_percent=True,
-            title="K-means 50 cluster size",
+            title="Cell type distribution",
         )"""
 
     start = datetime.now()
     conn = atlas.connection
 
-    # Check whether the kmeans column exists in obs
+    # Check whether the grouping column exists in obs.
     obs_cols = [r[1] for r in conn.execute("PRAGMA table_info(obs)").fetchall()]
     if use_obs_col not in obs_cols:
         raise ValueError(
             f"The column does not exist in obs: {use_obs_col}\n"
-            f"Please run sap.tl.kmeans(atlas, use_obs_col='{use_obs_col}') first"
+            "Please run a clustering or annotation step before plotting group sizes."
         )
 
     # Count clusters
@@ -95,10 +93,10 @@ def kmeans_cluster_size(
     if len(df) == 0:
         raise ValueError(
             f"No available clustering results found in obs.{use_obs_col}.\n"
-            f"Please run sap.tl.kmeans(atlas) first"
+            "Please run a clustering or annotation step before plotting group sizes."
         )
 
-    df["cluster"] = df["cluster"].astype(int).astype(str)
+    df["cluster"] = df["cluster"].astype(str)
     df["pct"] = df["n_cells"] / df["n_cells"].sum() * 100
 
     # Plot
@@ -113,7 +111,7 @@ def kmeans_cluster_size(
         width=0.75
     )
 
-    ax.set_xlabel("KMeans cluster", fontsize=13)
+    ax.set_xlabel(use_obs_col, fontsize=13)
     ax.set_ylabel("Percent of cells (%)" if show_percent else "Number of cells", fontsize=13)
 
     if title is None:

@@ -16,7 +16,7 @@ from ._utils import estimate_dotplot_sample_per_group
 # Unified discrete category color pool
 # -----------------------------------------------------
 # Used for coloring categorical variables in obs, for example:
-# kmeans / cell_type / batch / organ, etc.
+# scatlas_cluster / cell_type / batch / organ, etc.
 #
 # These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
@@ -53,7 +53,7 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 def violin(
     atlas: Atlas,
     genes: str | list[str],
-    groupby: str = "kmeans",
+    groupby: str = "scatlas_cluster",
     use_data: str = "data_log1p",
     sample_n_per_group: int | str | None = "auto",
     allow_full: bool = False,
@@ -89,7 +89,7 @@ def violin(
         Gene name or list of gene names to display. They must exist in ``var.atlas_gene_name``.
 
     groupby
-        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+        Grouping column name in ``obs``, such as ``"scatlas_cluster"``, ``"leiden"``, or ``"cell_type"``.
 
     use_data
         Expression value field read from the resolved expression source, such as ``"data_log1p"``,
@@ -148,14 +148,14 @@ def violin(
     --------
     Plot the expression distribution of a single gene across clusters::
 
-        sap.pl.violin(atlas, genes="MS4A1", groupby="kmeans")
+        sap.pl.violin(atlas, genes="MS4A1", groupby="scatlas_cluster")
 
     Plot multiple marker genes at the same time::
 
         sap.pl.violin(
             atlas,
             genes=["MS4A1", "CD3D", "LYZ"],
-            groupby="kmeans",
+            groupby="scatlas_cluster",
             use_data="data_log1p",
         )"""
 
@@ -510,7 +510,7 @@ def stacked_violin(
         Gene name or list of gene names to display. They must exist in ``var.atlas_gene_name``.
 
     groupby
-        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+        Grouping column name in ``obs``, such as ``"scatlas_cluster"``, ``"leiden"``, or ``"cell_type"``.
 
     use_data
         Expression value field read from the resolved expression source, such as ``"data_log1p"``,
@@ -582,7 +582,7 @@ def stacked_violin(
         sap.pl.stacked_violin(
             atlas,
             genes=["MS4A1", "CD3D", "LYZ", "NKG7"],
-            groupby="kmeans",
+            groupby="scatlas_cluster",
         )
 
     Display by automatically annotated cell types and save the figure::

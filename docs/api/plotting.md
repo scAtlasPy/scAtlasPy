@@ -110,7 +110,7 @@ batches rather than materialized as a full plot table in memory. Set
    :toctree: generated/
    :nosignatures:
 
-   pl.kmeans_cluster_size
+   pl.cluster_size
    pl.umap
 ```
 
@@ -118,12 +118,12 @@ Use these functions to inspect cluster sizes and visualize stored UMAP
 coordinates.
 
 ```python
-sap.pl.kmeans_cluster_size(atlas)
+sap.pl.cluster_size(atlas, use_obs_col="scatlas_cluster")
 ```
 
 UMAP plots can commonly be colored by:
 
-- cell-level metadata, such as `kmeans`, `sample`, `batch`, or annotation
+- cell-level metadata, such as `scatlas_cluster`, `sample`, `batch`, or annotation
   columns;
 - gene expression, such as `CST3`, `NKG7`, or `MS4A1`;
 - several metadata columns or genes in one call.
@@ -134,7 +134,7 @@ For example:
 sap.pl.umap(
     atlas,
     color=[
-        "kmeans",
+        "scatlas_cluster",
         "sample",
         "NKG7",
     ],
@@ -200,8 +200,8 @@ Use these functions to compare selected genes across clusters, annotations,
 conditions, or other cell groups.
 
 ```python
-sap.pl.violin(atlas, genes=["NKG7", "CST3"], groupby="kmeans")
-sap.pl.dotplot(atlas, genes=["NKG7", "CST3", "MS4A1"], groupby="kmeans")
+sap.pl.violin(atlas, genes=["NKG7", "CST3"], groupby="scatlas_cluster")
+sap.pl.dotplot(atlas, genes=["NKG7", "CST3", "MS4A1"], groupby="scatlas_cluster")
 ```
 
 For routine marker-expression visualization, a log-normalized expression field

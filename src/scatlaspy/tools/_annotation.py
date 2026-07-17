@@ -6,7 +6,7 @@ from ..data import Atlas
 def manual_annotate_clusters(
     atlas: Atlas,
     cluster_to_cell_type: Mapping[str, str] | Sequence[str],
-    groupby: str = "kmeans",
+    groupby: str = "scatlas_cluster",
     obs_col: str = "cell_type_manual",
     table_name: str | None = "manual_cluster_annotation",
     unknown_label: str | None = None,
@@ -54,8 +54,8 @@ def manual_annotate_clusters(
     groupby
         Column name in ``obs`` that stores clustering results.
 
-        If kmeans clustering is used, this is usually ``"kmeans"``.
-        If the current database uses KMeans clustering, it should be set to ``"kmeans"``.
+        If the default distilled Louvain workflow is used, this is usually
+        ``"scatlas_cluster"``.
 
     obs_col
         ``obs`` column name used to write manual cell-type annotations.
@@ -109,7 +109,7 @@ def manual_annotate_clusters(
         summary = sap.tl.manual_annotate_clusters(
             atlas,
             mapping,
-            groupby="kmeans",
+            groupby="scatlas_cluster",
             obs_col="cell_type_manual",
         )
 
@@ -129,7 +129,7 @@ def manual_annotate_clusters(
         summary = sap.tl.manual_annotate_clusters(
             atlas,
             new_cluster_names,
-            groupby="kmeans",
+            groupby="scatlas_cluster",
         )
 
     Plot the UMAP after manual annotation::

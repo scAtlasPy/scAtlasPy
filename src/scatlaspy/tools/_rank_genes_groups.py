@@ -13,7 +13,7 @@ logger = logging.getLogger('Atlas')
 
 def rank_genes_groups(
     atlas: Atlas,
-    groupby: str = "kmeans",
+    groupby: str = "scatlas_cluster",
     use_data: str = "data_log1p",
     groups: list | None = None,
     reference: str | int = "rest",
@@ -54,8 +54,8 @@ def rank_genes_groups(
         derived expression table.
 
     groupby
-        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``, or
-        ``"cell_type"``.
+        Grouping column name in ``obs``, such as ``"scatlas_cluster"``,
+        ``"leiden"``, or ``"cell_type"``.
 
     use_data
         Expression field name read from the resolved expression source. The default
@@ -133,15 +133,15 @@ def rank_genes_groups(
 
     Examples
     --------
-    Calculate marker genes based on K-means clusters::
+    Calculate marker genes based on distilled Louvain clusters::
 
-        result = sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        result = sap.tl.rank_genes_groups(atlas, groupby="scatlas_cluster")
 
     Calculate only specified clusters and retain the top 100 genes per group::
 
         result = sap.tl.rank_genes_groups(
             atlas,
-            groupby="kmeans",
+            groupby="scatlas_cluster",
             groups=["0", "1", "2"],
             n_genes=100,
         )

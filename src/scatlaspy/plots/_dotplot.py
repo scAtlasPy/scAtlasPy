@@ -15,7 +15,7 @@ from ._utils import estimate_dotplot_sample_per_group
 # Unified discrete categorical color palette pool
 # -----------------------------------------------------
 # Used for coloring obs categorical variables, such as:
-# kmeans / cell_type / batch / organ, etc.
+# scatlas_cluster / cell_type / batch / organ, etc.
 #
 # These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
@@ -52,7 +52,7 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 def dotplot(
     atlas: Atlas,
     genes: str | list[str],
-    groupby: str = "kmeans",
+    groupby: str = "scatlas_cluster",
     use_data: str = "data_log1p",
     sample_cells_per_group: int | str | None = "auto",
     groups: list | None = None,
@@ -87,8 +87,8 @@ def dotplot(
         Gene name or list of gene names to display. They must exist in
         ``var.atlas_gene_name``.
     groupby
-        Grouping column name in ``obs``, such as ``"kmeans"``, ``"leiden"``,
-        or ``"cell_type"``.
+        Grouping column name in ``obs``, such as ``"scatlas_cluster"``,
+        ``"leiden"``, or ``"cell_type"``.
     use_data
         Expression value field read from the resolved expression source, such as
         ``"data_log1p"``, ``"data_count"``, or ``"data_scale"``.
@@ -131,12 +131,12 @@ def dotplot(
 
     Examples
     --------
-    View the expression of classic marker genes across K-means clusters::
+    View the expression of classic marker genes across distilled Louvain clusters::
 
         sap.pl.dotplot(
             atlas,
             genes=["MS4A1", "CD3D", "LYZ", "NKG7"],
-            groupby="kmeans",
+            groupby="scatlas_cluster",
         )
 
     Display only specified clusters and save the figure::
@@ -144,7 +144,7 @@ def dotplot(
         sap.pl.dotplot(
             atlas,
             genes=["MS4A1", "CD3D", "LYZ"],
-            groupby="kmeans",
+            groupby="scatlas_cluster",
             groups=["0", "1", "2"],
             save_path="./figures/marker_dotplot.png",
         )"""

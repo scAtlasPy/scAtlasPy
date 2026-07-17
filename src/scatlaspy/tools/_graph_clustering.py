@@ -277,7 +277,7 @@ def graph_clustering(
     torch_weight_decay: float = 1e-4,
     torch_dropout: float = 0.0,
     validation_fraction: float = 0.1,
-    add_obs_col: str = "louvain_distilled",
+    add_obs_col: str = "scatlas_cluster",
     use_cluster_table: str = "obs_cluster_distilled_louvain",
     save_params_table: str = "uns_graph_clustering_params",
     save_eval_table: str = "uns_graph_clustering_eval",

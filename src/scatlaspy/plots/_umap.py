@@ -28,7 +28,7 @@ logger.addHandler(logging.NullHandler())
 # Unified discrete categorical color palette pool
 # -----------------------------------------------------
 # Used for coloring obs categorical variables, such as:
-# kmeans / cell_type / batch / organ, etc.
+# scatlas_cluster / cell_type / batch / organ, etc.
 #
 # These palettes together provide about 100 discrete colors:
 # tab20(20) + tab20b(20) + tab20c(20)
@@ -64,7 +64,7 @@ _MISSING_CATEGORY_LABELS = {"", "na", "nan", "none", "<na>", "null"}
 
 def umap(
     atlas: Atlas,
-    color: str | list[str] = "kmeans",
+    color: str | list[str] = "scatlas_cluster",
     *,
     sample_n: int | None = DEFAULT_CELL_PLOT_SAMPLE_N,
     where: str | None = None,
@@ -163,10 +163,10 @@ def umap(
 
     Examples
     --------
-    Plot UMAP colored by K-means clusters::
+    Plot UMAP colored by distilled Louvain clusters::
 
         sap.tl.umap(atlas)
-        sap.pl.umap(atlas, color="kmeans")
+        sap.pl.umap(atlas, color="scatlas_cluster")
 
     Plot by marker gene expression and save the figure::
 
@@ -306,7 +306,7 @@ def umap(
 # umap() - if color is an obs column -> plot_umap_obs()
 def _plot_umap_obs(
     atlas: Atlas,
-    color: str = "kmeans",
+    color: str = "scatlas_cluster",
     sample_n: int | None = 50_000,
     groups: list | None = None,
     where: str | None = None,
@@ -1136,7 +1136,8 @@ def _plot_umap_mixed(
     """Plot a mixed-type multi-panel UMAP figure.
 
     This internal function supports cases where ``obs`` categorical variables and
-    gene feature variables are passed to ``sap.pl.umap`` at the same time, such as ``color=["kmeans", "CD14", "NKG7"]``.
+    gene feature variables are passed to ``sap.pl.umap`` at the same time,
+    such as ``color=["scatlas_cluster", "CD14", "NKG7"]``.
     The function draws different types of coloring variables into the same Figure, with each variable corresponding to
     an independent subplot, thereby producing a multi-panel UMAP display.
 
@@ -1156,8 +1157,8 @@ def _plot_umap_mixed(
         tables such as ``obsm_X_umap``, ``obs``, ``var``, and ``X_HyS_data``.
 
     obs_colors
-        List of ``obs`` column names to plot, such as ``["kmeans"]``,
-        ``["cell_type"]``, or ``["batch", "kmeans"]``.
+        List of ``obs`` column names to plot, such as ``["scatlas_cluster"]``,
+        ``["cell_type"]``, or ``["batch", "scatlas_cluster"]``.
         These variables are plotted as discrete categorical variables.
 
     gene_colors
@@ -1219,7 +1220,7 @@ def _plot_umap_mixed(
 
         sap.pl.umap(
             atlas,
-            color=["kmeans", "CD14", "NKG7"],
+            color=["scatlas_cluster", "CD14", "NKG7"],
             use_data="data_log1p",
             sample_n=50_000,
         )
@@ -1228,7 +1229,7 @@ def _plot_umap_mixed(
 
         sap.pl.umap(
             atlas,
-            color=["kmeans", "cell_type", "CD14", "NKG7"],
+            color=["scatlas_cluster", "cell_type", "CD14", "NKG7"],
             use_data="data_log1p",
             ncols=2,
         )

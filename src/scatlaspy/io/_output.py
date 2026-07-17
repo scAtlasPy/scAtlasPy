@@ -444,7 +444,7 @@ def get_obs_df(
 
     Read only clustering and automatic annotation columns::
 
-        obs = atlas.get_obs_df(columns=["kmeans", "cell_type_auto"])"""
+            obs = atlas.get_obs_df(columns=["scatlas_cluster", "cell_type_auto"])"""
 
     start_time = datetime.now()
 

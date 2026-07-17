@@ -6,8 +6,8 @@ from ._hvg import (
     highly_variable_genes,
 )
 
-from ._kmeans import (
-    kmeans_cluster_size,
+from ._cluster_size import (
+    cluster_size,
 )
 
 from ._pca import (
@@ -42,7 +42,7 @@ from ._violin import (
 __all__ = [
     "dotplot",
     "highly_variable_genes",
-    "kmeans_cluster_size",
+    "cluster_size",
     "pca",
     "pca_loadings",
     "pca_variance_ratio",

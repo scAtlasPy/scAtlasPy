@@ -77,14 +77,14 @@ def rank_genes_groups(
     --------
     Calculate and plot the default differential gene ranking figure::
 
-        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.tl.rank_genes_groups(atlas, groupby="scatlas_cluster")
         sap.pl.rank_genes_groups(atlas)
 
     Read from a custom result table and display only selected groups::
 
         sap.pl.rank_genes_groups(
             atlas,
-            use_table="rank_genes_groups_kmeans_top100",
+            use_table="rank_genes_groups_scatlas_cluster_top100",
             groups=["0", "1", "2"],
             n_genes=10,
         )"""
@@ -381,7 +381,7 @@ def rank_genes_groups_volcano(
     --------
     Plot the default differential gene volcano plot::
 
-        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.tl.rank_genes_groups(atlas, groupby="scatlas_cluster")
         sap.pl.rank_genes_groups_volcano(atlas)
 
     Specify group, top genes, and save path::
@@ -613,7 +613,7 @@ def rank_genes_groups_violin(
     atlas: Atlas,
     group: str = 0 ,
     use_table: str = "rank_genes_groups",
-    groupby: str = "kmeans",
+    groupby: str = "scatlas_cluster",
     reference: str | int | None = None,
     genes: list[str] | None = None,
     n_genes: int = 8,
@@ -646,7 +646,7 @@ def rank_genes_groups_violin(
         Database table name for reading existing results.
 
     groupby
-        Grouping column in ``obs``, such as ``"kmeans"``, ``"leiden"``, or ``"cell_type"``.
+        Grouping column in ``obs``, such as ``"scatlas_cluster"``, ``"leiden"``, or ``"cell_type"``.
 
     reference
         Reference group for differential analysis. If ``None``, the default result
@@ -682,7 +682,7 @@ def rank_genes_groups_violin(
     --------
     Plot violin plots for the top markers of each group::
 
-        sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+        sap.tl.rank_genes_groups(atlas, groupby="scatlas_cluster")
         sap.pl.rank_genes_groups_violin(atlas)
 
     Specify a group and expression field::

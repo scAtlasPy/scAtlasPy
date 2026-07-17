@@ -321,10 +321,10 @@ expression batch, use the `get_obs_col` parameter:
 ```python
 for batch in atlas.get_minibatch_dense(
     batch_size=4096,
-    get_obs_col="kmeans",
+    get_obs_col="scatlas_cluster",
 ):
     X_batch = batch["X"]
-    labels = batch["kmeans"]
+    labels = batch["scatlas_cluster"]
     filter_cell_ids = batch["filter_cell_ids"]
 ```
 
