@@ -94,11 +94,12 @@ If `point_size=None`, `sap.pl.pca()` estimates a default point size from the
 number of plotted cells. Pass `point_size` explicitly when you want a fixed
 marker size across figures.
 
-`sap.pl.pca()` samples 1,000,000 cells by default. Set `sample_n` to another
-finite value for denser or lighter figures. Setting `sample_n=None` requests a
-full-cell plot. PCA embedding plots use streaming drawing for uncolored plots,
-metadata coloring, and gene-expression coloring with `use_data="data_count"` or
-`use_data="data_log1p"`.
+`sap.pl.pca()` uses streaming drawing for uncolored plots, metadata coloring,
+and gene-expression coloring with `use_data="data_count"` or
+`use_data="data_log1p"`. Set `sample_n` to control how many cells are drawn;
+sampling is performed inside DuckDB, and the selected cells are still drawn in
+batches rather than materialized as a full plot table in memory. Set
+`sample_n=None` to draw all cells.
 
 ## Clustering and UMAP
 
@@ -223,8 +224,10 @@ sap.pl.umap(
 )
 ```
 
-With `sample_n=None`, PCA and UMAP embedding plots use streaming plotting paths
-where possible and avoid materializing the full plot table at once.
+PCA embedding plots use streaming plotting paths by default, including when
+`sample_n` is finite. With `sample_n=None`, UMAP embedding plots also use
+streaming plotting paths where possible and avoid materializing the full plot
+table at once.
 `sap.pl.dotplot()`, `sap.pl.violin()`, and `sap.pl.stacked_violin()` use
 automatic group-aware sampling by default, choosing a larger per-group sample
 for small group-by-gene panels and a smaller one for very broad panels. Pass

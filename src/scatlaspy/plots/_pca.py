@@ -10,7 +10,6 @@ from typing import Any
 from ._utils import (
     DEFAULT_CELL_PLOT_SAMPLE_N,
     DEFAULT_EMBEDDING_FIGSIZE,
-    default_point_size,
     draw_embedding_gene_expression_streaming,
     draw_embedding_obs_continuous_streaming,
     draw_embedding_scatter_streaming,
@@ -110,9 +109,9 @@ def pca(
         Whether to annotate the variance explained ratio of each principal component on the axes.
 
     sample_n
-        Maximum number of cells to sample for plotting. The default is ``1_000_000``
-        to keep atlas-scale plotting memory-bounded. If ``None``, all cells are
-        used through streaming plotting paths when possible.
+        Number of cells to draw. If ``None``, all cells are drawn. Sampling is
+        performed inside DuckDB, and the selected points are still drawn through
+        the streaming plotting path.
 
     use_data
         Expression value field read from the resolved expression source when
@@ -181,27 +180,6 @@ def pca(
     if conn is None:
         raise ValueError("atlas.connection is None. Please connect to the database first")
 
-    # Safe quoting for DuckDB fields
-    def _q(name: str) -> str:
-        """Add double-quote quoting for DuckDB SQL identifiers.
-
-        This internal helper is used to safely concatenate column names, avoiding
-        conflicts between ``obs`` fields, expression fields, or other SQL identifiers
-        and SQL keywords. The function only handles identifier quoting and does not
-        escape SQL values.
-
-        Parameters
-        ----------
-        name
-            Column name to use as a SQL identifier.
-
-        Returns
-        -------
-        str
-            SQL identifier with double quotes added and internal double quotes escaped.
-        """
-        return '"' + name.replace('"', '""') + '"'
-
     pcx = f"pc{x_pc}"
     pcy = f"pc{y_pc}"
 
@@ -254,15 +232,50 @@ def pca(
         if y_pc in evr_map:
             y_label += f" ({evr_map[y_pc] * 100:.2f}%)"
 
-    if sample_n is None:
-        obs_cols_for_stream = []
-        if color is not None:
-            obs_cols_for_stream = [
-                r[1]
-                for r in conn.execute("PRAGMA table_info(obs)").fetchall()
-            ]
-        if color is None:
-            draw_embedding_scatter_streaming(
+    where_sql = None
+    if sample_n is not None:
+        sample_n = int(sample_n)
+        if sample_n <= 0:
+            raise ValueError("sample_n must be a positive integer or None")
+        conn.execute("DROP TABLE IF EXISTS _pca_plot_sample_ids")
+        conn.execute(f"""
+            CREATE TEMP TABLE _pca_plot_sample_ids AS
+            SELECT atlas_cell_id
+            FROM obsm_X_pca
+            USING SAMPLE {sample_n} ROWS
+        """)
+        where_sql = "e.atlas_cell_id IN (SELECT atlas_cell_id FROM _pca_plot_sample_ids)"
+
+    if color is None:
+        draw_embedding_scatter_streaming(
+            conn,
+            embedding_table="obsm_X_pca",
+            x_col=pcx,
+            y_col=pcy,
+            x_label=x_label,
+            y_label=y_label,
+            color=None,
+            where_sql=where_sql,
+            title="PCA",
+            figsize=figsize,
+            point_size=point_size,
+            alpha=alpha,
+            palette=palette,
+            legend_loc=None,
+            frameon=frameon,
+            hide_ticks=False,
+            save_path=save_path,
+            dpi=dpi,
+        )
+        return None
+
+    obs_cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info(obs)").fetchall()
+    ]
+    if color in obs_cols:
+        if is_numeric_obs_column(conn, color):
+            draw_embedding_obs_continuous_streaming(
                 conn,
                 embedding_table="obsm_X_pca",
                 x_col=pcx,
@@ -270,83 +283,7 @@ def pca(
                 x_label=x_label,
                 y_label=y_label,
                 color=color,
-                title="PCA" if color is None else str(color),
-                figsize=figsize,
-                point_size=point_size,
-                alpha=alpha,
-                palette=palette,
-                legend_loc=legend_loc,
-                frameon=frameon,
-                hide_ticks=False,
-                save_path=save_path,
-                dpi=dpi,
-            )
-            return None
-        if color in obs_cols_for_stream:
-            if is_numeric_obs_column(conn, color):
-                draw_embedding_obs_continuous_streaming(
-                    conn,
-                    embedding_table="obsm_X_pca",
-                    x_col=pcx,
-                    y_col=pcy,
-                    x_label=x_label,
-                    y_label=y_label,
-                    color=color,
-                    title=str(color),
-                    figsize=figsize,
-                    point_size=point_size,
-                    alpha=alpha,
-                    cmap=cmap,
-                    frameon=frameon,
-                    hide_ticks=False,
-                    save_path=save_path,
-                    dpi=dpi,
-                )
-            else:
-                draw_embedding_scatter_streaming(
-                    conn,
-                    embedding_table="obsm_X_pca",
-                    x_col=pcx,
-                    y_col=pcy,
-                    x_label=x_label,
-                    y_label=y_label,
-                    color=color,
-                    title=str(color),
-                    figsize=figsize,
-                    point_size=point_size,
-                    alpha=alpha,
-                    palette=palette,
-                    legend_loc=legend_loc,
-                    frameon=frameon,
-                    hide_ticks=False,
-                    save_path=save_path,
-                    dpi=dpi,
-                )
-            return None
-        gene_row = conn.execute("""
-            SELECT atlas_gene_id
-            FROM var
-            WHERE atlas_gene_name = ?
-            LIMIT 1
-        """, [color]).fetchone()
-        if gene_row is not None:
-            if use_data not in {"data_count", "data_log1p"}:
-                raise ValueError(
-                    "Full-cell streaming PCA feature plots only support "
-                    "use_data='data_count' or use_data='data_log1p'. "
-                    "Use a finite sample_n to plot other expression fields."
-                )
-            expr_source = resolve_expression_source(conn, use_data)
-            draw_embedding_gene_expression_streaming(
-                conn,
-                embedding_table="obsm_X_pca",
-                x_col=pcx,
-                y_col=pcy,
-                x_label=x_label,
-                y_label=y_label,
-                gene_id=int(gene_row[0]),
-                gene_name=str(color),
-                expr_source=expr_source,
+                where_sql=where_sql,
                 title=str(color),
                 figsize=figsize,
                 point_size=point_size,
@@ -357,360 +294,80 @@ def pca(
                 save_path=save_path,
                 dpi=dpi,
             )
-            return None
-        var_cols = [
-            r[1]
-            for r in conn.execute("PRAGMA table_info(var)").fetchall()
-        ]
-        if color in var_cols:
-            raise ValueError(
-                f"color='{color}' is a column in the var table.\n"
-                f"However, each point in a PCA plot is a cell, while a var column is gene-level information, "
-                f"so it cannot be directly used to color cell PCA points.\n"
-                f"If you want to color by gene expression, please pass a gene name from var.atlas_gene_name."
-            )
-        raise ValueError(
-            f"Cannot find color='{color}'.\n"
-            f"It is neither an obs table column name nor a gene name in var.atlas_gene_name."
-        )
-
-    # Finite-sample plotting path. Full-cell plots are handled above by
-    # streaming helpers, so this branch intentionally only handles sample_n.
-    pca_query = f"""
-        SELECT atlas_cell_id, {_q(pcx)} AS {_q(pcx)}, {_q(pcy)} AS {_q(pcy)}
-        FROM obsm_X_pca
-        USING SAMPLE {int(sample_n)} ROWS
-    """
-
-    pca_df = conn.execute(pca_query).fetchdf()
-
-    if pca_df.shape[0] == 0:
-        raise ValueError("The PCA sampling result is empty, unable to plot")
-
-    plot_df = pca_df.copy()
-    if point_size is None:
-        point_size = default_point_size(len(plot_df))
-
-    color_kind = None
-
-    if color is not None:
-
-        # Get fields from obs / var / X_HyS_data
-        obs_cols = [
-            r[1]
-            for r in conn.execute("PRAGMA table_info(obs)").fetchall()
-        ]
-
-        var_cols = [
-            r[1]
-            for r in conn.execute("PRAGMA table_info(var)").fetchall()
-        ]
-
-        # color is a column name in the obs table
-        if color in obs_cols:
-
-            conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
-
-            obs_color_df = conn.execute(f"""
-                SELECT
-                    c.atlas_cell_id,
-                    o.{_q(color)} AS color_value
-                FROM _pca_cells_tmp AS c
-                LEFT JOIN obs AS o
-                  ON c.atlas_cell_id = o.atlas_cell_id
-            """).fetchdf()
-
-            conn.unregister("_pca_cells_tmp")
-
-            plot_df = plot_df.merge(
-                obs_color_df,
-                on="atlas_cell_id",
-                how="left"
-            )
-
-            color_kind = "obs"
-
-        # color is a gene name in var.atlas_gene_name
         else:
-            gene_row = conn.execute("""
-                SELECT atlas_gene_id
-                FROM var
-                WHERE atlas_gene_name = ?
-                LIMIT 1
-            """, [color]).fetchone()
-
-            if gene_row is not None:
-
-                gene_id = int(gene_row[0])
-                expr_source = resolve_expression_source(conn, use_data)
-
-                conn.register("_pca_cells_tmp", pca_df[["atlas_cell_id"]])
-
-                expr_df = conn.execute(f"""
-                    SELECT
-                        c.atlas_cell_id,
-                        COALESCE(xexpr.expr, 0.0) AS color_value
-                    FROM _pca_cells_tmp AS c
-                    LEFT JOIN (
-                        SELECT
-                            {expr_source.cell_sql} AS atlas_cell_id,
-                            {expr_source.gene_sql} AS atlas_gene_id,
-                            {expr_source.value_sql} AS expr
-                        FROM {expr_source.from_sql}
-                        WHERE {expr_source.value_sql} IS NOT NULL
-                    ) AS xexpr
-                      ON c.atlas_cell_id = xexpr.atlas_cell_id
-                     AND xexpr.atlas_gene_id = {gene_id}
-                """).fetchdf()
-
-                conn.unregister("_pca_cells_tmp")
-
-                plot_df = plot_df.merge(
-                    expr_df,
-                    on="atlas_cell_id",
-                    how="left"
-                )
-
-                plot_df["color_value"] = plot_df["color_value"].fillna(0.0)
-
-                color_kind = "gene"
-
-            # If it is a normal var column, raise an explicit error
-            elif color in var_cols:
-                raise ValueError(
-                    f"color='{color}' is a column in the var table.\n"
-                    f"However, each point in a PCA plot is a cell, while a var column is gene-level information, "
-                    f"so it cannot be directly used to color cell PCA points.\n"
-                    f"If you want to color by gene expression, please pass a gene name from var.atlas_gene_name."
-                )
-
-            else:
-                raise ValueError(
-                    f"Cannot find color='{color}'.\n"
-                    f"It is neither an obs table column name nor a gene name in var.atlas_gene_name."
-                )
-
-    # Plot
-    fig, ax = plt.subplots(figsize=figsize, facecolor="white")
-    ax.set_facecolor("white")
-
-    x = plot_df[pcx].to_numpy()
-    y = plot_df[pcy].to_numpy()
-
-    # Case A: no color specified, gray scatter points
-    if color is None:
-        ax.scatter(
-            x,
-            y,
-            s=point_size,
-            c="#bdbdbd",
-            alpha=alpha,
-            linewidths=0,
-            rasterized=True,
-        )
-
-    # Case B: gene expression, continuous colorbar
-    elif color_kind == "gene":
-        sc_plot = ax.scatter(
-            x,
-            y,
-            s=point_size,
-            c=plot_df["color_value"].to_numpy(),
-            cmap=cmap,
-            alpha=alpha,
-            linewidths=0,
-            rasterized=True,
-        )
-
-        cbar = plt.colorbar(sc_plot, ax=ax, pad=0.02)
-        cbar.set_label(color, fontsize=12)
-        cbar.ax.tick_params(labelsize=10)
-
-    # Case C: obs column
-    #       numeric type -> continuous colorbar
-    #       categorical / string / bool -> discrete legend
-    elif color_kind == "obs":
-        values = plot_df["color_value"]
-
-        is_continuous_obs = is_numeric_obs_column(conn, color)
-
-        # C1. numeric obs column: continuous colorbar
-        if is_continuous_obs:
-            sc_plot = ax.scatter(
-                x,
-                y,
-                s=point_size,
-                c=values.to_numpy(),
-                cmap=cmap,
+            draw_embedding_scatter_streaming(
+                conn,
+                embedding_table="obsm_X_pca",
+                x_col=pcx,
+                y_col=pcy,
+                x_label=x_label,
+                y_label=y_label,
+                color=color,
+                where_sql=where_sql,
+                title=str(color),
+                figsize=figsize,
+                point_size=point_size,
                 alpha=alpha,
-                linewidths=0,
-                rasterized=True,
-            )
-
-            cbar = plt.colorbar(sc_plot, ax=ax, pad=0.02)
-            cbar.set_label(color, fontsize=12)
-            cbar.ax.tick_params(labelsize=10)
-
-        # C2. categorical obs column: discrete colors + legend
-        else:
-            values = values.astype("object").where(values.notna(), "NA")
-            values_str = values.astype(str)
-
-            # Use natural sorting by default
-            # embryo_1, embryo_2, ..., embryo_10
-            cats = _sort_categories_natural(pd.unique(values_str))
-
-            # Explicitly specify category order
-            values = pd.Series(
-                pd.Categorical(
-                    values_str,
-                    categories=cats,
-                    ordered=True,
-                ),
-                index=plot_df.index,
-                name="color_value",
-            )
-
-            color_map = _build_discrete_color_map(
-                labels=cats,
                 palette=palette,
+                legend_loc=legend_loc,
+                frameon=frameon,
+                hide_ticks=False,
+                save_path=save_path,
+                dpi=dpi,
             )
+        return None
 
-            # Plot by category group
-            for cat in cats:
-                mask = values == cat
-
-                ax.scatter(
-                    plot_df.loc[mask, pcx].to_numpy(),
-                    plot_df.loc[mask, pcy].to_numpy(),
-                    s=point_size,
-                    color=color_map[cat],
-                    alpha=alpha,
-                    linewidths=0,
-                    label=str(cat),
-                    rasterized=True,
-                )
-
-            if legend_loc == "right_margin":
-                # Automatically adjust legend columns and font size according to the number of categories
-                n_cat = len(cats)
-                max_label_len = max([len(str(c)) for c in cats], default=0)
-
-                if n_cat <= 14:
-                    legend_ncol = 1  # Number of columns
-                    legend_fontsize = 20  # Font size
-                elif n_cat <= 30:
-                    legend_ncol = 2
-                    legend_fontsize = 20
-                elif n_cat <= 60:
-                    legend_ncol = 4
-                    legend_fontsize = 20
-                else:
-                    legend_ncol = 5
-                    legend_fontsize = 12
-
-                if max_label_len >= 18: # Character length of the longest category name in the legend
-                    legend_fontsize = min(legend_fontsize, 15)
-                if max_label_len >= 28:
-                    legend_fontsize = min(legend_fontsize, 15)
-
-                leg = ax.legend(
-                    title=None,
-                    bbox_to_anchor=(1.03, 0.5),
-                    loc="center left",
-                    frameon=False,
-                    markerscale=8.0, # Legend dots
-                    fontsize=legend_fontsize,
-                    borderaxespad=0.0,
-                    ncol=legend_ncol,
-                    columnspacing=1.0,
-                    handletextpad=0.35,
-                    labelspacing=0.35,
-                    handlelength=0.8,
-                )
-
-                # Force enlarge scatter dots in the legend, making it more stable
-                for h in leg.legend_handles:
-                    if hasattr(h, "set_sizes"):
-                        h.set_sizes([100])
-
-                leg.set_in_layout(True)
-
-            elif legend_loc == "on_data":
-                # Simple on_data: place category names near the median PCA coordinates of each category
-                for cat in cats:
-                    mask = values == cat
-                    if mask.sum() == 0:
-                        continue
-
-                    x_med = np.median(plot_df.loc[mask, pcx].to_numpy())
-                    y_med = np.median(plot_df.loc[mask, pcy].to_numpy())
-
-                    ax.text(
-                        x_med,
-                        y_med,
-                        str(cat),
-                        fontsize=9,
-                        weight="bold",
-                        ha="center",
-                        va="center",
-                    )
-            elif legend_loc is None:
-                pass
-            else:
-                raise ValueError(
-                    "legend_loc only supports 'right_margin', 'on_data', or None"
-                )
-
-    # Plot style refinement
-    ax.set_xlabel(x_label, fontsize=14)
-    ax.set_ylabel(y_label, fontsize=14)
-
-    if color is None:
-        ax.set_title("PCA", fontsize=14, pad=8)
-    else:
-        ax.set_title(str(color), fontsize=14, pad=8)
-
-    # Do not draw a grid by default.
-    ax.grid(False)
-
-    if frameon:
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        ax.spines["left"].set_linewidth(1.0)
-        ax.spines["bottom"].set_linewidth(1.0)
-    else:
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-
-    ax.tick_params(
-        axis="both",
-        labelsize=11,
-        width=1.0,
-        length=4,
-    )
-
-    ax.set_aspect("auto")
-
-    # Control the height-width ratio of the PCA main plot frame to avoid becoming a narrow tall plot like Figure 2
-    ax.set_box_aspect(0.75)
-
-    # Do not let tight_layout squeeze the main plot narrow
-    if legend_loc == "right_margin":
-        # Manually leave space for the right-side legend so the main plot will not be compressed into a vertical strip
-        fig.subplots_adjust(
-            left=0.06,
-            right=0.70,
-            bottom=0.16,
-            top=0.88,
+    gene_row = conn.execute("""
+        SELECT atlas_gene_id
+        FROM var
+        WHERE atlas_gene_name = ?
+        LIMIT 1
+    """, [color]).fetchone()
+    if gene_row is not None:
+        if use_data not in {"data_count", "data_log1p"}:
+            raise ValueError(
+                "PCA feature plots only support use_data='data_count' or "
+                "use_data='data_log1p' in the streaming path."
+            )
+        expr_source = resolve_expression_source(conn, use_data)
+        draw_embedding_gene_expression_streaming(
+            conn,
+            embedding_table="obsm_X_pca",
+            x_col=pcx,
+            y_col=pcy,
+            x_label=x_label,
+            y_label=y_label,
+            gene_id=int(gene_row[0]),
+            gene_name=str(color),
+            expr_source=expr_source,
+            where_sql=where_sql,
+            title=str(color),
+            figsize=figsize,
+            point_size=point_size,
+            alpha=alpha,
+            cmap=cmap,
+            frameon=frameon,
+            hide_ticks=False,
+            save_path=save_path,
+            dpi=dpi,
         )
-    else:
-        plt.tight_layout(pad=0.8)
+        return None
 
-    if save_path is not None:
-        fig.savefig(save_path, bbox_inches="tight", dpi=dpi)
-
-    plt.show()
+    var_cols = [
+        r[1]
+        for r in conn.execute("PRAGMA table_info(var)").fetchall()
+    ]
+    if color in var_cols:
+        raise ValueError(
+            f"color='{color}' is a column in the var table.\n"
+            f"However, each point in a PCA plot is a cell, while a var column is gene-level information, "
+            f"so it cannot be directly used to color cell PCA points.\n"
+            f"If you want to color by gene expression, please pass a gene name from var.atlas_gene_name."
+        )
+    raise ValueError(
+        f"Cannot find color='{color}'.\n"
+        f"It is neither an obs table column name nor a gene name in var.atlas_gene_name."
+    )
 
 
 def pca_variance_ratio(
