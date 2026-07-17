@@ -83,10 +83,12 @@ expression field are supplied to PCA.
    :nosignatures:
 
    tl.kmeans
+   tl.graph_clustering
 ```
 
-`kmeans()` clusters cells using the stored PCA representation and writes the
-resulting labels to `obs`.
+`kmeans()` clusters cells using a stored low-dimensional representation and
+writes the resulting labels to `obs`. By default it uses `obsm_X_umap`; pass
+`use_rep="X_pca"` to cluster PCA coordinates instead.
 
 The default output is commonly stored in:
 
@@ -98,7 +100,8 @@ Key parameters:
 
 | Parameter | Description |
 |---|---|
-| `n_components` | Number of PCA dimensions used for clustering. Default ``30``. |
+| `use_rep` | Representation used for clustering. Default ``"X_umap"``. |
+| `n_components` | Number of representation dimensions used for clustering. Default ``30``. |
 | `n_clusters` | Number of clusters to find. Default ``10``. |
 | `batch_size` | Number of cells per minibatch. Default ``2048``. |
 | `fit_batches` | Number of minibatches used for fitting. Default ``1000``. |
@@ -109,10 +112,27 @@ Example:
 ```python
 sap.tl.kmeans(
     atlas,
+    use_rep="X_umap",
     n_components=30,
     n_clusters=10,
     batch_size=2048,
     add_obs_col="kmeans",
+)
+```
+
+`graph_clustering()` provides a graph-like scalable alternative through
+distillation. With `mode="distilled_louvain"`, it fits a Louvain teacher in PCA
+space, trains a PyTorch classifier to reproduce the teacher labels, and predicts
+labels for the full Atlas in batches.
+
+Example:
+
+```python
+sap.tl.graph_clustering(
+    atlas,
+    mode="distilled_louvain",
+    fit_sample_n=200_000,
+    add_obs_col="louvain_distilled",
 )
 ```
 
@@ -129,9 +149,9 @@ sap.tl.kmeans(
 ```
 
 `umap()` calculates a two-dimensional visualization from stored PCA
-coordinates. The current implementation fits standard UMAP on a sampled subset
-as a teacher, trains a PyTorch neural network to learn the PCA-to-UMAP mapping,
-and then predicts coordinates for the full Atlas in batches.
+coordinates. The current implementation uses a standard UMAP teacher and trains
+a PyTorch student model to learn the PCA-to-UMAP mapping, then predicts
+coordinates for the full Atlas in batches.
 
 The resulting cell coordinates are commonly stored in:
 
@@ -145,21 +165,21 @@ Example:
 sap.tl.umap(atlas)
 ```
 
-For large datasets, set `fit_sample_n` to control the teacher-training subset
-and `transform_batch_size` to control full-atlas prediction batches. The
+For large datasets, set `fit_sample_n` to control the teacher fitting budget and
+`transform_batch_size` to control full-atlas prediction batches. The
 `torch_epochs` parameter controls how many epochs the PyTorch student model is
 trained for. By default, `device="auto"` selects CUDA first, then MPS, then CPU.
-Use a PyTorch device string such as `device="cuda:0"` or `device="mps"` to
-select a specific accelerator.
+Use a PyTorch device string such as `device="cuda:0"` or `device="mps"` to select
+a specific accelerator.
 
 Key parameters:
 
 | Parameter | Description |
 |---|---|
-| `fit_sample_n` | Number of cells sampled to fit the teacher UMAP. Default ``200_000``. |
+| `fit_sample_n` | Cell budget used to fit the teacher UMAP. Default ``200_000``. |
 | `transform_batch_size` | Number of cells predicted per full-atlas batch. Default ``100_000``. |
 | `torch_batch_size` | PyTorch training batch size for the student model. Default ``1024``. |
-| `torch_epochs` | PyTorch student training epochs. Default ``20``. |
+| `torch_epochs` | PyTorch student training epochs. Default ``100``. |
 | `torch_hidden_dim` | Hidden width of the student MLP. Default ``512``. |
 | `device` | PyTorch device. Default ``"auto"``; explicit values can be ``"cuda:0"``, ``"mps"``, or ``"cpu"``. |
 
@@ -261,12 +281,12 @@ sap.tl.pca(
     n_components=30,
 )
 
+sap.tl.umap(atlas)
+
 sap.tl.kmeans(
     atlas,
     n_clusters=10,
 )
-
-sap.tl.umap(atlas)
 
 sap.tl.rank_genes_groups(
     atlas,

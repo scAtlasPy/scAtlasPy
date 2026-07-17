@@ -43,8 +43,8 @@ atlas.build_read_index(use_hvg=True, use_data="data_scale")
 
 # Dimensionality reduction, clustering, and visualization
 sap.tl.pca(atlas)
-sap.tl.kmeans(atlas, n_clusters=8)
 sap.tl.umap(atlas)
+sap.tl.kmeans(atlas, n_clusters=8)
 sap.pl.umap(atlas, color="kmeans")
 ```
 

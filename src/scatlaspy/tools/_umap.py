@@ -342,10 +342,9 @@ def umap(
 ) -> dict[str, Any]:
     """Calculate UMAP coordinates with a PyTorch teacher-student workflow.
 
-    A standard UMAP model is fitted on sampled PCA coordinates and serves as the
-    teacher. A small PyTorch MLP then learns the mapping from PCA coordinates to
-    teacher UMAP coordinates. The student is used to transform the full Atlas in
-    batches, avoiding graph optimization on every cell.
+    A standard UMAP teacher is fitted in PCA space. A small PyTorch MLP then
+    learns the PCA-to-UMAP mapping from the teacher and predicts coordinates for
+    the full Atlas in batches, avoiding graph optimization on every cell.
     """
 
     start = datetime.now()
@@ -402,7 +401,7 @@ def umap(
     """).fetchdf()
 
     if len(fit_df) == 0:
-        raise ValueError("The sample used to fit UMAP is empty")
+        raise ValueError("The teacher fitting data is empty")
 
     X_fit = fit_df.drop(columns=["atlas_cell_id"]).to_numpy(dtype=np.float32)
 
@@ -437,7 +436,7 @@ def umap(
         verbose=verbose,
     )
 
-    logger.info("[TorchUMAP] evaluating training sample")
+    logger.info("[TorchUMAP] evaluating teacher-student fit")
     X_fit_umap = _predict_torch_student(
         X_fit,
         model=student,

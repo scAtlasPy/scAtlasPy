@@ -275,7 +275,7 @@ runtime and resource use.
 |---|---|---|
 | PCA | `batch_size`, `oversample`, `n_iter` | Larger randomized subspaces and more subspace iterations improve accuracy but increase scan time |
 | KMeans | `batch_size`, `fit_batches` | More updates may improve stability but increase computation |
-| UMAP | `fit_sample_n`, `transform_batch_size` | A smaller fitting sample is faster; smaller transform batches reduce memory |
+| UMAP | `fit_sample_n`, `transform_batch_size` | A smaller teacher fitting budget is faster; smaller transform batches reduce memory |
 | Large embedding plots | sampling and filtering parameters | Fewer displayed cells improve rendering speed and readability |
 | External in-memory analysis | selected cells, genes, and expression field | Smaller focused subsets reduce materialization and downstream memory |
 

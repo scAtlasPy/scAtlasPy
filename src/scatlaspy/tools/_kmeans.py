@@ -8,80 +8,95 @@ import logging
 
 logger = logging.getLogger('Atlas')
 
-# MiniBatchKMeans
+
+def _q(name: str) -> str:
+    """Quote a DuckDB identifier."""
+
+    return '"' + name.replace('"', '""') + '"'
+
+
+def _rep_to_obsm_table(use_rep: str) -> str:
+    """Map a representation name such as ``X_umap`` to an ``obsm_*`` table."""
+
+    if not isinstance(use_rep, str) or not use_rep:
+        raise ValueError("use_rep must be a non-empty string")
+    if use_rep.startswith("obsm_"):
+        return use_rep
+    if use_rep.startswith("X_"):
+        return f"obsm_{use_rep}"
+    raise ValueError(
+        "use_rep must be an obsm representation name such as 'X_umap', "
+        "'X_pca', 'obsm_X_umap', or 'obsm_X_pca'"
+    )
+
 class StreamingKMeans:
 
-    """Streaming MiniBatchKMeans clusterer based on PCA embeddings.
+    """Streaming MiniBatchKMeans clusterer based on an ``obsm`` representation.
 
-    This class reads the PCA loadings table ``varm_PCs`` from the Atlas database
-    and reads the expression matrix in batches through ``atlas.get_minibatch_dense``.
-    Each minibatch is first projected into PCA space and then used for streaming
-    training or prediction with sklearn ``MiniBatchKMeans``.
+    This class reads a low-dimensional representation such as ``obsm_X_umap`` or
+    ``obsm_X_pca`` in batches and uses sklearn ``MiniBatchKMeans`` for training
+    and prediction.
 
     The complete workflow consists of two steps:
 
-    - ``fit_kmeans``: reads minibatches, projects them into PCA space, and trains
-      KMeans centers with ``partial_fit``;
-    - ``predict_kmeans``: reads all minibatches again, predicts the cluster for
-      each cell, and writes the results to an independent result table and an
-      optional ``obs`` column.
+    - ``fit_kmeans``: reads representation minibatches and trains KMeans centers
+      with ``partial_fit``;
+    - ``predict_kmeans``: reads all representation minibatches again, predicts
+      the cluster for each cell, and writes the results to an independent result
+      table and an optional ``obs`` column.
 
     This class is the underlying implementation of ``sap.tl.kmeans``. Regular
     users usually call the public function ``kmeans`` directly.
 
     Parameters
     ----------
+    use_rep
+        Representation used for clustering. ``"X_umap"`` uses ``obsm_X_umap``;
+        ``"X_pca"`` uses ``obsm_X_pca``.
     n_components
-        Number of PCA components to use. It must match the number of available
-        PC columns in ``varm_PCs``.
+        Number of representation dimensions to use. If the selected
+        representation has fewer dimensions, all available dimensions are used.
     n_clusters
         Number of K-means clusters.
     batch_size
         Number of cells in each minibatch.
     fit_batches
         Maximum number of minibatches used to train MiniBatchKMeans.
-    buffer_batch_num
-        Number of batches cached in the shuffle buffer during ``multi-pass``
-        reading.
 
     Notes
     -----
-    PCA must be completed before running this class. Make sure the ``varm_PCs``
-    table exists in the database and that the dense minibatch read index in Atlas
-    has already been built.
+    The selected ``obsm`` table must exist before running this class. The
+    default ``use_rep="X_umap"`` expects ``sap.tl.umap(atlas)`` to have been run.
 
     Examples
     --------
     Recommended public API usage::
 
-        sap.tl.pca(atlas)
-        sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
+        sap.tl.umap(atlas)
+        sap.tl.kmeans(atlas, n_clusters=20)
     """
 
     def __init__(
         self,
-        n_components: int=50,
-        n_clusters: int=2,
-        batch_size: int=2048,
+        use_rep: str = "X_umap",
+        n_components: int = 30,
+        n_clusters: int = 2,
+        batch_size: int = 2048,
         fit_batches: int = 1000,
-        buffer_batch_num: int = 5,
     ):
         """Initialize the streaming MiniBatchKMeans clusterer.
 
-        This method stores the PCA projection dimension, number of clusters, and
-        minibatch parameters, and creates the sklearn ``MiniBatchKMeans`` model.
-
-        Later, ``fit_kmeans`` reads PCA loadings and expression matrix minibatches
-        from Atlas, first projects the expression matrix into PCA space, and then
-        performs streaming training with ``partial_fit``.
+        This method stores the representation, number of clusters, and minibatch
+        parameters, and creates the sklearn ``MiniBatchKMeans`` model.
 
         Parameters
         ----------
-        n_components
-            Number of PCA components to use.
+        use_rep
+            Representation used for clustering. ``"X_umap"`` resolves to
+            ``obsm_X_umap``.
 
-            It needs to be consistent with the number of PC columns in the
-            ``varm_PCs`` table.
+        n_components
+            Number of representation dimensions to use.
 
         n_clusters
             Number of KMeans clusters.
@@ -95,29 +110,176 @@ class StreamingKMeans:
         fit_batches
             Maximum number of minibatches used to train MiniBatchKMeans.
 
-        buffer_batch_num
-            Number of batches cached in the shuffle buffer during ``multi-pass``
-            reading.
-
         Notes
         -----
         This object only initializes the model and parameters. It does not read
         the database or write cluster labels immediately.
         """
 
-        # PCA parameters from the trained PCA model; read components_ from varm_PCs
-        self.components_ = None  # components_ = axes -> directions for projection
+        self.use_rep = use_rep
+        self.rep_table = _rep_to_obsm_table(use_rep)
+        self.rep_columns: list[str] | None = None
         self.n_components = n_components
         self.n_clusters = n_clusters  # Target number of clusters
         self.batch_size = batch_size
         self.fit_batches = fit_batches  # Number of minibatches used for KMeans training
-        self.buffer_batch_num = buffer_batch_num # Number of batches in ShuffleBuffer during multi-pass
         self.kmeans = MiniBatchKMeans(
             n_clusters=n_clusters,
             batch_size=batch_size,
             init="k-means++",
             n_init="auto",
         )
+
+    def _resolve_rep_columns(self, atlas: Atlas) -> list[str]:
+        """Resolve value columns in the selected ``obsm`` table."""
+
+        conn = atlas.connection
+        table_exists = conn.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_name = ?
+        """, [self.rep_table]).fetchone()[0]
+        if table_exists == 0:
+            raise ValueError(
+                f"{self.rep_table} does not exist in the database. "
+                f"Please run the workflow step that creates use_rep={self.use_rep!r} "
+                "before running sap.tl.kmeans(atlas)."
+            )
+
+        table_columns = [
+            row[0]
+            for row in conn.execute("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_name = ?
+                ORDER BY ordinal_position
+            """, [self.rep_table]).fetchall()
+        ]
+        if "atlas_cell_id" not in table_columns:
+            raise ValueError(f"The atlas_cell_id field does not exist in {self.rep_table}")
+
+        value_columns = [c for c in table_columns if c != "atlas_cell_id"]
+        if not value_columns:
+            raise ValueError(f"{self.rep_table} has no representation value columns")
+
+        if self.n_components is not None and self.n_components > 0:
+            value_columns = value_columns[: min(int(self.n_components), len(value_columns))]
+
+        self.n_components = len(value_columns)
+        self.rep_columns = value_columns
+        logger.info(
+            f"[KMeans] use_rep={self.use_rep!r}, table={self.rep_table}, "
+            f"dimensions={self.n_components}"
+        )
+        return value_columns
+
+    def _iter_rep_batches(self, atlas: Atlas):
+        """Yield ``(atlas_cell_id, X)`` batches from the selected ``obsm`` table."""
+
+        if self.rep_columns is None:
+            self._resolve_rep_columns(atlas)
+
+        select_cols = ["atlas_cell_id", *self.rep_columns]
+        select_sql = ", ".join(_q(c) for c in select_cols)
+        query = f"""
+            SELECT {select_sql}
+            FROM {_q(self.rep_table)}
+        """
+        reader = atlas.connection.execute(query).fetch_record_batch(
+            rows_per_batch=self.batch_size
+        )
+
+        while True:
+            try:
+                record_batch = reader.read_next_batch()
+            except StopIteration:
+                break
+
+            df = record_batch.to_pandas()
+            if df.empty:
+                continue
+
+            cell_ids = df["atlas_cell_id"].to_numpy(dtype=np.int64, copy=False)
+            X = df[self.rep_columns].to_numpy(dtype=np.float32, copy=False)
+            X = np.ascontiguousarray(X, dtype=np.float32)
+            yield cell_ids, X
+
+    def _write_label_chunk(
+        self,
+        atlas: Atlas,
+        cell_ids: np.ndarray,
+        labels: np.ndarray,
+        use_cluster_table: str,
+        write_to_obs: bool,
+        add_obs_col: str,
+    ) -> None:
+        """Write one accumulated label chunk to the result table and ``obs``."""
+
+        conn = atlas.connection
+        batch_df = pd.DataFrame({
+            "atlas_cell_id": cell_ids,
+            "cluster_id": labels,
+        })
+
+        conn.append(use_cluster_table, batch_df)
+
+        if write_to_obs:
+            conn.register("_kmeans_batch_tmp", batch_df)
+
+            conn.execute(f"""
+                UPDATE obs
+                SET {add_obs_col} = t.cluster_id
+                FROM _kmeans_batch_tmp t
+                WHERE obs.atlas_cell_id = t.atlas_cell_id
+            """)
+
+            conn.unregister("_kmeans_batch_tmp")
+
+    def _write_label_chunks(
+        self,
+        atlas: Atlas,
+        cell_id_chunks: list[np.ndarray],
+        label_chunks: list[np.ndarray],
+        use_cluster_table: str,
+        write_to_obs: bool,
+        add_obs_col: str,
+        write_chunk_rows: int = 1_000_000,
+    ) -> None:
+        """Write predicted labels in large chunks after representation reading ends."""
+
+        pending_ids = []
+        pending_labels = []
+        pending_n = 0
+
+        for cell_ids, labels in zip(cell_id_chunks, label_chunks):
+            pending_ids.append(cell_ids)
+            pending_labels.append(labels)
+            pending_n += len(labels)
+
+            if pending_n < write_chunk_rows:
+                continue
+
+            self._write_label_chunk(
+                atlas=atlas,
+                cell_ids=np.concatenate(pending_ids),
+                labels=np.concatenate(pending_labels),
+                use_cluster_table=use_cluster_table,
+                write_to_obs=write_to_obs,
+                add_obs_col=add_obs_col,
+            )
+            pending_ids.clear()
+            pending_labels.clear()
+            pending_n = 0
+
+        if pending_n > 0:
+            self._write_label_chunk(
+                atlas=atlas,
+                cell_ids=np.concatenate(pending_ids),
+                labels=np.concatenate(pending_labels),
+                use_cluster_table=use_cluster_table,
+                write_to_obs=write_to_obs,
+                add_obs_col=add_obs_col,
+            )
 
     # Write obs_cluster
     def _write_clusters(self, atlas: Atlas, cell_ids: np.ndarray, labels: np.ndarray, table_name: str):
@@ -217,16 +379,12 @@ class StreamingKMeans:
         conn.append(table_name, df)
 
 
-    # Transform with PCA + train minibatch KMeans clustering
     def fit_kmeans(self, atlas: Atlas) -> "StreamingKMeans":
 
         """Train the MiniBatchKMeans model in batches.
 
-        This method first reads PCA loadings from the ``varm_PCs`` table, then
-        reads the expression matrix in batches through
-        ``atlas.get_minibatch_dense(pass_mode="multi-pass")``. Each batch is
-        multiplied by the PCA loadings to transform it into PCA space, and then
-        ``MiniBatchKMeans.partial_fit`` is called to update the cluster centers.
+        This method reads the selected low-dimensional representation in batches
+        and calls ``MiniBatchKMeans.partial_fit`` to update the cluster centers.
 
         This method only trains the KMeans model and does not write cell cluster
         labels. Label writing is handled by ``predict_kmeans`` or ``run``.
@@ -235,8 +393,7 @@ class StreamingKMeans:
         ----------
         atlas
             Atlas object. It must already be connected to a DuckDB database, the
-            database must contain the ``varm_PCs`` table, and the dense minibatch
-            reading workflow must be available.
+            selected ``obsm`` representation must exist.
 
         Returns
         -------
@@ -245,53 +402,38 @@ class StreamingKMeans:
 
         Notes
         -----
-        If the PCA dimension in the database is inconsistent with the
-        ``n_components`` value passed during initialization, the current
-        implementation uses the PCA dimension actually read from the database.
+        If the selected representation has fewer dimensions than ``n_components``,
+        all available dimensions are used.
 
         """
 
-        # Read PCA components
-        self.components_ = self.load_components(atlas)
-
-        # If the user-provided n_components differs from the actual PCA dimension in the database, give a hint
-        real_components = self.components_.shape[0]
-        if real_components != self.n_components:
-            self.n_components = real_components
-
         batch_count = 0
 
-        # Minibatch KMeans clustering training
-        for X_batch in progress(
-                atlas.get_minibatch_dense(
-                    batch_size=self.batch_size,
-                    pass_mode="multi-pass",
-                    buffer_batch_num=self.buffer_batch_num,
-                    max_batches=self.fit_batches,
-                ),
-                total=self.fit_batches,
-                desc="KMeans fit"
-        ):
+        with progress(total=self.fit_batches, desc="KMeans fit") as pbar:
+            while batch_count < self.fit_batches:
+                pass_batches = 0
 
-            t0 = time.time()
+                for _, X_batch in self._iter_rep_batches(atlas):
+                    if not np.isfinite(X_batch).all():
+                        raise ValueError(
+                            f"NaN/Inf exists in {self.use_rep}: "
+                            f"min={np.nanmin(X_batch)}, max={np.nanmax(X_batch)}"
+                        )
 
-            X_pca = X_batch @ self.components_.T  # PCA transform
+                    self.kmeans.partial_fit(X_batch)
 
-            X_pca = np.ascontiguousarray(X_pca, dtype=np.float32)
+                    batch_count += 1
+                    pass_batches += 1
+                    pbar.update(1)
 
-            if not np.isfinite(X_pca).all():
-                raise ValueError(
-                    f"NaN/Inf exists in X_pca: "
-                    f"min={np.nanmin(X_pca)}, max={np.nanmax(X_pca)}"
-                )
+                    if batch_count % 10 == 0:
+                        logger.info(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
 
-            t1 = time.time()
-            self.kmeans.partial_fit(X_pca)   # KMeans training
+                    if batch_count >= self.fit_batches:
+                        break
 
-            batch_count += 1
-
-            if batch_count % 10 == 0:
-                logger.info(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
+                if pass_batches == 0:
+                    break
 
         if batch_count == 0:
             raise RuntimeError("[KMeans] No minibatch was obtained, so KMeans cannot be trained")
@@ -299,7 +441,6 @@ class StreamingKMeans:
         return self
 
 
-    # Transform with PCA + predict minibatch KMeans clustering
     def predict_kmeans(
         self,
         atlas: Atlas,
@@ -310,10 +451,9 @@ class StreamingKMeans:
 
         """Predict KMeans cluster labels for all cells and write them to the database.
 
-        This method uses the trained ``MiniBatchKMeans`` model and performs
-        single-pass minibatch reading over the full expression matrix. Each batch
-        is first projected into PCA space, and then ``self.kmeans.predict`` is
-        called to obtain cluster labels.
+        This method uses the trained ``MiniBatchKMeans`` model and reads the
+        selected low-dimensional representation in batches. ``self.kmeans.predict``
+        is called on each batch to obtain cluster labels.
 
         Prediction results are written to the independent result table specified
         by ``use_cluster_table``. When ``write_to_obs=True``, the results are also
@@ -347,8 +487,7 @@ class StreamingKMeans:
         Notes
         -----
         ``fit_kmeans`` must be run before calling this method. If
-        ``self.components_`` is empty, the function automatically reads PCA
-        loadings from the ``varm_PCs`` table.
+        ``fit_kmeans`` must be run before calling this method.
 
         Examples
         --------
@@ -376,117 +515,45 @@ class StreamingKMeans:
             # Clear old results first
             conn.execute(f"UPDATE obs SET {add_obs_col} = NULL")
 
-        # Read PCA components
-        if self.components_ is None:
-            self.components_ = self.load_components(atlas)
-
-        cell_offset = 0
+        predicted_cells = 0
         predict_batch_count = 0
+        cell_id_chunks = []
+        label_chunks = []
 
-        # Use single-pass in the transform stage
-        for X_batch in progress(
-                atlas.get_minibatch_dense(
-                    batch_size=self.batch_size,
-                    pass_mode="single-pass",
-                ),
-                desc="KMeans predict"
+        for atlas_cell_ids, X_batch in progress(
+            self._iter_rep_batches(atlas),
+            desc="KMeans predict",
         ):
-
-            # PCA transform
-            X_pca = X_batch @ self.components_.T
-
-            # KMeans transform
-            labels = self.kmeans.predict(X_pca).astype(np.int32)
-
-            # atlas_cell_id values corresponding to the current batch
+            labels = self.kmeans.predict(X_batch).astype(np.int32)
             n = len(labels)
-            atlas_cell_ids = np.arange(cell_offset, cell_offset + n, dtype=np.int32)
 
-            batch_df = pd.DataFrame({
-                "atlas_cell_id": atlas_cell_ids,
-                "cluster_id": labels
-            })
+            # Do not write to DuckDB while the Arrow reader is still open. A
+            # write on the same connection can invalidate the pending read.
+            cell_id_chunks.append(atlas_cell_ids.copy())
+            label_chunks.append(labels.copy())
 
-            # Write table
-            conn.append(use_cluster_table, batch_df)
-
-            # Synchronize back to obs.kmeans
-            if write_to_obs:
-                conn.register("_kmeans_batch_tmp", batch_df)
-
-                conn.execute(f"""
-                    UPDATE obs
-                    SET {add_obs_col} = t.cluster_id
-                    FROM _kmeans_batch_tmp t
-                    WHERE obs.atlas_cell_id = t.atlas_cell_id
-                """)
-
-                conn.unregister("_kmeans_batch_tmp")
-
-            cell_offset += n
+            predicted_cells += n
             predict_batch_count += 1
 
             if predict_batch_count % 20 == 0:
                 logger.info(
-                    f"[KMeans] predicted cells = {cell_offset:,}, "
+                    f"[KMeans] predicted cells = {predicted_cells:,}, "
                     f"batches = {predict_batch_count}"
                 )
+
+        self._write_label_chunks(
+            atlas=atlas,
+            cell_id_chunks=cell_id_chunks,
+            label_chunks=label_chunks,
+            use_cluster_table=use_cluster_table,
+            write_to_obs=write_to_obs,
+            add_obs_col=add_obs_col,
+        )
 
         # Save centers
         self._write_centers(atlas, table_name="kmeans_centers")
 
         return self
-
-
-    # Read PCA components from the database and restore them to self.components_
-    def load_components(self, atlas: Atlas, table_name: str = "varm_PCs") -> np.ndarray:
-
-        """Read PCA loadings from the database for KMeans projection.
-
-        This method reads the ``varm_PCs`` table, sorts it by ``atlas_gene_id``,
-        removes the gene ID column, and transposes it into the shape
-        ``(n_components, n_genes)``. The returned matrix is used for
-        ``X_batch @ components_.T`` to project the expression matrix into PCA
-        space.
-
-        Parameters
-        ----------
-        atlas
-            Atlas object. The object must already be connected to a DuckDB database.
-
-        table_name
-            Name of the PCA loadings table to read. The default value is ``"varm_PCs"``.
-
-        Returns
-        -------
-        numpy.ndarray
-            PCA loadings array with shape ``(n_components, n_genes)`` and type ``float32``.
-
-        Notes
-        -----
-        This method depends on the ``varm_PCs`` table already generated by ``sap.tl.pca``.
-
-        Examples
-        --------
-        Read PCA loadings::
-
-            components = model.load_components(atlas)
-        """
-        conn = atlas.connection
-
-        df = conn.execute(f"""
-            SELECT *
-            FROM {table_name}
-            ORDER BY atlas_gene_id
-        """).fetchdf()
-
-        # Remove atlas_gene_id
-        pcs = df.drop(columns=["atlas_gene_id"]).values
-
-        # Transpose back to the original PCA format: (gene, pc) -> (pc, gene)
-        components_ = pcs.T.astype(np.float32)
-
-        return components_
 
 
     # Run the main function
@@ -513,8 +580,8 @@ class StreamingKMeans:
         atlas
             Atlas object.
 
-            The database must already contain the PCA loadings table, and the
-            filtering index and minibatch reading workflow must be available.
+            The database must already contain the selected low-dimensional
+            representation table.
 
         use_cluster_table
             Name of the database table used to save clustering results.
@@ -555,6 +622,7 @@ class StreamingKMeans:
 @duckdb_memory_limit("5G")
 def kmeans(
     atlas: Atlas,
+    use_rep: str = "X_umap",
     n_components: int = 30,
     n_clusters: int = 10,
     batch_size: int = 2048,
@@ -563,32 +631,35 @@ def kmeans(
     use_cluster_table: str = "obs_cluster",
 ) -> None:
 
-    """Perform MiniBatch K-means clustering based on PCA embeddings.
+    """Perform MiniBatch K-means clustering on a low-dimensional representation.
 
-    This function is the public KMeans entry point of scAtlasPy. It reads PCA
-    loadings saved in ``varm_PCs`` and reads the expression matrix in batches
-    through the Atlas dense minibatch interface. During the training stage, each
-    minibatch is projected into PCA space and ``MiniBatchKMeans`` is updated in a
-    streaming manner. During the prediction stage, all cells are read again in
-    batches, cluster labels are predicted, and the results are written to the
-    database.
+    This function is the public KMeans entry point of scAtlasPy. By default, it
+    clusters the UMAP coordinates stored in ``obsm_X_umap``. The representation
+    is read in batches, ``MiniBatchKMeans`` is updated in a streaming manner, and
+    all cells are predicted in a second pass.
 
     After running, three types of results are usually generated or updated:
 
     - ``use_cluster_table``: ``cluster_id`` for each cell;
     - ``obs[add_obs_col]``: optional obs cluster label column;
-    - ``kmeans_centers``: center coordinates of each cluster in PCA space.
+    - ``kmeans_centers``: center coordinates of each cluster in the selected
+      representation.
 
     Parameters
     ----------
     atlas
         Atlas object. The object must already be connected to a DuckDB database,
-        and the PCA loadings table ``varm_PCs`` must already exist in the database.
+        and the selected representation table must already exist in the database.
+
+    use_rep
+        Representation used for clustering. ``"X_umap"`` resolves to
+        ``obsm_X_umap`` and is the default. ``"X_pca"`` resolves to
+        ``obsm_X_pca``.
 
     n_components
-        Number of PCA components used for KMeans clustering. The default value is
-        ``30``. If the actual available dimension in ``varm_PCs`` differs from
-        this value, the underlying class uses the PCA dimension actually read from the database.
+        Number of representation dimensions used for KMeans clustering. The
+        default value is ``30``. If the selected representation has fewer
+        dimensions, all available dimensions are used.
 
     n_clusters
         Number of KMeans clusters. The default value is ``10``.
@@ -617,31 +688,23 @@ def kmeans(
 
     Notes
     -----
-    This function does not run PCA automatically. If ``varm_PCs`` does not exist
-    in the database, the function raises an error and prompts the user to run
-    ``sap.tl.pca(atlas)`` first.
+    This function does not run UMAP or PCA automatically. With the default
+    ``use_rep="X_umap"``, run ``sap.tl.umap(atlas)`` before clustering. To
+    cluster PCA coordinates instead, run ``sap.tl.pca(atlas)`` and pass
+    ``use_rep="X_pca"``.
 
     Examples
     --------
-    Cluster into 20 groups using the first 30 principal components::
+    Cluster into 20 groups using UMAP coordinates::
 
-        sap.tl.pca(atlas)
-        sap.tl.kmeans(atlas, n_components=30, n_clusters=20)
+        sap.tl.umap(atlas)
+        sap.tl.kmeans(atlas, n_clusters=20)
     """
 
     t_start = time.time()
 
-    conn = atlas.connection
-
-    # Check whether PCA components exist
-    tables = [r[0] for r in conn.execute("SHOW TABLES").fetchall()]
-    if "varm_PCs" not in tables:
-        raise ValueError(
-            "varm_PCs does not exist in the database.\n"
-            "Please run sap.tl.pca(atlas) before running sap.tl.kmeans(atlas)."
-        )
-
     runner = StreamingKMeans(
+        use_rep=use_rep,
         n_components=n_components,
         n_clusters=n_clusters,
         batch_size=batch_size,
