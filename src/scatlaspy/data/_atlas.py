@@ -308,8 +308,10 @@ class Atlas:
 
         db_memory_limit
             Memory limit used by DuckDB.
-            This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
-            for example ``4`` is equivalent to ``"4GB"``.
+            By default, Atlas requests ``"10G"`` and caps the effective value at
+            60% of detected system physical memory. Advanced users may pass a
+            DuckDB-compatible memory string, an integer interpreted as GB, or
+            ``None`` to use only the system-memory cap.
 
             The default requested limit is ``"10G"``. Atlas applies the smaller
             value between the requested limit and 60% of detected system physical
@@ -339,8 +341,8 @@ class Atlas:
             sap.set_verbosity("info")
             atlas = sap.Atlas("./data/test_10W.sasql")
 
-        Limit DuckDB query and intermediate-computation memory to 4 GB::
-            atlas = sap.Atlas("./data/test_10W", db_memory_limit="4GB")
+        Use the default DuckDB memory setting::
+            atlas = sap.Atlas("./data/test_10W")
         """
 
         self.__file_path = self._resolve_file_path(file_name)
@@ -612,7 +614,7 @@ class Atlas:
 
         ``db_memory_limit`` only limits memory available to DuckDB queries and intermediate computation.
         It does not limit memory allocated directly by Python, NumPy, or pandas.
-        If ``db_memory_limit`` is an integer, it is interpreted as GB, so ``4`` becomes ``"4GB"``.
+        If ``db_memory_limit`` is an integer, it is interpreted as a number of GB.
 
         Returns
         -------
@@ -621,14 +623,11 @@ class Atlas:
 
         Examples
         --------
-        Limit DuckDB query memory when initializing Atlas::
-            atlas = sap.Atlas("./data/pbmc", db_memory_limit="4GB")
-
-        Use an integer value interpreted as GB::
-            atlas = sap.Atlas("./data/pbmc", db_memory_limit=4)
+        Use the default DuckDB memory setting when initializing Atlas::
+            atlas = sap.Atlas("./data/pbmc")
 
         The limit is also applied when connecting to an existing database::
-            atlas = sap.Atlas("./data/pbmc.sasql", db_memory_limit="1024MB")
+            atlas = sap.Atlas("./data/pbmc.sasql")
         """
 
         if self.__connection is None:
