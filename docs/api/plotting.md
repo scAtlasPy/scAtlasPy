@@ -237,7 +237,8 @@ cell-by-gene plotting table is intended.
 
 Violin-style plots use a robust visible expression range by default so that a
 small number of extreme values does not compress the main distribution into a
-thin line. Set `ylim_quantile=None` for `sap.pl.violin()` or
+thin line. For count and log1p expression, the visible range starts at 0 and
+uses the upper robust quantile by default. Set `ylim_quantile=None` for `sap.pl.violin()` or
 `value_quantile=None` for `sap.pl.stacked_violin()` to use the full range.
 For additional styling, `sap.pl.violin()` accepts `violinplot_kwargs`,
 `body_kwargs`, `median_kwargs`, and `jitter_kwargs`; `sap.pl.stacked_violin()`

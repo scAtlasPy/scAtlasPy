@@ -60,7 +60,9 @@ def violin(
     groups: list | None = None,
     where: str | None = None,
     order: list | None = None,
-    ylim_quantile: tuple[float, float] | None = (0.01, 0.95),
+    ylim_quantile: tuple[float, float] | None = (0.0, 0.95),
+    ncols: int | None = None,
+    figsize: tuple[float, float] | None = None,
     save_path: PathLike[str] | str | None = None,
     dpi: int = 300,
     *,
@@ -115,10 +117,19 @@ def violin(
 
     ylim_quantile
         Quantile range used to set the visible y-axis range. The default
-        ``(0.01, 0.95)`` reduces compression from extreme expression outliers.
+        ``(0.0, 0.95)`` reduces compression from extreme expression outliers.
         For count and log1p expression, the lower bound is 0 and the upper
         bound is estimated from nonzero expression values. Set to ``None`` to
         use the full nonzero value range.
+
+    ncols
+        Number of gene panels per row. If ``None``, each gene is shown on its
+        own row. This keeps plots readable when many clusters are displayed on
+        the x-axis.
+
+    figsize
+        Matplotlib figure size. If ``None``, the size is estimated from the
+        number of panel rows and columns.
 
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
@@ -359,11 +370,20 @@ def violin(
         nonnegative=(use_data != "data_scale"),
     )
 
-    # Plot
     n_panels = len(genes)
+    if ncols is None:
+        ncols = 1
+    ncols = max(1, int(ncols))
+    nrows = int(np.ceil(n_panels / ncols))
+    if figsize is None:
+        figsize = (4.2 * ncols, 4.8 * nrows)
+
+    # Plot each gene in a separate panel. By default, each gene gets its own row
+    # because the x-axis can contain many clusters.
     fig, axes = plt.subplots(
-        1, n_panels,
-        figsize=(4.2 * n_panels, 5.2),
+        nrows,
+        ncols,
+        figsize=figsize,
         facecolor="white",
         squeeze=False
     )
@@ -461,6 +481,9 @@ def violin(
         ax.spines["bottom"].set_linewidth(1.0)
         ax.tick_params(axis="both", labelsize=11, width=1.0, length=4)
 
+    for ax in axes[n_panels:]:
+        ax.axis("off")
+
     plt.tight_layout(pad=1.0)
 
     if save_path:
@@ -479,7 +502,7 @@ def stacked_violin(
     groups: list | None = None,
     where: str | None = None,
     order: list | None = None,
-    value_quantile: tuple[float, float] | None = (0.01, 0.95),
+    value_quantile: tuple[float, float] | None = (0.0, 0.95),
     color_vmin: float | None = 0.0,
     color_vmax: float | None = 5.0,
     font_size: int = 14,
@@ -536,7 +559,7 @@ def stacked_violin(
 
     value_quantile
         Quantile range used for the visible shape of each small violin. The
-        default ``(0.01, 0.95)`` reduces compression from extreme expression
+        default ``(0.0, 0.95)`` reduces compression from extreme expression
         outliers. For count and log1p expression, the lower bound is 0 and the
         upper bound is estimated from nonzero expression values. Median
         expression coloring still uses the original values.
