@@ -780,12 +780,47 @@ def is_numeric_duckdb_type(dtype: Any) -> bool:
     )
 
 
+def _is_integer_duckdb_type(dtype: Any) -> bool:
+    """Return whether a DuckDB type name is integer-like."""
+
+    dtype = str(dtype).upper()
+    return "INT" in dtype
+
+
+def _looks_like_discrete_label_column(obs_col: str) -> bool:
+    """Return whether an obs column name is conventionally used as labels."""
+
+    name = str(obs_col).lower()
+    if name in {"cluster", "clusters", "cluster_id"}:
+        return True
+    return name.startswith(("kmeans", "leiden", "louvain"))
+
+
 def is_numeric_obs_column(conn: Any, obs_col: str) -> bool:
-    """Return whether an ``obs`` column has a numeric DuckDB type."""
+    """Return whether an ``obs`` column should be plotted as continuous numeric data.
+
+    Numeric cluster labels are stored as integers in many workflows, but visually
+    they should use a discrete palette and legend rather than a continuous colorbar.
+    Therefore, conventional label columns such as ``kmeans`` / ``leiden`` /
+    ``louvain`` and low-cardinality integer columns are treated as categorical.
+    """
 
     for row in conn.execute("PRAGMA table_info(obs)").fetchall():
         if row[1] == obs_col:
-            return is_numeric_duckdb_type(row[2])
+            dtype = row[2]
+            if not is_numeric_duckdb_type(dtype):
+                return False
+            if _looks_like_discrete_label_column(obs_col):
+                return False
+            if _is_integer_duckdb_type(dtype):
+                distinct_n = conn.execute(f"""
+                    SELECT COUNT(DISTINCT {quote_identifier(obs_col)})
+                    FROM obs
+                    WHERE {quote_identifier(obs_col)} IS NOT NULL
+                """).fetchone()[0]
+                if int(distinct_n) <= 128:
+                    return False
+            return True
     return False
 
 

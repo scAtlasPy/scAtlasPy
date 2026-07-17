@@ -69,7 +69,7 @@ def pca(
     alpha: float = 0.8,
     cmap: str = "viridis",
     palette: str | list[str] | tuple[str, ...] | None = DEFAULT_DISCRETE_PALETTES,
-    legend_loc: str | None = None,
+    legend_loc: str | None = "right_margin",
     frameon: bool = True,
     save_path: PathLike[str] | str | None = None,
     dpi: int = 300,
@@ -532,12 +532,10 @@ def pca(
     elif color_kind == "obs":
         values = plot_df["color_value"]
 
-        # bool is not treated as a continuous variable, but as a categorical variable
-        is_bool = pd.api.types.is_bool_dtype(values)
-        is_numeric = pd.api.types.is_numeric_dtype(values)
+        is_continuous_obs = is_numeric_obs_column(conn, color)
 
         # C1. numeric obs column: continuous colorbar
-        if is_numeric and not is_bool:
+        if is_continuous_obs:
             sc_plot = ax.scatter(
                 x,
                 y,
@@ -636,8 +634,7 @@ def pca(
                     if hasattr(h, "set_sizes"):
                         h.set_sizes([100])
 
-                # Prevent tight_layout / layout systems from compressing the main plot for the legend
-                leg.set_in_layout(False)
+                leg.set_in_layout(True)
 
             elif legend_loc == "on_data":
                 # Simple on_data: place category names near the median PCA coordinates of each category
@@ -703,7 +700,7 @@ def pca(
         # Manually leave space for the right-side legend so the main plot will not be compressed into a vertical strip
         fig.subplots_adjust(
             left=0.06,
-            right=0.38,
+            right=0.70,
             bottom=0.16,
             top=0.88,
         )
