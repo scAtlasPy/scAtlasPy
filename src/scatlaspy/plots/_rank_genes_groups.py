@@ -615,7 +615,7 @@ def rank_genes_groups_violin(
     use_table: str = "rank_genes_groups",
     groupby: str = "scatlas_cluster",
     reference: str | int | None = None,
-    genes: list[str] | None = None,
+    genes: str | list[str] | None = None,
     n_genes: int = 8,
     use_expr_field: str = "data_log1p",
     sample_cells_per_group: int = DEFAULT_GROUP_PLOT_SAMPLE_N,
@@ -654,8 +654,8 @@ def rank_genes_groups_violin(
         corresponding ``reference`` is preferentially selected.
 
     genes
-        Manually specified list of gene names to display. If ``None``, ``n_genes`` genes
-        are selected by rank from the differential gene result table.
+        Manually specified gene name or list of gene names to display. If ``None``,
+        ``n_genes`` genes are selected by rank from the differential gene result table.
 
     n_genes
         Number of top marker genes automatically selected when ``genes`` is ``None``.
