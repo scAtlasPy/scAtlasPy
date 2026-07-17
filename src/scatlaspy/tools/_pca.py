@@ -37,21 +37,19 @@ def _check_finite_array(values: np.ndarray, *, name: str, context: str) -> None:
     )
 
 
-def _matmul_checked(left: np.ndarray, right: np.ndarray, *, name: str, context: str) -> np.ndarray:
-    """Run matrix multiplication and report numerical failures with context."""
+def _matmul_ignore_blas_flags(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+    """Run matrix multiplication while ignoring matmul-internal FP flags.
 
-    try:
-        with np.errstate(over="raise", invalid="raise", divide="raise"):
-            out = left @ right
-    except FloatingPointError as exc:
-        raise FloatingPointError(
-            f"[RandomizedPCA] Floating-point failure during {name} in {context}. "
-            f"left_shape={left.shape}, right_shape={right.shape}, "
-            f"left_{_finite_summary(left)}, right_{_finite_summary(right)}"
-        ) from exc
+    Some BLAS backends, especially Apple Accelerate on macOS, may leave
+    floating-point status flags set inside ``np.matmul`` even when finite inputs
+    produce a finite output. Treating those internal flags as Python exceptions
+    can stop large PCA runs spuriously on MacBook-class machines, so this helper
+    ignores matmul-internal flags. Callers should validate selected inputs or
+    outputs with ``_check_finite_array`` at algorithmically important points.
+    """
 
-    _check_finite_array(out, name=name, context=context)
-    return out
+    with np.errstate(all="ignore"):
+        return left @ right
 
 
 def _read_index_use_data(atlas: Atlas) -> str:
@@ -373,25 +371,10 @@ class StreamingRandomizedPCA:
                 X64 = X_batch.astype(np.float64, copy=False)
 
                 t0 = time.time()
-                projected = _matmul_checked(
-                    X64,
-                    input_matrix,
-                    name="projected",
-                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
-                )
+                projected = _matmul_ignore_blas_flags(X64, input_matrix)
                 projection_time += time.time() - t0
 
-                H += _matmul_checked(
-                    X64.T,
-                    projected,
-                    name="H_update",
-                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
-                )
-                _check_finite_array(
-                    H,
-                    name="H",
-                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
-                )
+                H += _matmul_ignore_blas_flags(X64.T, projected)
                 pass_samples += X_batch.shape[0]
 
                 if pass_id == 0:
@@ -407,6 +390,7 @@ class StreamingRandomizedPCA:
             if H is None:
                 raise RuntimeError("[RandomizedPCA] No minibatch was obtained, so PCA cannot be trained")
 
+            _check_finite_array(H, name="H", context=f"end of covariance pass {pass_id + 1}")
             input_matrix, _ = np.linalg.qr(H, mode="reduced")
             _check_finite_array(
                 input_matrix,
@@ -445,24 +429,9 @@ class StreamingRandomizedPCA:
                 context=f"compact covariance batch {batch_id}",
             )
             t0 = time.time()
-            Z_batch = _matmul_checked(
-                X64,
-                Q,
-                name="Z_batch",
-                context=f"compact covariance batch {batch_id}",
-            )
+            Z_batch = _matmul_ignore_blas_flags(X64, Q)
             projection_time += time.time() - t0
-            T += _matmul_checked(
-                Z_batch.T,
-                Z_batch,
-                name="T_update",
-                context=f"compact covariance batch {batch_id}",
-            )
-            _check_finite_array(
-                T,
-                name="T",
-                context=f"compact covariance batch {batch_id}",
-            )
+            T += _matmul_ignore_blas_flags(Z_batch.T, Z_batch)
 
             if (batch_id + 1) % 20 == 0:
                 logger.info(
@@ -491,12 +460,7 @@ class StreamingRandomizedPCA:
                 "Try increasing oversample or checking the input data."
             )
 
-        components = _matmul_checked(
-            Q,
-            eigvecs[:, :self.n_components],
-            name="components",
-            context="fit decomposition",
-        ).T
+        components = _matmul_ignore_blas_flags(Q, eigvecs[:, :self.n_components]).T
         self.components_ = components.astype(np.float32)
         _check_finite_array(
             self.components_,
@@ -547,9 +511,9 @@ class StreamingRandomizedPCA:
                 name="X_batch",
                 context=f"transform batch {batch_id}",
             )
-            X_pca = _matmul_checked(
-                X_batch,
-                self.components_.T,
+            X_pca = _matmul_ignore_blas_flags(X_batch, self.components_.T)
+            _check_finite_array(
+                X_pca,
                 name="X_pca",
                 context=f"transform batch {batch_id}",
             )

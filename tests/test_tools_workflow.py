@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 from sklearn.neighbors import NearestNeighbors
 
 import scatlaspy as sap
-from scatlaspy.tools._pca import StreamingRandomizedPCA
+from scatlaspy.tools._pca import StreamingRandomizedPCA, _check_finite_array, _matmul_ignore_blas_flags
 
 
 class _ArrayAtlas:
@@ -53,6 +53,28 @@ def _mean_knn_label_purity(embedding: np.ndarray, labels: np.ndarray, k: int) ->
     return float(np.mean(purity))
 
 
+def test_randomized_pca_matmul_ignores_blas_flags_for_finite_output():
+    left = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
+    right = np.array([[0.5], [1.5]], dtype=np.float32)
+
+    out = _matmul_ignore_blas_flags(left, right)
+
+    assert np.allclose(out, left @ right)
+    assert np.isfinite(out).all()
+
+
+def test_randomized_pca_finite_check_rejects_nonfinite_matmul_output():
+    left = np.array([[np.finfo(np.float32).max, np.finfo(np.float32).max]], dtype=np.float32)
+    right = np.array([[np.finfo(np.float32).max], [np.finfo(np.float32).max]], dtype=np.float32)
+
+    with np.testing.assert_raises_regex(
+        ValueError,
+        "Non-finite values detected in overflow_case during unit test",
+    ):
+        out = _matmul_ignore_blas_flags(left, right)
+        _check_finite_array(out, name="overflow_case", context="unit test")
+
+
 def test_pca_kmeans_rank_and_manual_annotation_smoke(atlas_from_adata, workflow_adata):
     atlas = atlas_from_adata(workflow_adata)
 
@@ -65,7 +87,7 @@ def test_pca_kmeans_rank_and_manual_annotation_smoke(atlas_from_adata, workflow_
     tables = set(atlas.query("SHOW TABLES")["name"])
     assert {"obsm_X_pca", "varm_PCs", "uns_pca_stats"} <= tables
 
-    sap.tl.kmeans(atlas, n_components=3, n_clusters=3, batch_size=12, fit_batches=2)
+    sap.tl.kmeans(atlas, use_rep="X_pca", n_components=3, n_clusters=3, batch_size=12, fit_batches=2)
     obs = atlas.get_obs_df()
     assert obs["kmeans"].notna().all()
 
@@ -133,7 +155,7 @@ def test_randomized_streaming_pca_matches_reference_subspace_on_low_rank_matrix(
     model = StreamingRandomizedPCA(
         n_components=5,
         oversample=5,
-        batch_size=37,
+        fit_batch_size=37,
         random_state=0,
     )
     model.fit(_ArrayAtlas(X, batch_size=37))
@@ -173,7 +195,7 @@ def test_randomized_streaming_pca_preserves_knn_and_label_purity():
     model = StreamingRandomizedPCA(
         n_components=5,
         oversample=8,
-        batch_size=23,
+        fit_batch_size=23,
         random_state=0,
         n_iter=2,
     )
