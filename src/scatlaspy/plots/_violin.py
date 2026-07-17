@@ -119,8 +119,10 @@ def violin(
         Quantile range used to set the visible y-axis range. The default
         ``(0.0, 0.95)`` reduces compression from extreme expression outliers.
         For count and log1p expression, the lower bound is 0 and the upper
-        bound is estimated from nonzero expression values. Set to ``None`` to
-        use the full nonzero value range.
+        bound is estimated from nonzero expression values within each group,
+        then the largest group-wise upper bound is used for each gene panel.
+        This avoids cutting off cluster-specific high-expression distributions.
+        Set to ``None`` to use the full nonzero value range.
 
     ncols
         Number of gene panels per row. If ``None``, each gene is shown on its
@@ -129,7 +131,8 @@ def violin(
 
     figsize
         Matplotlib figure size. If ``None``, the size is estimated from the
-        number of panel rows and columns.
+        number of panel rows, panel columns, and displayed groups. Wider plots
+        are used automatically when many clusters are shown on the x-axis.
 
     save_path
         Path to save the figure. If ``None``, the figure is only displayed.
@@ -364,19 +367,14 @@ def violin(
     plot_df["group_label"] = pd.Categorical(plot_df["group_label"], categories=group_labels, ordered=True)
     plot_df = plot_df.sort_values(["gene", "group_label"]).reset_index(drop=True)
 
-    y_limits = _robust_value_range(
-        plot_df["expr"].to_numpy(dtype=float),
-        ylim_quantile,
-        nonnegative=(use_data != "data_scale"),
-    )
-
     n_panels = len(genes)
     if ncols is None:
         ncols = 1
     ncols = max(1, int(ncols))
     nrows = int(np.ceil(n_panels / ncols))
     if figsize is None:
-        figsize = (4.2 * ncols, 4.8 * nrows)
+        panel_width = min(24.0, max(4.2, 1.8 + 0.28 * len(group_labels)))
+        figsize = (panel_width * ncols, 4.8 * nrows)
 
     # Plot each gene in a separate panel. By default, each gene gets its own row
     # because the x-axis can contain many clusters.
@@ -403,6 +401,13 @@ def violin(
 
     for ax, gene in zip(axes, genes):
         sub = plot_df[plot_df["gene"] == gene].copy()
+        y_limits = _groupwise_robust_value_range(
+            sub,
+            value_col="expr",
+            group_col="group_label",
+            quantile=ylim_quantile,
+            nonnegative=(use_data != "data_scale"),
+        )
 
         positions = np.arange(len(group_labels)) + 1
 
@@ -469,7 +474,24 @@ def violin(
         ax.set_xlabel(groupby, fontsize=12)
         ax.set_ylabel("expression", fontsize=12)
         ax.set_xticks(positions)
-        ax.set_xticklabels(group_labels, fontsize=11)
+        if len(group_labels) > 30:
+            tick_rotation = 90
+            tick_ha = "center"
+            tick_fontsize = 8
+        elif len(group_labels) > 12:
+            tick_rotation = 45
+            tick_ha = "right"
+            tick_fontsize = 9
+        else:
+            tick_rotation = 0
+            tick_ha = "center"
+            tick_fontsize = 11
+        ax.set_xticklabels(
+            group_labels,
+            rotation=tick_rotation,
+            ha=tick_ha,
+            fontsize=tick_fontsize,
+        )
         ax.set_ylim(y_limits)
 
         ax.set_facecolor("white")
@@ -1108,6 +1130,56 @@ def _robust_value_range(
         vmax += pad
 
     return (vmin, vmax)
+
+
+def _groupwise_robust_value_range(
+    df: pd.DataFrame,
+    *,
+    value_col: str,
+    group_col: str,
+    quantile: tuple[float, float] | None,
+    nonnegative: bool = False,
+) -> tuple[float, float]:
+    """Estimate a plotting range from per-group robust ranges.
+
+    Violin plots often contain many groups where only a few groups have strong
+    marker expression. A global high quantile can be dominated by low-expression
+    groups and cut off the high-expression group. This helper estimates a
+    robust range inside each group, then keeps the broadest group-wise range.
+    """
+
+    ranges = []
+    for _, sub in df.groupby(group_col, observed=True):
+        vals = sub[value_col].to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            continue
+        ranges.append(
+            _robust_value_range(
+                vals,
+                quantile,
+                nonnegative=nonnegative,
+            )
+        )
+
+    if len(ranges) == 0:
+        return _robust_value_range(
+            df[value_col].to_numpy(dtype=float),
+            quantile,
+            nonnegative=nonnegative,
+        )
+
+    vmin = min(x[0] for x in ranges)
+    vmax = max(x[1] for x in ranges)
+
+    if not np.isfinite(vmin) or not np.isfinite(vmax) or vmax <= vmin:
+        return _robust_value_range(
+            df[value_col].to_numpy(dtype=float),
+            quantile,
+            nonnegative=nonnegative,
+        )
+
+    return (float(vmin), float(vmax))
 
 
 def _sort_categories_natural(labels: Any) -> list[str]:

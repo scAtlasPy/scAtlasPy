@@ -3,6 +3,7 @@ from os import PathLike
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 from typing import Any
 from ..data import Atlas
 from ..data._expression_source import resolve_expression_source
@@ -351,7 +352,8 @@ def rank_genes_groups_volcano(
 
     y_cap
         Display clipping upper limit for the y-axis ``-log10(padj)``. If
-        ``None``, no clipping is applied.
+        ``None``, an automatic cap is estimated when adjusted p-values contain
+        zeros from numerical underflow.
 
     xlim_abs
         Absolute value of the symmetric x-axis display range. If ``None``, it is
@@ -444,21 +446,37 @@ def rank_genes_groups_volcano(
     df[pval_key] = df[pval_key].astype(float)
 
     # 4. Calculate -log10(padj)
-    # First use a tiny value to avoid log10(0), then use y_cap for display clipping
+    # First use a tiny value to avoid log10(0), then use y_cap for display clipping.
+    # Large atlas-scale tests often underflow very small p-values to exactly
+    # zero. Without clipping, those points would be drawn at the machine-limit
+    # -log10 value and compress the rest of the volcano plot.
     tiny = np.nextafter(0, 1)
     df["neg_log10_padj"] = -np.log10(
         df[pval_key].clip(lower=tiny)
     )
 
-    if y_cap is not None:
-        df["neg_log10_padj_plot"] = df["neg_log10_padj"].clip(upper=float(y_cap))
+    if y_cap is None:
+        positive_pvals = df[pval_key][
+            np.isfinite(df[pval_key]) & (df[pval_key] > 0)
+        ].astype(float)
+        if len(positive_pvals) > 0 and (df[pval_key] == 0).any():
+            positive_y = -np.log10(positive_pvals.to_numpy())
+            y_cap_use = float(np.nanpercentile(positive_y, 99.5) * 1.1 + 1.0)
+            y_cap_use = min(max(y_cap_use, 5.0), 100.0)
+        else:
+            y_cap_use = None
+    else:
+        y_cap_use = float(y_cap)
+
+    if y_cap_use is not None:
+        df["neg_log10_padj_plot"] = df["neg_log10_padj"].clip(upper=y_cap_use)
     else:
         df["neg_log10_padj_plot"] = df["neg_log10_padj"]
 
     y_max_real = float(np.nanmax(df["neg_log10_padj_plot"]))
 
-    if y_cap is not None:
-        y_upper = min(float(y_cap), y_max_real * 1.15 + 1.0)
+    if y_cap_use is not None:
+        y_upper = y_cap_use * 1.08
     else:
         y_upper = y_max_real * 1.15 + 1.0
 
@@ -499,6 +517,47 @@ def rank_genes_groups_volcano(
     ax.axvline(float(logfc_cutoff), color="#555555", linestyle="--", linewidth=1.0)
     ax.axhline(-np.log10(float(pval_cutoff)), color="#555555", linestyle="--", linewidth=1.0)
 
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor="#d62728",
+            markeredgewidth=0,
+            markersize=6,
+            label="upregulated",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor="#1f77b4",
+            markeredgewidth=0,
+            markersize=6,
+            label="downregulated",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color="none",
+            markerfacecolor="#9a9a9a",
+            markeredgewidth=0,
+            markersize=6,
+            label="not significant",
+        ),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        frameon=False,
+        loc="upper right",
+        fontsize=11,
+        handletextpad=0.4,
+        borderaxespad=0.4,
+    )
+
     # 7. Label top genes
     n_up = max(1, int(top_n) // 2)
     n_down = max(1, int(top_n) - n_up)
@@ -523,34 +582,79 @@ def rank_genes_groups_volcano(
             .head(int(top_n))
         )
 
-    for j, (_, row) in enumerate(top.iterrows()):
+    # Use a symmetric x-axis range so the figure visually resembles a standard volcano plot.
+    # Also make sure automatically labeled genes are inside the visible region.
+    finite_lfc = (
+        df[lfc_key]
+        .replace([np.inf, -np.inf], np.nan)
+        .dropna()
+        .abs()
+    )
 
-        x0 = float(row[lfc_key])
-        y0 = float(row["neg_log10_padj_plot"])
-
-        # Prevent labels from touching the plot frame
-        y0 = min(y0, y_upper * 0.94)
-
-        # Stagger labels slightly up and down to avoid overlap
-        y_text = y0 - (j % 4) * (y_upper * (label_offset_step / 500.0))
-        y_text = max(y_text, 0.1)
-
-        if x0 >= 0:
-            x_text = x0 + 0.08
-            ha = "left"
+    if xlim_abs is None:
+        if len(finite_lfc) > 0:
+            # Use the 99.5th percentile to prevent extreme outliers from making the plot too wide
+            xlim_abs_use = float(np.nanpercentile(finite_lfc, 99.5))
+            xlim_abs_use = max(xlim_abs_use, float(logfc_cutoff) * 2.5)
         else:
-            x_text = x0 - 0.08
-            ha = "right"
+            xlim_abs_use = 5.0
 
-        ax.text(
-            x_text,
-            y_text,
-            str(row[gene_label]),
-            fontsize=label_fontsize,
-            ha=ha,
-            va="bottom",
-            clip_on=True,
-        )
+        if len(top) > 0:
+            top_lfc = (
+                top[lfc_key]
+                .replace([np.inf, -np.inf], np.nan)
+                .dropna()
+                .abs()
+            )
+            if len(top_lfc) > 0:
+                xlim_abs_use = max(xlim_abs_use, float(top_lfc.max()) * 1.08)
+    else:
+        xlim_abs_use = float(xlim_abs)
+
+    ax.set_xlim(-xlim_abs_use * 1.05, xlim_abs_use * 1.05)
+
+    label_arrow = {
+        "arrowstyle": "-",
+        "color": "#4a4a4a",
+        "linewidth": 0.5,
+        "shrinkA": 0,
+        "shrinkB": 2,
+    }
+
+    label_dx = xlim_abs_use * 0.08
+    for side_df, ha in [
+        (
+            top[top[lfc_key] < 0].sort_values("neg_log10_padj_plot", ascending=False),
+            "left",
+        ),
+        (
+            top[top[lfc_key] >= 0].sort_values("neg_log10_padj_plot", ascending=False),
+            "right",
+        ),
+    ]:
+        n_labels = len(side_df)
+        if n_labels == 0:
+            continue
+
+        y_texts = np.linspace(y_upper * 0.92, y_upper * 0.70, n_labels)
+        for y_text, (_, row) in zip(y_texts, side_df.iterrows()):
+            x0 = float(row[lfc_key])
+            y0 = float(row["neg_log10_padj_plot"])
+            if x0 < 0:
+                x_text = max(-xlim_abs_use * 0.98, x0 - label_dx)
+            else:
+                x_text = min(xlim_abs_use * 0.98, x0 + label_dx)
+            ax.annotate(
+                str(row[gene_label]),
+                xy=(x0, y0),
+                xytext=(x_text, float(y_text)),
+                textcoords="data",
+                fontsize=label_fontsize,
+                ha=ha,
+                va="center",
+                clip_on=True,
+                arrowprops=label_arrow,
+            )
 
     # 8. Title
     if "reference" in df.columns:
@@ -575,26 +679,6 @@ def rank_genes_groups_volcano(
 
     # Use an adaptive upper limit for the y-axis
     ax.set_ylim(-1, y_upper)
-
-    # Use a symmetric x-axis range so the figure visually resembles a standard volcano plot
-    finite_lfc = (
-        df[lfc_key]
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-        .abs()
-    )
-
-    if xlim_abs is None:
-        if len(finite_lfc) > 0:
-            # Use the 99.5th percentile to prevent extreme outliers from making the plot too wide
-            xlim_abs_use = float(np.nanpercentile(finite_lfc, 99.5))
-            xlim_abs_use = max(xlim_abs_use, float(logfc_cutoff) * 2.5)
-        else:
-            xlim_abs_use = 5.0
-    else:
-        xlim_abs_use = float(xlim_abs)
-
-    ax.set_xlim(-xlim_abs_use * 1.05, xlim_abs_use * 1.05)
 
     fig.tight_layout()
 
