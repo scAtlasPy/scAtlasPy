@@ -119,7 +119,6 @@ class FilterIndexBuilder:
 
         self.atlas = atlas
         self.file_path = atlas.file_path       # Absolute path to the sasql file
-        self.producer_num = 10           # Number of threads for minibatch streaming reading
         self.fetch_size = 500_0000    # Fetch size for minibatch streaming reading
         self.chunk_size = 1000_0000    # Amount of data processed each time
 
@@ -418,7 +417,6 @@ class FilterIndexBuilder:
         - ``filter_cell_id``: continuous cell index after filtering
         - ``filter_gene_id``: continuous gene index after filtering
         - ``data``: expression value column specified by ``use_data``
-        - ``tid``: shard ID used for subsequent minibatch streaming reading
 
         In implementation, temporary mapping tables ``_obs_keep`` and ``_var_keep`` are
         created first, and then the resolved expression source is scanned once to
@@ -469,8 +467,7 @@ class FilterIndexBuilder:
         CREATE TABLE X_HyS_data_filtered (
             filter_cell_id INTEGER,
             filter_gene_id USMALLINT,
-            data REAL,
-            tid TINYINT
+            data REAL
         )
         """)
 
@@ -496,8 +493,7 @@ class FilterIndexBuilder:
         SELECT
             obs.filter_cell_id,
             var.filter_gene_id,
-            CAST({value_sql} AS REAL) AS data,
-            CAST(0 AS TINYINT) AS tid
+            CAST({value_sql} AS REAL) AS data
         FROM {from_sql}
         JOIN _obs_keep AS obs
           ON X.atlas_cell_id = obs.atlas_cell_id
@@ -509,12 +505,6 @@ class FilterIndexBuilder:
 
         pbar.update(total_rows)
         pbar.close()
-
-        # Calculate tid
-        conn.execute(f"""
-            UPDATE X_HyS_data_filtered
-            SET tid = CAST((rowid // {self.fetch_size}) % {self.producer_num} AS TINYINT)
-        """)
 
         final_nnz = conn.execute("""
             SELECT COUNT(*)

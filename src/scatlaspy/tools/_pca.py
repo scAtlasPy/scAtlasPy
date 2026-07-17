@@ -1,4 +1,4 @@
-from ..data import Atlas
+from ..data import Atlas, duckdb_memory_limit
 import numpy as np
 from ..io import progress
 import pandas as pd
@@ -451,6 +451,7 @@ class StreamingRandomizedPCA:
         self.fit_transform(atlas)
 
 
+@duckdb_memory_limit("5G")
 def pca(
     atlas: Atlas,
     n_components: int = 30,

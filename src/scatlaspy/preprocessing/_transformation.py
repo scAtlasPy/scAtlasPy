@@ -473,7 +473,7 @@ def normalize_total_scale_factor(
     logger.info(f"normalize_total_scale_factor Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
 
-@duckdb_memory_limit("3G")
+@duckdb_memory_limit("5G")
 def log1p(
     atlas: 'Atlas',
     base: Optional[Number] = None,
@@ -1846,7 +1846,7 @@ def _highly_variable_genes_seurat(
         return gene_df
 
 
-@duckdb_memory_limit("3G")
+@duckdb_memory_limit("5G")
 def scale(
     atlas: Atlas,
     use_data: str = "data_log1p",

@@ -291,7 +291,7 @@ class Atlas:
     def __init__(
         self,
         file_name: PathLike[str] | str,
-        db_memory_limit: str | int | None = "20G",
+        db_memory_limit: str | int | None = "10G",
     ):
         """Initialize an Atlas database object.
 
@@ -311,10 +311,10 @@ class Atlas:
             This can be a DuckDB-compatible string such as ``"4GB"`` or an integer interpreted as GB,
             for example ``4`` is equivalent to ``"4GB"``.
 
-            The default requested limit is ``"20G"``. Atlas applies the smaller
+            The default requested limit is ``"10G"``. Atlas applies the smaller
             value between the requested limit and 60% of detected system physical
             memory, rounded down to whole GB. For example, on a 32 GB machine,
-            the default effective DuckDB limit is ``"19GB"``.
+            the default effective DuckDB limit is ``"10GB"``.
 
             If ``None`` is passed explicitly, Atlas uses only the 60% system
             memory cap.
@@ -1162,7 +1162,6 @@ class Atlas:
 
         conn.commit()
 
-    @duckdb_memory_limit("10G")
     def build_read_index(
         self,
         cell_condition: str | None = "filter_cells",
@@ -1236,7 +1235,11 @@ class Atlas:
             use_data=use_data,
         )
 
-    def get_minibatch_csr(self, x_type: str = "CSR") -> Iterator[Any]:
+    def get_minibatch_csr(
+        self,
+        x_type: str = "CSR",
+        n_threads: int = 10,
+    ) -> Iterator[Any]:
         """Read the expression matrix in sparse CSR minibatches.
 
         This method returns sparse matrices batch by batch from the database based on
@@ -1248,6 +1251,10 @@ class Atlas:
         x_type
             The returned minibatch matrix format. Common values include ``"CSR"`` or
             other sparse matrix formats supported by the underlying function.
+        n_threads
+            Number of reader threads used to read rowid blocks from DuckDB.
+            The value only controls runtime minibatch reading parallelism and does
+            not require rebuilding the read index.
 
         Yields
         -------
@@ -1261,7 +1268,11 @@ class Atlas:
                 print(X_batch.shape)
                 break"""
 
-        fetcher = MultiThreadedMinibatchFetcher(file_path=self.file_path, x_type=x_type)
+        fetcher = MultiThreadedMinibatchFetcher(
+            file_path=self.file_path,
+            x_type=x_type,
+            n_threads=n_threads,
+        )
         for X_batch in fetcher.run():
             yield X_batch
 
@@ -1272,6 +1283,7 @@ class Atlas:
         max_batches: int | None = None,
         buffer_batch_num: int = 5,
         get_obs_col: str | None = None,
+        n_threads: int = 10,
     ) -> Iterator[np.ndarray | dict[str, Any]]:
         """Read the expression matrix in dense minibatches.
 
@@ -1344,6 +1356,12 @@ class Atlas:
 
             Here ``X_batch[i, :]``, ``filter_cell_ids[i]``, and ``values[i]`` have
             a one-to-one correspondence.
+
+        n_threads
+            Number of reader threads used to read rowid blocks from DuckDB.
+            This value can be changed at read time and does not require rebuilding
+            the read index. Larger values may improve throughput, but can also
+            increase DuckDB connection and queue pressure.
 
         Yields
         -------
@@ -1468,6 +1486,7 @@ class Atlas:
                     pass_mode="single-pass",
                     buffer_batch_num=buffer_batch_num,
                     max_batches=max_batches,
+                    n_threads=n_threads,
                     return_cell_ids=return_cell_ids,
                 )
 
@@ -1506,6 +1525,7 @@ class Atlas:
                     pass_mode="multi-pass",
                     buffer_batch_num=buffer_batch_num,
                     max_batches=remain_batches,
+                    n_threads=n_threads,
                     return_cell_ids=return_cell_ids,
                 )
 
@@ -1540,7 +1560,7 @@ class Atlas:
     #   atlas.load_h5ad(file_path, ...)
     # =====================================================
 
-    @duckdb_memory_limit("3G")
+    @duckdb_memory_limit("5G")
     def load_h5ad(
         self,
         h5ad_path: PathLike[str] | str | list[PathLike[str] | str],

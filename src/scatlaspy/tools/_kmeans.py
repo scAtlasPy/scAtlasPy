@@ -1,6 +1,6 @@
 from sklearn.cluster import MiniBatchKMeans
 from ..io import progress
-from ..data import Atlas
+from ..data import Atlas, duckdb_memory_limit
 import numpy as np
 import pandas as pd
 import time
@@ -552,6 +552,7 @@ class StreamingKMeans:
 
 
 # Entry function
+@duckdb_memory_limit("5G")
 def kmeans(
     atlas: Atlas,
     n_components: int = 30,

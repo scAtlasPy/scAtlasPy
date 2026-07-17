@@ -344,6 +344,9 @@ class MultiThreadedMinibatchFetcher:
     max_batches
         Maximum number of minibatches to output; if ``None``, there is no limit.
 
+    n_threads
+        Number of reader threads used to read rowid blocks from DuckDB.
+
     return_cell_ids
         Whether to carry the row-wise corresponding ``filter_cell_id`` in the output.
         Disabled by default to maintain compatibility with the old matrix-only output.
@@ -381,6 +384,7 @@ class MultiThreadedMinibatchFetcher:
                  pass_mode: str="multi-pass",
                  buffer_batch_num: int=5,
                  max_batches: int | None=None,  # Maximum number of batches to output
+                 n_threads: int = 10,
                  return_cell_ids: bool=False,
                  ):
 
@@ -423,6 +427,11 @@ class MultiThreadedMinibatchFetcher:
             matrix. If ``True``, returns
             ``{"X": X_batch, "filter_cell_ids": filter_cell_ids}``.
 
+        n_threads
+            Number of reader threads used to read rowid blocks from DuckDB.
+            Increasing this value may improve read throughput on some machines, but
+            can also increase connection, queue, and memory pressure.
+
         Notes
         -----
         This is an internal helper. Unless extending the internal workflow of
@@ -432,7 +441,10 @@ class MultiThreadedMinibatchFetcher:
         self.X_type = x_type  # Output X table format: "CSR" or "dense" (wide table)
         self.file_path = fspath(file_path)  # Absolute path to the sasql file
         self.batch_size = batch_size
-        self.producer_num = 10  # Number of producer threads
+        n_threads = int(n_threads)
+        if n_threads < 1:
+            raise ValueError("n_threads must be >= 1")
+        self.n_threads = n_threads  # Number of reader threads
         self.gene_num = self._get_gene_num()  # Get the number of genes
         self.index_data = self._get_index_data()  # Read the information saved by build_read_index(use_data=...) from the database, such as "data_log1p" or "data_scale"
         self.zero_scale_transform = self._get_zero_scale_transform()
@@ -455,7 +467,7 @@ class MultiThreadedMinibatchFetcher:
         self.batch_idx = 0  # Batch index
         self.batch_num = len(self.batch_nnz)  # Number of batches
 
-        self.queue = queue.Queue(maxsize=self.producer_num * 5)  # Data cache queue: Queue (core)
+        self.queue = queue.Queue(maxsize=self.n_threads * 5)  # Data cache queue: Queue (core)
 
         # Ring Buffer: circular buffer pool used to split batches
         self.pool_size = self.fetch_size * 10  # Capacity
@@ -701,7 +713,7 @@ class MultiThreadedMinibatchFetcher:
         return batch_cell_counts, batch_nnz
 
 
-    def _producer(self, tid: int):
+    def _producer(self, producer_id: int):
         """Execute the core functionality of ``_producer``.
 
         This internal function belongs to the minibatch streaming reading module and
@@ -719,8 +731,9 @@ class MultiThreadedMinibatchFetcher:
 
         Parameters
         ----------
-        tid
-            Producer thread or data shard ID.
+        producer_id
+            Producer thread ID. It is used to assign rowid blocks to producer
+            threads and is not a database column.
 
         Notes
         -----
@@ -737,7 +750,7 @@ class MultiThreadedMinibatchFetcher:
             ).fetchone()[0]
             total_blocks = (int(total_rows) + self.fetch_size - 1) // self.fetch_size
 
-            for seq_id in range(tid, total_blocks, self.producer_num):
+            for seq_id in range(producer_id, total_blocks, self.n_threads):
                 if self.stop_event.is_set():
                     break
 
@@ -769,7 +782,7 @@ class MultiThreadedMinibatchFetcher:
 
                 if rowids.min() < start or rowids.max() >= end:
                     raise RuntimeError(
-                        f"[Producer-{tid}] rowid block out of range: "
+                        f"[Producer-{producer_id}] rowid block out of range: "
                         f"seq_id={seq_id}, expected=[{start}, {end}), "
                         f"rowid_min={rowids.min()}, rowid_max={rowids.max()}"
                     )
@@ -1089,7 +1102,7 @@ class MultiThreadedMinibatchFetcher:
 
         # producers: multithreaded
         producers = []
-        for i in range(self.producer_num):
+        for i in range(self.n_threads):
             t = threading.Thread(target=self._producer, args=(i,))
             t.start()
             producers.append(t)
