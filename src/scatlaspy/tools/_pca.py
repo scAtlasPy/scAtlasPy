@@ -7,6 +7,53 @@ import logging
 logger = logging.getLogger('Atlas')
 
 
+def _finite_summary(values: np.ndarray) -> str:
+    """Return a compact finite-value summary for error messages."""
+
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return "no finite values"
+    return (
+        f"finite_min={float(np.min(finite)):.6g}, "
+        f"finite_max={float(np.max(finite)):.6g}"
+    )
+
+
+def _check_finite_array(values: np.ndarray, *, name: str, context: str) -> None:
+    """Raise a clear error if an array contains NaN or infinite values."""
+
+    arr = np.asarray(values)
+    if np.isfinite(arr).all():
+        return
+
+    n_nan = int(np.isnan(arr).sum())
+    n_posinf = int(np.isposinf(arr).sum())
+    n_neginf = int(np.isneginf(arr).sum())
+    raise ValueError(
+        f"[RandomizedPCA] Non-finite values detected in {name} during {context}: "
+        f"shape={arr.shape}, nan={n_nan}, +inf={n_posinf}, -inf={n_neginf}, "
+        f"{_finite_summary(arr)}. Please inspect the expression field used by "
+        "the current read index and rerun preprocessing if needed."
+    )
+
+
+def _matmul_checked(left: np.ndarray, right: np.ndarray, *, name: str, context: str) -> np.ndarray:
+    """Run matrix multiplication and report numerical failures with context."""
+
+    try:
+        with np.errstate(over="raise", invalid="raise", divide="raise"):
+            out = left @ right
+    except FloatingPointError as exc:
+        raise FloatingPointError(
+            f"[RandomizedPCA] Floating-point failure during {name} in {context}. "
+            f"left_shape={left.shape}, right_shape={right.shape}, "
+            f"left_{_finite_summary(left)}, right_{_finite_summary(right)}"
+        ) from exc
+
+    _check_finite_array(out, name=name, context=context)
+    return out
+
+
 def _read_index_use_data(atlas: Atlas) -> str:
     """Return the expression field used by the current read index."""
 
@@ -292,6 +339,11 @@ class StreamingRandomizedPCA:
                 )
             ):
                 X_batch = np.asarray(X_batch, dtype=np.float32)
+                _check_finite_array(
+                    X_batch,
+                    name="X_batch",
+                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
+                )
 
                 if n_features is None:
                     n_features = X_batch.shape[1]
@@ -321,10 +373,25 @@ class StreamingRandomizedPCA:
                 X64 = X_batch.astype(np.float64, copy=False)
 
                 t0 = time.time()
-                projected = X64 @ input_matrix
+                projected = _matmul_checked(
+                    X64,
+                    input_matrix,
+                    name="projected",
+                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
+                )
                 projection_time += time.time() - t0
 
-                H += X64.T @ projected
+                H += _matmul_checked(
+                    X64.T,
+                    projected,
+                    name="H_update",
+                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
+                )
+                _check_finite_array(
+                    H,
+                    name="H",
+                    context=f"fit covariance pass {pass_id + 1}, batch {batch_id}",
+                )
                 pass_samples += X_batch.shape[0]
 
                 if pass_id == 0:
@@ -341,6 +408,11 @@ class StreamingRandomizedPCA:
                 raise RuntimeError("[RandomizedPCA] No minibatch was obtained, so PCA cannot be trained")
 
             input_matrix, _ = np.linalg.qr(H, mode="reduced")
+            _check_finite_array(
+                input_matrix,
+                name="input_matrix",
+                context=f"QR after covariance pass {pass_id + 1}",
+            )
             self.number_of_fit_passes_ += 1
 
         if n_samples == 0 or H is None or input_matrix is None:
@@ -354,6 +426,7 @@ class StreamingRandomizedPCA:
         decomp_start = time.time()
 
         Q = input_matrix
+        _check_finite_array(Q, name="Q", context="compact covariance setup")
         T = np.zeros((Q.shape[1], Q.shape[1]), dtype=np.float64)
 
         for batch_id, X_batch in enumerate(
@@ -366,10 +439,30 @@ class StreamingRandomizedPCA:
             )
         ):
             X64 = np.asarray(X_batch, dtype=np.float64)
+            _check_finite_array(
+                X64,
+                name="X_batch",
+                context=f"compact covariance batch {batch_id}",
+            )
             t0 = time.time()
-            Z_batch = X64 @ Q
+            Z_batch = _matmul_checked(
+                X64,
+                Q,
+                name="Z_batch",
+                context=f"compact covariance batch {batch_id}",
+            )
             projection_time += time.time() - t0
-            T += Z_batch.T @ Z_batch
+            T += _matmul_checked(
+                Z_batch.T,
+                Z_batch,
+                name="T_update",
+                context=f"compact covariance batch {batch_id}",
+            )
+            _check_finite_array(
+                T,
+                name="T",
+                context=f"compact covariance batch {batch_id}",
+            )
 
             if (batch_id + 1) % 20 == 0:
                 logger.info(
@@ -379,7 +472,10 @@ class StreamingRandomizedPCA:
         self.number_of_fit_passes_ += 1
         self.projection_time_ = projection_time
 
+        _check_finite_array(T, name="T", context="before eigendecomposition")
         eigvals, eigvecs = np.linalg.eigh(T)
+        _check_finite_array(eigvals, name="eigvals", context="after eigendecomposition")
+        _check_finite_array(eigvecs, name="eigvecs", context="after eigendecomposition")
         order = np.argsort(eigvals)[::-1]
         eigvals = eigvals[order]
         eigvecs = eigvecs[:, order]
@@ -395,8 +491,18 @@ class StreamingRandomizedPCA:
                 "Try increasing oversample or checking the input data."
             )
 
-        components = (Q @ eigvecs[:, :self.n_components]).T
+        components = _matmul_checked(
+            Q,
+            eigvecs[:, :self.n_components],
+            name="components",
+            context="fit decomposition",
+        ).T
         self.components_ = components.astype(np.float32)
+        _check_finite_array(
+            self.components_,
+            name="components_",
+            context="fit decomposition",
+        )
         self.singular_values_ = np.sqrt(eigvals[:self.n_components]).astype(np.float32)
 
         denom = max(n_samples - 1, 1)
@@ -425,17 +531,28 @@ class StreamingRandomizedPCA:
 
         start = time.time()
 
-        for batch in progress(
+        for batch_id, batch in enumerate(progress(
             atlas.get_minibatch_dense(
                 batch_size=self.transform_batch_size,
                 pass_mode="single-pass",
                 get_obs_col="atlas_cell_id",
             ),
             desc="Randomized PCA transform",
-        ):
+        )):
             X_batch = batch["X"]
             atlas_cell_ids = batch["atlas_cell_id"]
-            X_pca = np.asarray(X_batch, dtype=np.float32) @ self.components_.T
+            X_batch = np.asarray(X_batch, dtype=np.float32)
+            _check_finite_array(
+                X_batch,
+                name="X_batch",
+                context=f"transform batch {batch_id}",
+            )
+            X_pca = _matmul_checked(
+                X_batch,
+                self.components_.T,
+                name="X_pca",
+                context=f"transform batch {batch_id}",
+            )
             self._writer_obsm_x_pca(atlas, X_pca, atlas_cell_ids)
 
         self.transform_scan_time_ = time.time() - start
