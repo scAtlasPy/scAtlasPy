@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools<81"]
 build-backend = "setuptools.build_meta"
 
 
@@ -42,6 +42,9 @@ dependencies = [
     "matplotlib>=3.10.0",
     "tqdm>=4.68.2",
     "scikit-learn>=1.7.0",
+    "igraph>=0.11.0",
+    "louvain>=0.8.2",
+    "setuptools<81",
     "umap-learn>=0.5.12",
     
     "anndata>=0.11.4",

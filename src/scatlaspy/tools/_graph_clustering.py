@@ -32,11 +32,25 @@ def _import_louvain_backend() -> tuple[Any, Any]:
 
     try:
         import igraph as ig
-        import louvain
     except ImportError as exc:
         raise ImportError(
             "sap.tl.graph_clustering(mode='distilled_louvain') requires "
-            "`igraph` and `louvain` to fit the Louvain teacher."
+            "`igraph` to fit the Louvain teacher."
+        ) from exc
+
+    try:
+        import louvain
+    except ImportError as exc:
+        if getattr(exc, "name", None) == "pkg_resources":
+            raise ImportError(
+                "The installed `louvain` package imports the legacy "
+                "`pkg_resources` module, which is not available in recent "
+                "setuptools releases. Please install `setuptools<81`, for "
+                "example: `python -m pip install 'setuptools<81'`."
+            ) from exc
+        raise ImportError(
+            "sap.tl.graph_clustering(mode='distilled_louvain') requires "
+            "`louvain` to fit the Louvain teacher."
         ) from exc
 
     return ig, louvain
@@ -308,7 +322,15 @@ def graph_clustering(
     conn = atlas.connection
     seed = int(random_state)
 
-    torch = _import_torch()
+    torch = _import_torch(
+        caller="sap.tl.graph_clustering",
+        purpose="the distilled Louvain student model",
+        fallback=(
+            "If you cannot install PyTorch in this environment, run "
+            "`sap.tl.kmeans(atlas, use_rep='X_umap')` after UMAP, or "
+            "`sap.tl.kmeans(atlas, use_rep='X_pca')` after PCA."
+        ),
+    )
     torch_device = _resolve_torch_device(device, torch)
 
     pc_cols = _get_pca_columns(atlas, n_pcs=n_pcs, input_table=input_table)

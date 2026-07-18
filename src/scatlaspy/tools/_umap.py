@@ -59,17 +59,26 @@ def _import_classic_umap() -> Any:
     return UMAP
 
 
-def _import_torch() -> Any:
-    """Import PyTorch only when the user calls the parametric UMAP workflow."""
+def _import_torch(
+    caller: str = "sap.tl.umap",
+    purpose: str = "the teacher-student UMAP backend",
+    fallback: str | None = None,
+) -> Any:
+    """Import PyTorch only when a PyTorch-backed workflow is called."""
 
     try:
         import torch
     except ImportError as exc:
-        raise ImportError(
-            "sap.tl.umap requires PyTorch for the teacher-student UMAP backend. "
+        message = (
+            f"{caller} requires PyTorch for {purpose}. "
             "Install it in your analysis environment with "
             "`pip install 'scatlaspy[parametric]'` or install the PyTorch build "
             "that matches your GPU/accelerator."
+        )
+        if fallback:
+            message += f" {fallback}"
+        raise ImportError(
+            message
         ) from exc
 
     return torch
@@ -372,7 +381,10 @@ def umap(
     if torch_epochs <= 0:
         raise ValueError("torch_epochs must be greater than 0")
 
-    torch = _import_torch()
+    torch = _import_torch(
+        caller="sap.tl.umap",
+        purpose="the teacher-student UMAP backend",
+    )
     torch_device = _resolve_torch_device(device, torch)
     logger.info(f"[TorchUMAP] resolved PyTorch device = {torch_device}")
 
