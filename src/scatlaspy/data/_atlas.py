@@ -1560,14 +1560,14 @@ class Atlas:
     #   atlas.load_h5ad(file_path, ...)
     # =====================================================
 
-    @duckdb_memory_limit("5G")
+    @duckdb_memory_limit("4G")
     def load_h5ad(
         self,
         h5ad_path: PathLike[str] | str | list[PathLike[str] | str],
         *,
         load_type: Literal["order", "random"] = "random",
         cells_per_block: int | None = None,
-        import_window_memory_factor: float = 1.0,
+        import_window_memory_factor: float = 0.8,
         cell_name_col: str | None = None,
         gene_name_col: str | None = None,
     ) -> Any:

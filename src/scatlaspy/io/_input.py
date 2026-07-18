@@ -314,7 +314,7 @@ def load_h5ad(
     *,
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 1.0,
+    import_window_memory_factor: float = 0.8,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ) -> None:
@@ -741,7 +741,7 @@ def _load_h5ad_list_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     *,
-    import_window_memory_factor: float = 1.0,
+    import_window_memory_factor: float = 0.8,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
     shuffle_blocks: bool = True,
@@ -1216,7 +1216,7 @@ def _load_h5ad_list_order(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 1.0,
+    import_window_memory_factor: float = 0.8,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -1304,7 +1304,7 @@ def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 1.0,
+    import_window_memory_factor: float = 0.8,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -1617,7 +1617,7 @@ def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 1.0,
+    import_window_memory_factor: float = 0.8,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -2247,7 +2247,7 @@ def _estimate_window_cells_and_blocks_per_pool(
     memory_limit: str | int | None,
     cells_per_block: int,
     estimated_bytes_per_cell: float,
-    import_window_memory_factor: float = 1.0,  #
+    import_window_memory_factor: float = 0.8,  #
     default_blocks_per_pool: int = 20,  #
     min_blocks_per_pool: int = 5,       #
     max_blocks_per_pool: int = 500,     #
