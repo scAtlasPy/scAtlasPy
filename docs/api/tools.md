@@ -221,6 +221,9 @@ sap.tl.rank_genes_groups(
 )
 ```
 
+Here, `n_genes=20` keeps up to 20 upregulated genes and up to 20
+downregulated genes per group. Use `n_genes=None` to keep all genes.
+
 The ranked statistics are stored in the Atlas for later querying and
 visualization.
 
@@ -298,6 +301,9 @@ sap.tl.rank_genes_groups(
     n_genes=20,
 )
 ```
+
+`n_genes` is directional: `n_genes=20` retains up to 20 upregulated and
+up to 20 downregulated genes for each group.
 
 After inspecting cluster structure and marker genes, clusters can be assigned
 manual annotations:

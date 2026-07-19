@@ -76,8 +76,11 @@ def rank_genes_groups(
         reference group itself is not output as a target group.
 
     n_genes
-        Number of genes to retain or display for each group. When set to
-        ``None``, all available genes are retained.
+        Number of genes to retain for each direction in each group. When set to
+        an integer ``N``, up to ``N`` upregulated genes and up to ``N``
+        downregulated genes are retained for each group. This keeps downstream
+        volcano plots balanced in both directions. When set to ``None``, all
+        available genes are retained.
 
     mask_var
         Boolean column name in ``var`` used to restrict the gene set included in
@@ -486,6 +489,9 @@ def rank_genes_groups(
             # -------------------------------------------------
             # Ranking
             # -------------------------------------------------
+            if n_genes is not None and int(n_genes) <= 0:
+                raise ValueError("n_genes must be greater than 0 when it is not None")
+
             if rankby_abs:
                 df = df.sort_values(
                     by=["scores", "atlas_gene_id"],
@@ -499,7 +505,22 @@ def rank_genes_groups(
                 )
 
             if n_genes is not None:
-                df = df.head(int(n_genes))
+                n_keep = int(n_genes)
+                if rankby_abs:
+                    up_df = df[df["logfoldchanges"] > 0].head(n_keep)
+                    down_df = df[df["logfoldchanges"] < 0].head(n_keep)
+                else:
+                    up_df = (
+                        df[df["logfoldchanges"] > 0]
+                        .sort_values(["scores", "atlas_gene_id"], ascending=[False, True])
+                        .head(n_keep)
+                    )
+                    down_df = (
+                        df[df["logfoldchanges"] < 0]
+                        .sort_values(["scores", "atlas_gene_id"], ascending=[True, True])
+                        .head(n_keep)
+                    )
+                df = pd.concat([up_df, down_df], axis=0, ignore_index=True)
 
             df = df.reset_index(drop=True)
             df["rank"] = np.arange(len(df), dtype=np.int64)

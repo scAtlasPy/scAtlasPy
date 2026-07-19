@@ -106,6 +106,10 @@ def test_pca_kmeans_rank_and_manual_annotation_smoke(atlas_from_adata, workflow_
         return_df=True,
     )
     assert not rank.empty
+    for _, sub in rank.groupby("group"):
+        assert (sub["logfoldchanges"] > 0).sum() <= 3
+        assert (sub["logfoldchanges"] < 0).sum() <= 3
+        assert len(sub) <= 6
     assert {"rank_genes_groups", "obs_cluster", "kmeans_centers"} <= set(atlas.query("SHOW TABLES")["name"])
 
 

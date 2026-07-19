@@ -130,7 +130,7 @@ class FilterIndexBuilder:
         self.conn = atlas.connection
         if self.conn is None:
             raise RuntimeError("Atlas connection is not available")
-        self.conn.execute("PRAGMA preserve_insertion_order=true")
+        self.conn.execute("PRAGMA preserve_insertion_order=false")
         # false does not force preservation of the input insertion order, allowing DuckDB to reorganize execution and write order for performance.
         # true tries to preserve the input order when writing through INSERT / COPY / SELECT
 
@@ -430,7 +430,7 @@ class FilterIndexBuilder:
 
         conn = self.conn
 
-        conn.execute("PRAGMA preserve_insertion_order = true")
+        conn.execute("PRAGMA preserve_insertion_order = false")
         conn.execute("PRAGMA threads=10")
 
         # Create lightweight mapping tables in advance
