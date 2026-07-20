@@ -484,6 +484,7 @@ class MultiThreadedMinibatchFetcher:
         self.output_last_time = None
         self.output_cells = 0
         self.speed_log_every = 5  # Print speed every N output batches; set to 1 if you want to print every batch
+        self.debug_state_log_every = 20
 
 
     def _get_zero_scale_transform(self):
@@ -795,6 +796,16 @@ class MultiThreadedMinibatchFetcher:
                     gene_id = gene_id[order]
                     data = data[order]
 
+                if seq_id % self.debug_state_log_every == 0:
+                    logger.debug(
+                        "[ProducerDebug] "
+                        f"producer={producer_id}, "
+                        f"seq_id={seq_id:,}/{total_blocks:,}, "
+                        f"records={len(gene_id):,}, "
+                        f"rowid_range=[{start:,},{end:,}), "
+                        f"queue_items={self.queue.qsize():,}/{self.queue.maxsize:,}"
+                    )
+
                 while not self.stop_event.is_set():
                     try:
                         self.queue.put((seq_id, gene_id, data), timeout=0.5)
@@ -831,6 +842,10 @@ class MultiThreadedMinibatchFetcher:
         """
 
         reorder_buffer = {}  # Out-of-order data cache: reorder_buffer[seq_id] = (gene_id, data); its size is dynamic
+        reorder_buffer_records = 0
+        peak_reorder_blocks = 0
+        peak_reorder_records = 0
+        peak_queue_items = 0
 
         expected_seq = 0  # The next desired batch sequence number
         global_indptr_offset = 0  # Used to correct the cumulative offset of indptr
@@ -882,7 +897,14 @@ class MultiThreadedMinibatchFetcher:
                     continue
 
                 seq_id, gene_id, data = item  # Parse data from queue: item = (seq_id, gene_id, data)
+                if seq_id in reorder_buffer:
+                    old_gene_id, _ = reorder_buffer[seq_id]
+                    reorder_buffer_records -= len(old_gene_id)
                 reorder_buffer[seq_id] = (gene_id, data)  # Store into the out-of-order data cache
+                reorder_buffer_records += len(gene_id)
+                peak_reorder_blocks = max(peak_reorder_blocks, len(reorder_buffer))
+                peak_reorder_records = max(peak_reorder_records, reorder_buffer_records)
+                peak_queue_items = max(peak_queue_items, self.queue.qsize())
 
                 # Take data in order. The currently needed batch sequence number is expected_seq,
                 # and the data is in the out-of-order data cache reorder_buffer
@@ -890,6 +912,7 @@ class MultiThreadedMinibatchFetcher:
 
                     gene_id, data = reorder_buffer.pop(expected_seq)  # Take out the needed data
                     length = len(gene_id)
+                    reorder_buffer_records -= length
 
                     # Write into Ring Buffer: circular buffer pool used to split batches
                     end_space = self.pool_size - self.write_ptr
@@ -1046,6 +1069,18 @@ class MultiThreadedMinibatchFetcher:
 
                 self.batch_idx += 1
 
+                if self.batch_idx % self.debug_state_log_every == 0:
+                    logger.debug(
+                        "[MinibatchDebug] "
+                        f"batch_idx={self.batch_idx:,}/{self.batch_num:,}, "
+                        f"output_batches={self.total_batches:,}, "
+                        f"expected_seq={expected_seq:,}, "
+                        f"queue_items={self.queue.qsize():,}/{self.queue.maxsize:,}, "
+                        f"reorder_blocks={len(reorder_buffer):,}, "
+                        f"reorder_records={reorder_buffer_records:,}, "
+                        f"ring_records={self.used_size:,}/{self.pool_size:,}"
+                    )
+
         # multi-pass mode: output tail batches in ShuffleBuffer that did not fill the buffer
         if self.X_type == "dense" and self.pass_mode == "multi-pass":
 
@@ -1065,7 +1100,10 @@ class MultiThreadedMinibatchFetcher:
 
         logger.info(
             f"[Done] processed_batches={self.batch_idx}, "
-            f"output_batches={self.total_batches}"
+            f"output_batches={self.total_batches}, "
+            f"peak_reorder_blocks={peak_reorder_blocks:,}, "
+            f"peak_reorder_records={peak_reorder_records:,}, "
+            f"peak_queue_items={peak_queue_items:,}"
         )
 
         # Notify run() to finish
