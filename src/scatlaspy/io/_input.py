@@ -7,6 +7,7 @@ import pyarrow as pa
 import time
 import math
 import zlib
+import resource
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import gc
@@ -26,6 +27,69 @@ XScale = Literal["count", "log"]
 # Get the logger
 logger = logging.getLogger("Atlas")
 logger.addHandler(logging.NullHandler())
+
+_IMPORT_RECONNECT_RSS_DELTA_GB = 6.0
+_IMPORT_RECONNECT_MAX_WINDOWS = 100
+
+
+def _get_process_rss_gb() -> float:
+    """Return current process RSS in GB without requiring psutil."""
+
+    try:
+        with open("/proc/self/statm", "r", encoding="utf-8") as handle:
+            rss_pages = int(handle.read().split()[1])
+        return rss_pages * os.sysconf("SC_PAGE_SIZE") / 1024 ** 3
+    except Exception:
+        # ru_maxrss is a peak value on Linux and current resident size on some
+        # Unix platforms, so this fallback is only used when /proc is absent.
+        return float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024 ** 2
+
+
+def _begin_next_import_transaction(
+    atlas: "Atlas",
+    conn: DuckDBPyConnection,
+    *,
+    processed_windows: int,
+    reconnect_state: dict[str, float | int],
+) -> DuckDBPyConnection:
+    """Begin the next import transaction, reconnecting when RSS has grown.
+
+    Long h5ad imports can accumulate native memory inside the DuckDB connection
+    even when ``duckdb_memory()`` stays within the configured limit. Closing and
+    reopening the connection releases that connection-local state. We trigger
+    it by the RSS increase since the last reconnect, with a large window-count
+    fallback so long imports cannot drift indefinitely.
+    """
+
+    current_rss_gb = _get_process_rss_gb()
+    baseline_rss_gb = float(reconnect_state["last_reconnect_rss_gb"])
+    last_window = int(reconnect_state["last_reconnect_window"])
+    windows_since_reconnect = processed_windows - last_window
+    rss_delta_gb = current_rss_gb - baseline_rss_gb
+
+    reconnect_reason = None
+    if rss_delta_gb >= _IMPORT_RECONNECT_RSS_DELTA_GB:
+        reconnect_reason = f"rss_delta={rss_delta_gb:.2f}GB"
+    elif windows_since_reconnect >= _IMPORT_RECONNECT_MAX_WINDOWS:
+        reconnect_reason = f"windows_since_reconnect={windows_since_reconnect:,}"
+
+    if reconnect_reason is None:
+        conn.execute("BEGIN TRANSACTION")
+        return conn
+
+    t0 = time.time()
+    atlas.close()
+    conn = atlas.connect("r+")
+    reconnect_state["last_reconnect_rss_gb"] = _get_process_rss_gb()
+    reconnect_state["last_reconnect_window"] = processed_windows
+    conn.execute("BEGIN TRANSACTION")
+    logger.info(
+        f"[import reconnect] "
+        f"processed_windows={processed_windows:,}, "
+        f"reason={reconnect_reason}, "
+        f"time={time.time() - t0:.2f}s"
+    )
+    return conn
 
 
 def _convert_obs_categories_to_object_inplace(adata: AnnData) -> AnnData:
@@ -314,7 +378,7 @@ def load_h5ad(
     *,
     load_type: Literal["order", "random"] = "random",
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 0.8,
+    import_window_memory_factor: float = 0.75,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ) -> None:
@@ -741,7 +805,7 @@ def _load_h5ad_list_random(
     atlas: Atlas,
     cells_per_block: int | None = None,
     *,
-    import_window_memory_factor: float = 0.8,
+    import_window_memory_factor: float = 0.75,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
     shuffle_blocks: bool = True,
@@ -1216,7 +1280,7 @@ def _load_h5ad_list_order(
     h5ad_paths: PathLike[str] | str | list[PathLike[str] | str],
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 0.8,
+    import_window_memory_factor: float = 0.75,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -1304,7 +1368,7 @@ def _load_h5ad_random(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 0.8,
+    import_window_memory_factor: float = 0.75,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -1442,6 +1506,10 @@ def _load_h5ad_random(
     new_batches = 0
     window_counter = 0
     window_fill_start = time.time()
+    reconnect_state = {
+        "last_reconnect_rss_gb": _get_process_rss_gb(),
+        "last_reconnect_window": 0,
+    }
 
     conn.execute("BEGIN TRANSACTION")
 
@@ -1544,7 +1612,12 @@ def _load_h5ad_random(
                 new_batches = 0
 
                 conn.execute("COMMIT")
-                conn.execute("BEGIN TRANSACTION")
+                conn = _begin_next_import_transaction(
+                    atlas,
+                    conn,
+                    processed_windows=window_counter,
+                    reconnect_state=reconnect_state,
+                )
                 logger.info(f"[COMMIT] processed_windows={window_counter:,}")
 
         if new_adatas or carry_adata is not None:
@@ -1617,7 +1690,7 @@ def _load_h5ad_order(
     h5ad_path: PathLike[str] | str,
     atlas: Atlas,
     cells_per_block: int | None = None,
-    import_window_memory_factor: float = 0.8,
+    import_window_memory_factor: float = 0.75,
     cell_name_col: str | None = None,
     gene_name_col: str | None = None,
 ):
@@ -1980,6 +2053,13 @@ def _write_rolling_shuffle_window_to_duckdb(
 
     carry_cells = 0 if next_carry is None else next_carry.n_obs
 
+    # Drop window-local references before the caller starts filling the next
+    # window. On atlas-scale imports this avoids keeping the mixed window alive
+    # longer than necessary while only the smaller rolling carry is needed.
+    del parts
+    del adata_window
+    del write_adata
+
     return {
         "global_cell_id": global_cell_id,
         "global_indptr_id": global_indptr_id,
@@ -2247,7 +2327,7 @@ def _estimate_window_cells_and_blocks_per_pool(
     memory_limit: str | int | None,
     cells_per_block: int,
     estimated_bytes_per_cell: float,
-    import_window_memory_factor: float = 0.8,  #
+    import_window_memory_factor: float = 0.75,  #
     default_blocks_per_pool: int = 20,  #
     min_blocks_per_pool: int = 5,       #
     max_blocks_per_pool: int = 500,     #
@@ -2884,6 +2964,9 @@ def _append_obs_rows(
 
     conn.execute("INSERT INTO obs SELECT * FROM obs_df")
 
+    del obs_df
+    del cell_names
+
     return start_cell_id + n
 
 
@@ -2949,6 +3032,9 @@ def _append_var(
     ]
 
     conn.execute("INSERT INTO var SELECT * FROM var_df")
+
+    del var_df
+    del gene_names
 
 
 # Import the X_HyS table
@@ -3045,6 +3131,8 @@ def _append_x_hys(
     t_indptr_insert = time.time() - t_indptr_insert0
 
     global_indptr_id += len(adj_indptr)
+    del indptr_table
+    del adj_indptr
 
     # ================= data_count =================
     nnz = len(data_count)
@@ -3109,6 +3197,8 @@ def _append_x_hys(
 
         global_data_id += nnz
         global_indptr_offset += nnz
+        del data_table
+        del cell_index
 
     logger.info(
         f"[append hys] cells={adata.n_obs:,}, "
@@ -3121,6 +3211,13 @@ def _append_x_hys(
         f"data_insert={t_data_insert:.2f}s, "
         f"total={time.time() - t_total0:.2f}s"
     )
+
+    pa.default_memory_pool().release_unused()
+    del X
+    del indptr
+    del indices
+    del data_count
+    del row_nnz
 
     return global_indptr_id, global_indptr_offset, global_data_id
 

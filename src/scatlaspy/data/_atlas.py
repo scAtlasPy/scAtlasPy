@@ -1567,7 +1567,7 @@ class Atlas:
         *,
         load_type: Literal["order", "random"] = "random",
         cells_per_block: int | None = None,
-        import_window_memory_factor: float = 0.8,
+        import_window_memory_factor: float = 0.75,
         cell_name_col: str | None = None,
         gene_name_col: str | None = None,
     ) -> Any:
