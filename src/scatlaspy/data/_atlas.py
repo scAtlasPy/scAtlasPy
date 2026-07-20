@@ -154,7 +154,7 @@ def duckdb_memory_limit(memory_limit: str | int):
             old_limit = atlas.db_memory_limit
             step_limit = atlas._resolve_step_memory_limit(memory_limit)
             atlas._set_db_memory_limit(step_limit)
-            logger.info(
+            logger.debug(
                 "[duckdb_memory_limit] enter %s: requested=%s previous=%s effective=%s duckdb=%s",
                 func.__name__,
                 memory_limit,
@@ -166,7 +166,7 @@ def duckdb_memory_limit(memory_limit: str | int):
                 return func(*args, **kwargs)
             finally:
                 atlas._set_db_memory_limit(old_limit)
-                logger.info(
+                logger.debug(
                     "[duckdb_memory_limit] exit %s: restored=%s duckdb=%s",
                     func.__name__,
                     old_limit,
@@ -350,21 +350,21 @@ class Atlas:
         self.__mode: Literal["r+", "r"] = "r+"
         self.__db_memory_limit = self._resolve_db_memory_limit(db_memory_limit)
 
-        logger.info(f"Initializing Atlas instance, file_name:{self.file_path}")
+        logger.debug(f"Initializing Atlas instance, file_name:{self.file_path}")
 
         if not os.path.exists(self.file_path):
-            logger.info(f"Database file does not exist; creating a new database: {self.file_path}")
+            logger.debug(f"Database file does not exist; creating a new database: {self.file_path}")
             try:
                 self._create()
-                logger.info(f"Database created successfully: {self.file_path}")
+                logger.debug(f"Database created successfully: {self.file_path}")
             except Exception as e:
                 logger.error(f"Database creation failed: {str(e)}")
                 raise
         else:
             self.connect("r+")
-            logger.info(f"Database file already exists: {self.file_path}; connection created")
+            logger.debug(f"Database file already exists: {self.file_path}; connection created")
 
-        logger.info("Atlas instance initialized")
+        logger.debug("Atlas instance initialized")
 
     def __enter__(self) -> "Atlas":
         """Return the Atlas object when used as a context manager.
@@ -647,7 +647,7 @@ class Atlas:
             f"SET memory_limit = '{memory_limit_sql}'"
         )
 
-        logger.info(f"DuckDB db_memory_limit set to: {db_memory_limit}")
+        logger.debug(f"DuckDB db_memory_limit set to: {db_memory_limit}")
 
 
     def _create(self) -> duckdb.DuckDBPyConnection:
@@ -717,7 +717,7 @@ class Atlas:
             atlas.head("obs")
         """
 
-        logger.info(f"Database connection requested, mode: {mode}")
+        logger.debug(f"Database connection requested, mode: {mode}")
 
         if self.__connection is not None: # Close any existing connection first.
             logger.debug("Existing database connection found; closing it first")
@@ -734,7 +734,7 @@ class Atlas:
 
                 # Connect in read-only mode.
                 self.__connection = duckdb.connect(database=self.file_path, read_only=True)
-                logger.info(f"Connected to database in read-only mode: {self.file_path}")
+                logger.debug(f"Connected to database in read-only mode: {self.file_path}")
 
             elif mode == "r+":  # Read-write mode.
                 logger.debug("Read-write connection mode")
@@ -745,9 +745,9 @@ class Atlas:
                 self.__connection = duckdb.connect(database=self.file_path, read_only=False)
 
                 if os.path.exists(self.file_path):
-                    logger.info(f"Connected to existing database in read-write mode: {self.file_path}")
+                    logger.debug(f"Connected to existing database in read-write mode: {self.file_path}")
                 else:
-                    logger.info(f"Created and connected to new database: {self.file_path}")
+                    logger.debug(f"Created and connected to new database: {self.file_path}")
 
             else:
                 logger.error(f"Unsupported connection mode: {mode}")
@@ -783,7 +783,7 @@ class Atlas:
             atlas.close()
         """
 
-        logger.info("Closing database connection")
+        logger.debug("Closing database connection")
         try:
             # Check whether a database connection exists.
             if self.__connection is not None:
@@ -791,7 +791,7 @@ class Atlas:
                 self.__connection.close()
                 # Clear the connection object to avoid closing it twice.
                 self.__connection = None
-                logger.info("Database connection closed")
+                logger.debug("Database connection closed")
             else:
                 logger.debug("No active database connection to close")
 
@@ -904,7 +904,7 @@ class Atlas:
             )
         """
 
-        logger.info("Querying database; return type is pandas")
+        logger.debug("Querying database; return type is pandas")
 
         if self.__connection is None:
             self.connect("r+")
@@ -936,7 +936,7 @@ class Atlas:
             n_cells = result.fetchone()[0]
         """
 
-        logger.info("Querying database; return type is DuckDB")
+        logger.debug("Querying database; return type is DuckDB")
 
         if self.__connection is None:
             self.connect("r+")
@@ -1503,7 +1503,7 @@ class Atlas:
 
                 # Stop if max_batches has been reached
                 if max_batches is not None and produced_batches >= max_batches:
-                    logger.info(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
+                    logger.debug(f"[get_minibatch_dense] reach max_batches={max_batches}, stop")
                     break
 
                 # Number of batches still needed in the current pass
@@ -1512,7 +1512,7 @@ class Atlas:
                 else:
                     remain_batches = max_batches - produced_batches
 
-                logger.info(
+                logger.debug(
                     f"[get_minibatch_dense] multi-pass start pass={pass_id + 1}, "
                     f"produced={produced_batches}, "
                     f"remain={remain_batches}"

@@ -497,13 +497,13 @@ class MultiThreadedMinibatchFetcher:
         the original 0 positions in the sparse matrix should be filled with 0.0.
         """
 
-        logger.info(
+        logger.debug(
             f"[Minibatch] index_data = {self.index_data!r}; "
         )
 
         # zero_scale_transform only needs to be read for data_scale
         if self.index_data != "data_scale":
-            logger.info(
+            logger.debug(
                 f"[Minibatch] read index use_data={self.index_data!r}; "
                 "use 0.0 as dense fill value."
             )
@@ -516,7 +516,7 @@ class MultiThreadedMinibatchFetcher:
             var_columns = conn.execute("PRAGMA table_info('var')").fetchdf()["name"].tolist()
 
             if "zero_scale_transform" not in var_columns:
-                logger.info(
+                logger.debug(
                     "[Minibatch] read index use_data='data_scale', "
                     "but var.zero_scale_transform not found; "
                     "use 0.0 as dense fill value."
@@ -1279,7 +1279,7 @@ class MultiThreadedMinibatchFetcher:
         avg_cell_speed = self.output_cells / elapsed if elapsed > 0 else 0.0
 
         if self.total_batches % self.speed_log_every == 0:
-            logger.info(
+            logger.debug(
                 f"[Speed] output_batches={self.total_batches}, "
                 f"[ current={current_batch_speed:.2f} batch/s, "
                 f"{current_cell_speed:.0f} cells/s, ]"
@@ -1290,7 +1290,7 @@ class MultiThreadedMinibatchFetcher:
         self.output_last_time = now
 
         if self._output_limit_reached():
-            logger.info(f"[Consumer] reach max_batches={self.max_batches}, stop")
+            logger.debug(f"[Consumer] reach max_batches={self.max_batches}, stop")
             self.stop_event.set()
 
         return True

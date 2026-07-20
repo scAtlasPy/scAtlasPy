@@ -286,7 +286,7 @@ def _fit_torch_student(
             seen += batch_n
 
         if verbose:
-            logger.info(
+            logger.debug(
                 f"[TorchUMAP] epoch {epoch + 1}/{int(epochs)}, "
                 f"loss={epoch_loss / max(seen, 1):.6f}"
             )
@@ -386,7 +386,6 @@ def umap(
         purpose="the teacher-student UMAP backend",
     )
     torch_device = _resolve_torch_device(device, torch)
-    logger.info(f"[TorchUMAP] resolved PyTorch device = {torch_device}")
 
     pc_cols = _get_pca_columns(atlas, n_pcs=n_pcs, input_table="obsm_X_pca")
     pc_cols_sql = ", ".join(pc_cols)
@@ -395,15 +394,19 @@ def umap(
     sample_n = min(int(fit_sample_n), int(total_n))
     seed = 0 if random_state is None else int(random_state)
 
-    logger.info("[TorchUMAP] input_table = obsm_X_pca")
-    logger.info(f"[TorchUMAP] output_table = {add_table}")
-    logger.info(f"[TorchUMAP] total cells = {total_n:,}")
-    logger.info(f"[TorchUMAP] fit_sample_n = {sample_n:,}")
-    logger.info(f"[TorchUMAP] n_pcs = {len(pc_cols)}")
-    logger.info(f"[TorchUMAP] transform_batch_size = {transform_batch_size:,}")
-    logger.info(f"[TorchUMAP] torch_batch_size = {torch_batch_size:,}")
-    logger.info(f"[TorchUMAP] torch_epochs = {torch_epochs}")
-    logger.info(f"[TorchUMAP] requested device = {device}")
+    logger.info(
+        f"[TorchUMAP] cells={total_n:,}, fit_sample_n={sample_n:,}, "
+        f"n_pcs={len(pc_cols)}, device={torch_device}"
+    )
+    logger.debug("[TorchUMAP] input_table = obsm_X_pca")
+    logger.debug(f"[TorchUMAP] output_table = {add_table}")
+    logger.debug(f"[TorchUMAP] total cells = {total_n:,}")
+    logger.debug(f"[TorchUMAP] fit_sample_n = {sample_n:,}")
+    logger.debug(f"[TorchUMAP] n_pcs = {len(pc_cols)}")
+    logger.debug(f"[TorchUMAP] transform_batch_size = {transform_batch_size:,}")
+    logger.debug(f"[TorchUMAP] torch_batch_size = {torch_batch_size:,}")
+    logger.debug(f"[TorchUMAP] torch_epochs = {torch_epochs}")
+    logger.debug(f"[TorchUMAP] requested device = {device}")
 
     fit_df = conn.execute(f"""
         SELECT atlas_cell_id, {pc_cols_sql}
@@ -626,7 +629,7 @@ def umap(
         written_n += len(batch_df)
         last_cell_id = int(batch_df["atlas_cell_id"].iloc[-1])
 
-        logger.info(f"[TorchUMAP] predicted {written_n:,}/{total_n:,}")
+        logger.debug(f"[TorchUMAP] predicted {written_n:,}/{total_n:,}")
 
     logger.info(
         f"TorchUMAP Done, elapsed time: {(datetime.now() - start).total_seconds():.2f} seconds"

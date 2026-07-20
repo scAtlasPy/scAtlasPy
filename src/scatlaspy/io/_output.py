@@ -455,7 +455,7 @@ def get_obs_df(
         columns=columns,
     )
 
-    logger.info(f" get_obs_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+    logger.debug(f"get_obs_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df
 
@@ -512,7 +512,7 @@ def get_var_df(
         columns=columns,
     )
 
-    logger.info(f" get_var_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+    logger.debug(f"get_var_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df
 
@@ -652,7 +652,7 @@ def get_obsm_df(
         finally:
             conn.unregister("_selected_obsm_cells")
 
-    logger.info(f" get_obsm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+    logger.debug(f"get_obsm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df.set_index("atlas_cell_id", drop=True)
 
@@ -791,7 +791,7 @@ def get_varm_df(
         finally:
             conn.unregister("_selected_varm_genes")
 
-    logger.info(f" get_varm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+    logger.debug(f"get_varm_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df.set_index("atlas_gene_id", drop=True)
 
@@ -885,7 +885,7 @@ def get_uns_df(
         FROM {table_sql}
     """).df()
 
-    logger.info(f" get_uns_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
+    logger.debug(f"get_uns_df Done, elapsed time: {(datetime.now() - start_time).total_seconds():.2f} seconds")
 
     return df
 
@@ -1207,9 +1207,7 @@ def get_anndata(
     # 8. Clean up temporary table
     conn.execute("DROP TABLE IF EXISTS _selected_cells")
 
-    logger.info(" AnnData export completed")
-    logger.info(f"  - cells: {adata.n_obs:,}")
-    logger.info(f"  - genes: {adata.n_vars:,}")
+    logger.info(f"AnnData export completed: cells={adata.n_obs:,}, genes={adata.n_vars:,}")
 
     return adata
 

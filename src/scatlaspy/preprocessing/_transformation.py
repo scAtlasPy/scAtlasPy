@@ -242,7 +242,7 @@ def normalize_total(
     """).fetchone()
 
     if min_cell is None or max_cell is None:
-        logger.info("X_HyS_data is empty; normalize_total wrote an empty table")
+        logger.warning("X_HyS_data is empty; normalize_total wrote an empty table")
         return
 
     n_chunks = math.ceil((max_cell - min_cell + 1) / chunk_cells)
@@ -285,7 +285,7 @@ def normalize_total(
         """)
 
     n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
-    logger.info(f"normalize_total table {result_table} written, rows={n_rows:,}")
+    logger.debug(f"normalize_total table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(
@@ -590,7 +590,7 @@ def log1p(
     """)
 
     n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
-    logger.info(f"log1p table {result_table} written, rows={n_rows:,}")
+    logger.debug(f"log1p table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(
@@ -1423,19 +1423,19 @@ def _highly_variable_genes_seurat(
     has_var_filter = var_filter_col in var_cols
 
     if use_filtered:
-        logger.info("[INFO] use_filtered=True")
+        logger.debug("[rank_genes_groups] use_filtered=True")
 
         if has_obs_filter:
-            logger.info(f"[INFO] Using cells where obs.{obs_filter_col}=TRUE")
+            logger.debug(f"[rank_genes_groups] using cells where obs.{obs_filter_col}=TRUE")
         else:
-            logger.info(f"[WARN] {obs_filter_col} does not exist in obs; all cells will be used")
+            logger.warning(f"{obs_filter_col} does not exist in obs; all cells will be used")
 
         if has_var_filter:
-            logger.info(f"[INFO] Using genes where var.{var_filter_col}=TRUE")
+            logger.debug(f"[rank_genes_groups] using genes where var.{var_filter_col}=TRUE")
         else:
-            logger.info(f"[WARN] {var_filter_col} does not exist in var; all genes will be used")
+            logger.warning(f"{var_filter_col} does not exist in var; all genes will be used")
     else:
-        logger.info("[INFO] use_filtered=False; using all cells / genes")
+        logger.debug("[rank_genes_groups] use_filtered=False; using all cells / genes")
 
     # -------------------------------------------------
     # 4. Build temporary keep tables
@@ -2162,7 +2162,7 @@ def scale(
         WHERE {source_value} IS NOT NULL
     """)
     n_scaled_rows = conn.execute(f"SELECT COUNT(*) FROM {scale_table}").fetchone()[0]
-    logger.info(
+    logger.debug(
         f"scale table {scale_table} written, rows={n_scaled_rows:,}, "
         f"elapsed time: {(datetime.now() - t0).total_seconds():.2f} seconds"
     )
@@ -2285,7 +2285,7 @@ def sqrt(
     """)
 
     n_rows = conn.execute(f"SELECT COUNT(*) FROM {result_table}").fetchone()[0]
-    logger.info(f"sqrt table {result_table} written, rows={n_rows:,}")
+    logger.debug(f"sqrt table {result_table} written, rows={n_rows:,}")
 
     # Memory cleanup
     _cleanup_transform_after_step(

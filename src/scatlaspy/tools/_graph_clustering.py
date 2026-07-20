@@ -216,7 +216,7 @@ def _fit_torch_classifier(
 
         if verbose:
             mean_loss = total_loss / max(seen, 1)
-            logger.info(f"[DistilledLouvain] epoch {epoch + 1}/{epochs}, loss={mean_loss:.4f}")
+            logger.debug(f"[DistilledLouvain] epoch {epoch + 1}/{epochs}, loss={mean_loss:.4f}")
 
     metrics: dict[str, float] = {
         "validation_n": float(validation_n),
@@ -339,14 +339,18 @@ def graph_clustering(
     total_n = conn.execute(f"SELECT COUNT(*) FROM {_q(input_table)}").fetchone()[0]
     sample_n = min(int(fit_sample_n), int(total_n))
 
-    logger.info("[DistilledLouvain] mode = distilled_louvain")
-    logger.info(f"[DistilledLouvain] input_table = {input_table}")
-    logger.info(f"[DistilledLouvain] total cells = {total_n:,}")
-    logger.info(f"[DistilledLouvain] fit_sample_n = {sample_n:,}")
-    logger.info(f"[DistilledLouvain] n_pcs = {len(pc_cols)}")
-    logger.info(f"[DistilledLouvain] n_neighbors = {n_neighbors}")
-    logger.info(f"[DistilledLouvain] resolution = {resolution}")
-    logger.info(f"[DistilledLouvain] resolved PyTorch device = {torch_device}")
+    logger.info(
+        f"[DistilledLouvain] cells={total_n:,}, fit_sample_n={sample_n:,}, "
+        f"n_pcs={len(pc_cols)}, resolution={resolution}, device={torch_device}"
+    )
+    logger.debug("[DistilledLouvain] mode = distilled_louvain")
+    logger.debug(f"[DistilledLouvain] input_table = {input_table}")
+    logger.debug(f"[DistilledLouvain] total cells = {total_n:,}")
+    logger.debug(f"[DistilledLouvain] fit_sample_n = {sample_n:,}")
+    logger.debug(f"[DistilledLouvain] n_pcs = {len(pc_cols)}")
+    logger.debug(f"[DistilledLouvain] n_neighbors = {n_neighbors}")
+    logger.debug(f"[DistilledLouvain] resolution = {resolution}")
+    logger.debug(f"[DistilledLouvain] resolved PyTorch device = {torch_device}")
 
     fit_df = conn.execute(f"""
         SELECT atlas_cell_id, {pc_cols_sql}
@@ -521,7 +525,7 @@ def graph_clustering(
 
         written_n += len(batch_df)
         last_cell_id = int(batch_df["atlas_cell_id"].iloc[-1])
-        logger.info(f"[DistilledLouvain] predicted {written_n:,}/{total_n:,}")
+        logger.debug(f"[DistilledLouvain] predicted {written_n:,}/{total_n:,}")
 
     elapsed_sec = (datetime.now() - start).total_seconds()
     logger.info(f"[DistilledLouvain] done, elapsed time = {elapsed_sec:.2f} seconds")

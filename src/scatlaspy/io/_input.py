@@ -500,7 +500,7 @@ def load_h5ad(
     # =====================================================
     if isinstance(h5ad_path, (list, tuple)):
         if load_type == "order":
-            logger.info("[INFO] load_type = order, multi-file ordered import")
+            logger.info("load_type = order, multi-file ordered import")
             _load_h5ad_list_order(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
@@ -510,7 +510,7 @@ def load_h5ad(
                 gene_name_col=gene_name_col,
             )
         else:
-            logger.info("[INFO] load_type = random, multi-file random import")
+            logger.info("load_type = random, multi-file random import")
             _load_h5ad_list_random(
                 h5ad_paths=h5ad_path,
                 atlas=atlas,
@@ -540,7 +540,7 @@ def load_h5ad(
         # order: ordered import
         # =====================================================
         if load_type == "order":
-            logger.info("[INFO] load_type = order")
+            logger.info("load_type = order")
             _load_h5ad_order(
                 h5ad_path=h5ad_path,
                 atlas=atlas,
@@ -553,7 +553,7 @@ def load_h5ad(
             # =====================================================
             # random: regular random import
             # =====================================================
-            logger.info("[INFO] load_type = random")
+            logger.info("load_type = random")
             _load_h5ad_random(
                 h5ad_path=h5ad_path,
                 atlas=atlas,
@@ -901,8 +901,7 @@ def _load_h5ad_list_random(
     global_data_id = 0
     var_written = False
 
-    logger.info(f"[INFO] number of files: {file_num:,}")
-    logger.info("[INFO] The expression matrix is uniformly written as count")
+    logger.info(f"Importing {file_num:,} h5ad files; expression values are stored as counts")
 
     file_states = []
 
@@ -922,7 +921,7 @@ def _load_h5ad_list_random(
             n_cells = adata_backed.n_obs
             n_genes = adata_backed.n_vars
 
-            logger.info(f"[INFO] current file dimensions: {n_cells:,} x {n_genes:,}")
+            logger.debug(f"[load_h5ad] file {file_idx + 1} dimensions: {n_cells:,} x {n_genes:,}")
 
             # Detect X scale and estimate memory usage separately for each file
             x_info = _inspect_x_from_backed(
@@ -935,12 +934,12 @@ def _load_h5ad_list_random(
                 float(x_info["estimated_bytes_per_cell"]),
             )
 
-            logger.info(f"[INFO] current file X detected as: {source_x_scale}")
+            logger.debug(f"[load_h5ad] file {file_idx + 1} X detected as: {source_x_scale}")
 
             if source_x_scale == "count":
-                logger.info("[INFO] Current file X is already count; writing directly.")
+                logger.debug("[load_h5ad] current file X is already count; writing directly")
             else:
-                logger.info("[INFO] Current file X will be converted to count after reading each block")
+                logger.debug("[load_h5ad] current file X will be converted to count after reading each block")
 
             # ---------------- Check gene number and order ----------------
             cur_var_names = adata_backed.var.index.astype(str).to_numpy()
@@ -1460,13 +1459,15 @@ def _load_h5ad_random(
         import_window_memory_factor=import_window_memory_factor,
     )
 
-    logger.info(f"[INFO] X in the file detected as: {source_x_scale}")
-    logger.info("[INFO] The expression matrix is uniformly written as count")
+    logger.info(
+        f"Importing h5ad: cells={adata_backed.n_obs:,}, genes={adata_backed.n_vars:,}, "
+        f"input_X={source_x_scale}, stored_X=count"
+    )
 
     if source_x_scale == "count":
-        logger.info("[INFO] X data is already count; writing directly.")
+        logger.debug("[load_h5ad] X data is already count; writing directly")
     else:
-        logger.info("[INFO] X data will be converted to count before writing")
+        logger.debug("[load_h5ad] X data will be converted to count before writing")
 
     block_starts = np.arange(0, n_cells, cells_per_block, dtype=np.int64)
     last_block_start = int(block_starts[-1])
@@ -1476,7 +1477,7 @@ def _load_h5ad_random(
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
+    logger.debug(f"[load_h5ad] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
     # Rolling shuffle state: keep half of each shuffled window as carry, mix it
     # with newly read cells in the next round, and write the other half.
@@ -1501,13 +1502,13 @@ def _load_h5ad_random(
         carry_target_cells=carry_target_cells,
     )
 
-    logger.info("[INFO] rolling random import parameters:")
-    logger.info(f"  - window_cells = {window_cells:,}")
-    logger.info(f"  - carry_target_cells = {carry_target_cells:,}")
-    logger.info(f"  - write_target_cells = {write_target_cells:,}")
-    logger.info(f"  - cold_block_count = {len(cold_prefix_end_by_start):,}")
-    logger.info(f"  - cold_base_cells = {cold_base_cells:,}")
-    logger.info(f"  - cold_extra_cells = {cold_extra_cells:,}")
+    logger.debug("[load_h5ad] rolling random import parameters:")
+    logger.debug(f"  - window_cells = {window_cells:,}")
+    logger.debug(f"  - carry_target_cells = {carry_target_cells:,}")
+    logger.debug(f"  - write_target_cells = {write_target_cells:,}")
+    logger.debug(f"  - cold_block_count = {len(cold_prefix_end_by_start):,}")
+    logger.debug(f"  - cold_base_cells = {cold_base_cells:,}")
+    logger.debug(f"  - cold_extra_cells = {cold_extra_cells:,}")
 
     carry_adata = None
     new_adatas = []
@@ -1541,8 +1542,8 @@ def _load_h5ad_random(
             for x in cold_blocks:
                 del x
             cold_blocks.clear()
-            logger.info(
-                f"[INFO] cold start carry cells = {carry_adata.n_obs:,}, "
+            logger.debug(
+                f"[load_h5ad] cold start carry cells = {carry_adata.n_obs:,}, "
                 f"read={time.time() - cold_read_start:.2f}s"
             )
 
@@ -1602,7 +1603,7 @@ def _load_h5ad_random(
 
                 t_write = time.time() - t1
                 window_counter += 1
-                logger.info(
+                logger.debug(
                     f"[rolling window append] [{window_counter:,}/{total_windows:,}], "
                     f"new_batches={new_batches:,}, "
                     f"mixed_cells={mixed_cells:,}, "
@@ -1627,7 +1628,7 @@ def _load_h5ad_random(
                     processed_windows=window_counter,
                     reconnect_state=reconnect_state,
                 )
-                logger.info(f"[COMMIT] processed_windows={window_counter:,}")
+                logger.debug(f"[COMMIT] processed_windows={window_counter:,}")
 
         if new_adatas or carry_adata is not None:
             window_fill_time = time.time() - window_fill_start
@@ -1656,7 +1657,7 @@ def _load_h5ad_random(
 
             t_write = time.time() - t1
             window_counter += 1
-            logger.info(
+            logger.debug(
                 f"[rolling final append] [{window_counter:,}/{total_windows:,}], "
                 f"new_batches={new_batches:,}, "
                 f"cells={written_cells:,}, "
@@ -1784,19 +1785,21 @@ def _load_h5ad_order(
     # In order mode, window_cells is the mega-batch size
     mega_batch_size = estimated_window_cells
 
-    logger.info(f"[INFO] X in the file detected as: {source_x_scale}")
-    logger.info("[INFO] The expression matrix is uniformly written as count")
+    logger.info(
+        f"Importing h5ad in order: cells={adata_backed.n_obs:,}, genes={adata_backed.n_vars:,}, "
+        f"input_X={source_x_scale}, stored_X=count"
+    )
 
     if source_x_scale == "count":
-        logger.info("[INFO] X data is already count; writing directly.")
+        logger.debug("[load_h5ad] X data is already count; writing directly")
     else:
-        logger.info("[INFO] X data will be converted to count after the mega-batch is read")
+        logger.debug("[load_h5ad] X data will be converted to count after the mega-batch is read")
 
     _create_obs_table_from_adata(conn, adata_backed[:1])
     _create_var_table_from_adata(conn, adata_backed[:1])
     _create_hys_tables(conn)
 
-    logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
+    logger.debug(f"[load_h5ad] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
     total_windows = math.ceil(n_cells / mega_batch_size)
     reconnect_state = {
@@ -1866,7 +1869,7 @@ def _load_h5ad_order(
             )
 
             t_write = time.time() - t1
-            logger.info(
+            logger.debug(
                 f"[order window append] [{window_i:,}/{total_windows:,}], "
                 f"cells={mega.n_obs:,}, "
                 f"nnz={mega_nnz:,}, "
@@ -1921,7 +1924,7 @@ def _concat_and_shuffle_adatas(adatas: list[AnnData]) -> AnnData:
         index_unique=None,
     )
     t_concat = time.time() - t_concat0
-    logger.info(
+    logger.debug(
         f"[rolling window concat] cells={adata_window.n_obs:,}, "
         f"vars={adata_window.n_vars:,}, "
         f"category={t_category:.2f}s, "
@@ -1933,7 +1936,7 @@ def _concat_and_shuffle_adatas(adatas: list[AnnData]) -> AnnData:
         perm = np.random.permutation(adata_window.n_obs)
         adata_window = adata_window[perm]
     t_shuffle = time.time() - t_shuffle0
-    logger.info(
+    logger.debug(
         f"[rolling window shuffle] cells={adata_window.n_obs:,}, "
         f"shuffle={t_shuffle:.2f}s"
     )
@@ -1968,7 +1971,7 @@ def _write_prepared_adata_to_duckdb(
         cell_name_col=cell_name_col,
     )
     t_obs = time.time() - t_obs0
-    logger.info(
+    logger.debug(
         f"[window obs append] cells={adata_window.n_obs:,}, "
         f"obs_append={t_obs:.2f}s"
     )
@@ -1977,7 +1980,7 @@ def _write_prepared_adata_to_duckdb(
         t_var0 = time.time()
         _append_var(adata_window, conn, gene_name_col=gene_name_col)
         t_var = time.time() - t_var0
-        logger.info(
+        logger.debug(
             f"[window var append] vars={adata_window.n_vars:,}, "
             f"var_append={t_var:.2f}s"
         )
@@ -1997,7 +2000,7 @@ def _write_prepared_adata_to_duckdb(
         global_data_id=global_data_id,
     )
     t_x_hys = time.time() - t_x_hys0
-    logger.info(
+    logger.debug(
         f"[window x_hys append] cells={adata_window.n_obs:,}, "
         f"nnz={window_nnz:,}, "
         f"x_hys_append={t_x_hys:.2f}s"
@@ -2314,15 +2317,15 @@ def _inspect_x_from_backed(
     # Add the empirical overhead factor for temporary objects during import.
     estimated_bytes_per_cell = max(1.0, x_bytes_per_cell * overhead_factor)
 
-    logger.info("[INFO] X scale / memory precheck results:")
-    logger.info(f"  - sample_cells = {n:,}")
-    logger.info(f"  - nonzero_n    = {values.size:,}")
-    logger.info(f"  - max          = {vmax:.4f}")
-    logger.info(f"  - q95          = {q95:.4f}")
-    logger.info(f"  - frac <= 10   = {frac_le_10:.4f}")
-    logger.info(f"  - x_scale      = {x_scale}")
-    logger.info(f"  - x_bytes_per_cell = {x_bytes_per_cell:.2f}")
-    logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
+    logger.debug("[load_h5ad] X scale / memory precheck results:")
+    logger.debug(f"  - sample_cells = {n:,}")
+    logger.debug(f"  - nonzero_n    = {values.size:,}")
+    logger.debug(f"  - max          = {vmax:.4f}")
+    logger.debug(f"  - q95          = {q95:.4f}")
+    logger.debug(f"  - frac <= 10   = {frac_le_10:.4f}")
+    logger.debug(f"  - x_scale      = {x_scale}")
+    logger.debug(f"  - x_bytes_per_cell = {x_bytes_per_cell:.2f}")
+    logger.debug(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
 
     del adata_sample
     gc.collect()
@@ -2481,14 +2484,14 @@ def _estimate_window_cells_and_blocks_per_pool(
     # Realign window_cells to ensure it is exactly equal to cells_per_block * blocks_per_pool.
     window_cells = cells_per_block * blocks_per_pool
 
-    logger.info("[INFO] Automatically estimated h5ad import window parameters:")
-    logger.info(f"  - memory_limit = {memory_limit}")
-    logger.info(f"  - memory_limit_bytes = {memory_limit_bytes:,}")
-    logger.info(f"  - import_window_memory_factor = {import_window_memory_factor}")
-    logger.info(f"  - cells_per_block = {cells_per_block:,}")
-    logger.info(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
-    logger.info(f"  - window_cells = {window_cells:,}")
-    logger.info(f"  - blocks_per_pool = {blocks_per_pool:,}")
+    logger.debug("[load_h5ad] automatically estimated import window parameters:")
+    logger.debug(f"  - memory_limit = {memory_limit}")
+    logger.debug(f"  - memory_limit_bytes = {memory_limit_bytes:,}")
+    logger.debug(f"  - import_window_memory_factor = {import_window_memory_factor}")
+    logger.debug(f"  - cells_per_block = {cells_per_block:,}")
+    logger.debug(f"  - estimated_bytes_per_cell = {estimated_bytes_per_cell:.2f}")
+    logger.debug(f"  - window_cells = {window_cells:,}")
+    logger.debug(f"  - blocks_per_pool = {blocks_per_pool:,}")
 
     return window_cells, blocks_per_pool
 
@@ -2560,7 +2563,7 @@ def _normalize_cells_per_block(cells_per_block: int | None, n_cells: int) -> int
         cells_per_block = max(512, min(cells_per_block, 2048))
 
     cells_per_block = int(cells_per_block)
-    logger.info(f"cells_per_block = {cells_per_block}")
+    logger.debug(f"cells_per_block = {cells_per_block}")
     return cells_per_block
 
 # Convert AnnData.X or a matrix to count scale; during import, write uniformly as count, with log conversion base e.
@@ -2665,14 +2668,14 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
 
     with h5py.File(h5ad_path, "r") as f:
         if "X" not in f:
-            logger.info("[INFO] h5ad.X format = None (the file does not contain X)")
+            logger.debug("[load_h5ad] h5ad.X format = None (the file does not contain X)")
             return None
 
         X = f["X"]
 
         # dense matrix
         if isinstance(X, h5py.Dataset):
-            logger.info("[INFO] h5ad.X format = dense")
+            logger.debug("[load_h5ad] h5ad.X format = dense")
             return "dense"
 
         # sparse matrix group
@@ -2683,22 +2686,22 @@ def _print_h5ad_x_format(h5ad_path: PathLike[str] | str):
                 encoding_type = encoding_type.decode("utf-8")
 
             if encoding_type == "csr_matrix":
-                logger.info("[INFO] h5ad.X format = CSR")
+                logger.debug("[load_h5ad] h5ad.X format = CSR")
                 return "csr"
 
             elif encoding_type == "csc_matrix":
-                logger.info("[INFO] h5ad.X format = CSC")
+                logger.debug("[load_h5ad] h5ad.X format = CSC")
                 return "csc"
 
             elif encoding_type == "coo_matrix":
-                logger.info("[INFO] h5ad.X format = COO")
+                logger.debug("[load_h5ad] h5ad.X format = COO")
                 return "coo"
 
             else:
-                logger.info(f"[INFO] h5ad.X format = unknown ({encoding_type})")
+                logger.debug(f"[load_h5ad] h5ad.X format = unknown ({encoding_type})")
                 return encoding_type
 
-        logger.info("[INFO] h5ad.X format = unknown")
+        logger.debug("[load_h5ad] h5ad.X format = unknown")
         return "unknown"
 
 
@@ -3218,7 +3221,7 @@ def _append_x_hys(
         del data_table
         del cell_index
 
-    logger.info(
+    logger.debug(
         f"[append hys] cells={adata.n_obs:,}, "
         f"nnz={nnz:,}, "
         f"csr={t_csr:.2f}s, "
@@ -3272,13 +3275,13 @@ def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_
     """
     h5ad_path = os.fspath(h5ad_path)
 
-    logger.info("Import obsm")
+    logger.debug("Import obsm")
     conn = atlas.connection
 
     with h5py.File(h5ad_path, "r") as f:
 
         if "obsm" not in f:
-            logger.info("  - obsm does not exist in the h5ad file, skipping")
+            logger.debug("  - obsm does not exist in the h5ad file, skipping")
             return
 
         obsm_grp = f["obsm"]
@@ -3287,7 +3290,7 @@ def _add_obsm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas, cells_per_
             dset = obsm_grp[key]
             n_cells, k = dset.shape
 
-            logger.info(f"  - obsm[{key}] shape={dset.shape}")
+            logger.debug(f"  - obsm[{key}] shape={dset.shape}")
 
             cols = ", ".join([f"dim_{i} DOUBLE" for i in range(k)])
             conn.execute(f"""
@@ -3343,14 +3346,14 @@ def _add_varm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas):
     """
     h5ad_path = os.fspath(h5ad_path)
 
-    logger.info("Import varm")
+    logger.debug("Import varm")
 
     conn = atlas.connection
 
     with h5py.File(h5ad_path, "r") as f:
 
         if "varm" not in f:
-            logger.info("  - varm does not exist in the h5ad file, skipping")
+            logger.debug("  - varm does not exist in the h5ad file, skipping")
             return
 
         varm_grp = f["varm"]
@@ -3359,7 +3362,7 @@ def _add_varm_from_h5ad(h5ad_path: PathLike[str] | str, atlas: Atlas):
             dset = varm_grp[key]
             n_genes, k = dset.shape
 
-            logger.info(f"  - varm[{key}] shape={dset.shape}")
+            logger.debug(f"  - varm[{key}] shape={dset.shape}")
 
             df = pd.DataFrame(
                 dset[:],
@@ -3467,7 +3470,7 @@ def _add_obs(adata:AnnData, atlas:Atlas):
     -----
     After writing, a primary key is added to ``obs.atlas_cell_id``.
     """
-    logger.info("Import obs data")
+    logger.debug("Import obs data")
 
     obs_df = adata.obs.copy()
     obs_df['atlas_cell_name'] = adata.obs.index
@@ -3475,13 +3478,13 @@ def _add_obs(adata:AnnData, atlas:Atlas):
     obs_df['atlas_cell_id'] = range(len(obs_df))  # Add the id column
 
     obs_df = obs_df[['atlas_cell_id', 'atlas_cell_name'] + [col for col in obs_df.columns if col not in ['atlas_cell_id', 'atlas_cell_name']]]  # Directly specify column order
-    logger.info(f"obs table data preparation completed, rows: {len(obs_df)}")
+    logger.debug(f"obs table data preparation completed, rows: {len(obs_df)}")
 
     atlas.connection.register('obs_df', obs_df)
     atlas.connection.execute("CREATE OR REPLACE TABLE obs AS SELECT * FROM obs_df")
     atlas.connection.execute("ALTER TABLE obs ADD PRIMARY KEY (atlas_cell_id)")  # Set the ID field as the primary key to ensure uniqueness
     atlas.connection.unregister('obs_df')
-    logger.info("obs data imported successfully")
+    logger.debug("obs data imported successfully")
 
 
 # Import var
@@ -3509,17 +3512,17 @@ def _add_var(adata:AnnData, atlas:Atlas):
     -----
     After writing, a primary key is added to ``var.atlas_gene_id``.
     """
-    logger.info("Import var data")
+    logger.debug("Import var data")
     var_df = adata.var.reset_index().rename(columns={'index': 'atlas_gene_name'})
     var_df['atlas_gene_id'] = range(len(var_df))
     var_df = var_df[['atlas_gene_id', 'atlas_gene_name'] + [col for col in var_df.columns if col not in ['atlas_gene_id', 'atlas_gene_name']]]  # Directly specify column order
-    logger.info(f"var table data preparation completed, rows: {len(var_df)}")
+    logger.debug(f"var table data preparation completed, rows: {len(var_df)}")
 
     atlas.connection.register('var_df', var_df)
     atlas.connection.execute("CREATE OR REPLACE TABLE var AS SELECT * FROM var_df")
     atlas.connection.execute("ALTER TABLE var ADD PRIMARY KEY (atlas_gene_id)")  # Set the ID field as the primary key to ensure uniqueness
     atlas.connection.unregister('var_df')
-    logger.info("var data imported successfully")
+    logger.debug("var data imported successfully")
 
 
 # Import obsm
@@ -3547,17 +3550,17 @@ def _add_obsm(adata: AnnData, atlas: Atlas):
     -----
     If ``adata.obsm`` is empty, the function logs this and skips it.
     """
-    logger.info("Import obsm ")
+    logger.debug("Import obsm")
 
     conn = atlas.connection
     n_cells = adata.n_obs
 
     if not adata.obsm:
-        logger.info("  - no obsm, skipping")
+        logger.debug("  - no obsm, skipping")
         return
 
     for key, mat in adata.obsm.items():
-        logger.info(f"  - obsm[{key}] shape = {mat.shape}")
+        logger.debug(f"  - obsm[{key}] shape = {mat.shape}")
 
         # Force numpy conversion (avoid pandas sparse pitfalls)
         mat = np.asarray(mat)
@@ -3602,17 +3605,17 @@ def _add_varm(adata: AnnData, atlas: Atlas):
     -----
     If ``adata.varm`` is empty, the function logs this and skips it.
     """
-    logger.info("Import varm (unified schema)")
+    logger.debug("Import varm (unified schema)")
 
     conn = atlas.connection
     n_genes = adata.n_vars
 
     if not adata.varm:
-        logger.info("  - no varm, skipping")
+        logger.debug("  - no varm, skipping")
         return
 
     for key, mat in adata.varm.items():
-        logger.info(f"  - varm[{key}] shape = {mat.shape}")
+        logger.debug(f"  - varm[{key}] shape = {mat.shape}")
 
         mat = np.asarray(mat)
 
@@ -3658,7 +3661,7 @@ def _add_x_hys_chunked(adata: AnnData, atlas: Atlas, chunk_size: int = 500):
     -----
     This function rebuilds the ``X_HyS_indptr`` and ``X_HyS_data`` tables.
     """
-    logger.info("Start importing X_HyS ")
+    logger.debug("Start importing X_HyS")
 
     conn = atlas.connect("r+")
     atlas.connection = conn

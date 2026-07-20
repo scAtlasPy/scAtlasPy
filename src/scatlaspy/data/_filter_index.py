@@ -308,10 +308,10 @@ class FilterIndexBuilder:
         # cell_condition=None means no cell filtering; otherwise filter cells by the specified boolean field
         if self.cell_condition is None:
             where_sql = "TRUE"
-            logger.info("  -> Cell filtering is not used; keeping all cells")
+            logger.debug("  -> Cell filtering is not used; keeping all cells")
         else:
             where_sql = f"{self.cell_condition}=TRUE"
-            logger.info(f"  -> Using cell condition for filtering: {where_sql}")
+            logger.debug(f"  -> Using cell condition for filtering: {where_sql}")
 
         # Renumber only the cells that satisfy the condition
         self.conn.execute(f"""
@@ -375,16 +375,16 @@ class FilterIndexBuilder:
 
         if self.gene_condition is not None:
             conditions.append(f"({self.gene_condition})=TRUE")
-            logger.info(f"  -> Using gene condition: {self.gene_condition}=TRUE")
+            logger.debug(f"  -> Using gene condition: {self.gene_condition}=TRUE")
         else:
-            logger.info("  -> No gene filtering condition is used")
+            logger.debug("  -> No gene filtering condition is used")
 
         # If HVG is enabled, additionally apply highly_variable_genes
         if self.use_hvg:
             conditions.append("highly_variable_genes=TRUE")
-            logger.info("  -> Using the HVG gene subset")
+            logger.debug("  -> Using the HVG gene subset")
         else:
-            logger.info("  -> HVG filtering is not used; keeping all genes")
+            logger.debug("  -> HVG filtering is not used; keeping all genes")
 
         condition = " AND ".join(conditions) if conditions else "TRUE"
 
@@ -478,7 +478,7 @@ class FilterIndexBuilder:
             logger.debug(" Expression source is empty, skipping")
             return
 
-        logger.info(f"  -> Using expression source for {self.use_data}: {count_table}")
+        logger.debug(f"  -> Using expression source for {self.use_data}: {count_table}")
         logger.debug(f"total source rows to scan: {total_rows:,}")
 
         pbar = progress(
@@ -511,7 +511,7 @@ class FilterIndexBuilder:
             FROM X_HyS_data_filtered
         """).fetchone()[0]
 
-        logger.info(f" X_HyS_data_filtered has been constructed successfully! nnz = {final_nnz:,}")
+        logger.info(f"X_HyS_data_filtered constructed, nnz={final_nnz:,}")
 
         # Clean up temporary tables
         conn.execute("DROP TABLE IF EXISTS _obs_keep")

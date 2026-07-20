@@ -352,7 +352,7 @@ class StreamingRandomizedPCA:
                         )
                     effective_projection_dim = min(self.projection_dim, n_features)
                     if effective_projection_dim < self.projection_dim:
-                        logger.info(
+                        logger.debug(
                             "[RandomizedPCA] projection dimension capped by feature count: "
                             f"{self.projection_dim} -> {effective_projection_dim}"
                         )
@@ -382,7 +382,7 @@ class StreamingRandomizedPCA:
                     n_samples += X_batch.shape[0]
 
                 if (batch_id + 1) % 20 == 0:
-                    logger.info(
+                    logger.debug(
                         f"[RandomizedPCA] covariance pass={pass_id + 1}/{self.n_iter + 1}, "
                         f"batches={batch_id + 1}, samples={pass_samples:,}"
                     )
@@ -434,7 +434,7 @@ class StreamingRandomizedPCA:
             T += _matmul_ignore_blas_flags(Z_batch.T, Z_batch)
 
             if (batch_id + 1) % 20 == 0:
-                logger.info(
+                logger.debug(
                     f"[RandomizedPCA] compact covariance batches={batch_id + 1}"
                 )
 

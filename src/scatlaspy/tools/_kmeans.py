@@ -167,7 +167,7 @@ class StreamingKMeans:
 
         self.n_components = len(value_columns)
         self.rep_columns = value_columns
-        logger.info(
+        logger.debug(
             f"[KMeans] use_rep={self.use_rep!r}, table={self.rep_table}, "
             f"dimensions={self.n_components}"
         )
@@ -427,7 +427,7 @@ class StreamingKMeans:
                     pbar.update(1)
 
                     if batch_count % 10 == 0:
-                        logger.info(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
+                        logger.debug(f"[KMeans] partial_fit batch = {batch_count}/{self.fit_batches}")
 
                     if batch_count >= self.fit_batches:
                         break
@@ -536,7 +536,7 @@ class StreamingKMeans:
             predict_batch_count += 1
 
             if predict_batch_count % 20 == 0:
-                logger.info(
+                logger.debug(
                     f"[KMeans] predicted cells = {predicted_cells:,}, "
                     f"batches = {predict_batch_count}"
                 )

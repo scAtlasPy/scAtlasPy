@@ -197,7 +197,7 @@ def umap(
         raise ValueError("color cannot be empty")
 
     if where is not None and str(where).strip() != "":
-        logger.info(f"[UMAP] where = {where}")
+        logger.debug(f"[UMAP] where = {where}")
 
     # Check whether obsm_X_umap exists
     tables = conn.execute("""
@@ -786,7 +786,7 @@ def _plot_umap_features(
         raise ValueError("genes cannot be empty")
 
     if where is not None and str(where).strip() != "":
-        logger.info(f"[UMAP features] where = {where}")
+        logger.debug(f"[UMAP features] where = {where}")
 
     # Check tables and columns
     tables = conn.execute("""
