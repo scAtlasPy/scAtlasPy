@@ -1144,6 +1144,10 @@ def _load_h5ad_list_random(
         # Main loop: read blocks_per_pool blocks each time; in random mode, the block list has already been shuffled
         processed_blocks = 0
         flush_counter = 0
+        reconnect_state = {
+            "last_reconnect_rss_gb": _get_process_rss_gb(),
+            "last_reconnect_window": 0,
+        }
 
         pbar = progress(total=total_blocks, desc="load_h5ad")
 
@@ -1212,7 +1216,12 @@ def _load_h5ad_list_random(
                     gc.collect()
 
                     conn.execute("COMMIT")
-                    conn.execute("BEGIN TRANSACTION")
+                    conn = _begin_next_import_transaction(
+                        atlas,
+                        conn,
+                        processed_windows=flush_counter,
+                        reconnect_state=reconnect_state,
+                    )
 
             pbar.close()
 
@@ -1790,6 +1799,10 @@ def _load_h5ad_order(
     logger.info(f"[INFO] dataset dimensions: {adata_backed.n_obs:,} x {adata_backed.n_vars:,}")
 
     total_windows = math.ceil(n_cells / mega_batch_size)
+    reconnect_state = {
+        "last_reconnect_rss_gb": _get_process_rss_gb(),
+        "last_reconnect_window": 0,
+    }
 
     # Place the transaction outside the main loop
     conn.execute("BEGIN TRANSACTION")
@@ -1862,7 +1875,12 @@ def _load_h5ad_order(
             )
 
             conn.execute("COMMIT")
-            conn.execute("BEGIN TRANSACTION")
+            conn = _begin_next_import_transaction(
+                atlas,
+                conn,
+                processed_windows=window_i,
+                reconnect_state=reconnect_state,
+            )
 
         # Final commit
         conn.execute("COMMIT")
