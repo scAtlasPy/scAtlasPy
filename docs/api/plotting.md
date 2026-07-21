@@ -173,6 +173,8 @@ clustering or integration result is correct.
 
 These functions visualize marker-gene rankings, differential-expression
 statistics, and expression distributions for ranked genes.
+For volcano plots, the scatter point size is estimated from the number of
+plotted genes by default and can be overridden with `point_size`.
 
 The corresponding marker analysis must be completed before these functions are
 used.

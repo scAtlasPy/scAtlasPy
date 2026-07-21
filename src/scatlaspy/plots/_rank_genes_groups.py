@@ -10,6 +10,12 @@ from ..data._expression_source import resolve_expression_source
 from ._utils import DEFAULT_GROUP_PLOT_SAMPLE_N
 
 
+def _default_volcano_point_size(n_points: int) -> float:
+    """Estimate volcano scatter point size from the number of plotted genes."""
+
+    return float(np.clip(900 / np.sqrt(max(int(n_points), 1)), 3.0, 36.0))
+
+
 def rank_genes_groups(
     atlas: Atlas,
     use_table: str = "rank_genes_groups",
@@ -293,6 +299,7 @@ def rank_genes_groups_volcano(
     logfc_cutoff: float = 1.0,
     top_n: int = 8,
     figsize: tuple = (12, 10),
+    point_size: float | None = None,
     y_cap: float |  None = None,
     xlim_abs: float | None = None,
     save_path: PathLike[str] | str | None = None,
@@ -349,6 +356,10 @@ def rank_genes_groups_volcano(
 
     figsize
         Figure size. If ``None``, the function default size is used.
+
+    point_size
+        Scatter point size. If ``None``, it is estimated from the number of
+        plotted genes.
 
     y_cap
         Display clipping upper limit for the y-axis ``-log10(padj)``. If
@@ -502,12 +513,14 @@ def rank_genes_groups_volcano(
 
     # 6. Plot
     fig, ax = plt.subplots(figsize=figsize, facecolor="white")
+    if point_size is None:
+        point_size = _default_volcano_point_size(len(df))
 
     ax.scatter(
         df[lfc_key],
         df["neg_log10_padj_plot"],
         c=colors,
-        s=8,
+        s=point_size,
         alpha=0.75,
         linewidths=0,
     )
