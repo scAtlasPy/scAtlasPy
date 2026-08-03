@@ -21,11 +21,6 @@ To upgrade an existing installation:
 pip install --upgrade scatlaspy
 ```
 
-```{note}
-Before the first public PyPI release, install the current version from GitHub as
-described in {ref}`install-from-source`.
-```
-
 ## Verify the Installation
 
 Start Python and import scAtlasPy:
@@ -69,27 +64,33 @@ pip install scatlaspy
 
 ## Optional Dependencies
 
-The standard installation includes the dependencies required for core
-scAtlasPy workflows. Some computational methods may require additional
-frameworks that are not installed automatically.
+The standard installation includes the dependencies required to create an
+Atlas, import and export data, run database-backed preprocessing, build read
+indexes, compute streaming PCA, read minibatches, and use plotting functions.
 
-For example, machine-learning workflows may require PyTorch. Install such
-frameworks according to the requirements of the corresponding workflow and your
-computing environment. GPU-enabled packages should be selected to match the
-available hardware and CUDA configuration.
+PyTorch is required for the distilled UMAP and distilled Louvain backends used
+by:
 
-The documentation for each optional workflow identifies any additional
-dependencies that are required.
+- `sap.tl.umap(...)`;
+- `sap.tl.graph_clustering(...)`.
 
-For the PyTorch UMAP backend, install the parametric extra:
+PyTorch is kept optional because CPU, CUDA, and Apple Silicon MPS builds are
+hardware-specific. For a generic CPU installation, use the scAtlasPy optional
+extra:
 
 ```bash
 pip install "scatlaspy[parametric]"
 ```
 
-This extra installs PyTorch. GPU support depends on the PyTorch build installed
-in the analysis environment. For CUDA or Apple Silicon MPS acceleration, follow
-the PyTorch installation instructions for your hardware.
+For GPU acceleration, install the PyTorch build recommended for your hardware
+and driver stack, then install scAtlasPy in the same environment:
+
+```bash
+pip install scatlaspy
+```
+
+After PyTorch is installed, scAtlasPy can use devices such as `cuda:0`, `mps`,
+or `cpu` through the `device` parameter of the relevant tool.
 
 (install-from-source)=
 ## Install from Source
@@ -130,49 +131,6 @@ pip install -e ".[test,docs]"
 
 Instructions for running the test suite and building the documentation are
 provided in the contributor documentation.
-
-## Troubleshooting
-
-### `scatlaspy` cannot be imported
-
-Confirm that scAtlasPy is installed in the environment used to run the
-analysis:
-
-```bash
-pip show scatlaspy
-python -c "import sys; print(sys.executable)"
-```
-
-When multiple Python installations are available, invoke `pip` through the
-intended interpreter:
-
-```bash
-python -m pip install scatlaspy
-```
-
-This ensures that scAtlasPy is installed for that Python interpreter.
-
-### No matching distribution is available
-
-Check the Python version:
-
-```bash
-python --version
-```
-
-scAtlasPy requires Python 3.10 or later. Updating `pip` may also resolve package
-discovery or compatibility problems:
-
-```bash
-pip install --upgrade pip
-pip install scatlaspy
-```
-
-Before the first public PyPI release, install scAtlasPy directly from GitHub:
-
-```bash
-pip install "scatlaspy @ git+https://github.com/GaoLab-XDU/scAtlasPy.git"
-```
 
 ## Next Steps
 

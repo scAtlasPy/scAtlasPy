@@ -17,6 +17,9 @@ Install scAtlasPy in the Python environment used for your analysis:
 pip install scatlaspy
 ```
 
+See the {doc}`installation` page for complete installation options, including
+PyTorch setup for the UMAP and graph-clustering steps used below.
+
 The example below creates a small atlas database and runs a compact
 preprocessing, clustering, and visualization workflow:
 
