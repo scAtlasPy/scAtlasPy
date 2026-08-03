@@ -34,8 +34,8 @@ atlas.build_read_index(
 )
 
 sap.tl.pca(atlas)
-sap.tl.kmeans(atlas, n_clusters=20)
-sap.pl.pca(atlas, color="kmeans")
+sap.tl.graph_clustering(atlas)
+sap.pl.pca(atlas, color="scatlas_cluster")
 ```
 
 ## Highlights
@@ -126,19 +126,19 @@ atlas.build_read_index(
 )
 
 sap.tl.pca(atlas)
-sap.tl.kmeans(atlas, n_clusters=20)
+sap.tl.graph_clustering(atlas)
 sap.tl.umap(atlas)
-sap.tl.rank_genes_groups(atlas, groupby="kmeans")
+sap.tl.rank_genes_groups(atlas, groupby="scatlas_cluster")
 ```
 
 Visualize results:
 
 ```python
 sap.pl.violin_qc_metrics(atlas)
-sap.pl.pca(atlas, color="kmeans")
-sap.pl.umap(atlas, color="kmeans")
+sap.pl.pca(atlas, color="scatlas_cluster")
+sap.pl.umap(atlas, color="scatlas_cluster")
 sap.pl.rank_genes_groups(atlas)
-sap.pl.dotplot(atlas, genes=["MS4A1", "CD3D", "LYZ"], groupby="kmeans")
+sap.pl.dotplot(atlas, genes=["MS4A1", "CD3D", "LYZ"], groupby="scatlas_cluster")
 ```
 
 Close the database connection when finished:
@@ -178,14 +178,14 @@ An Atlas database is a DuckDB file with the `.sasql` extension. scAtlasPy stores
 ### Preprocessing: `sap.pp`
 
 - QC and filtering: `calculate_qc_metrics`, `calculate_cell_total_counts`, `calculate_gene_total_counts`, `filter_cells`, `filter_genes`
-- Transformations: `normalize_total`, `normalize_total_scale_factor`, `log1p`, `expm1`, `sqrt`, `scale`
+- Transformations: `normalize_total`, `normalize_total_scale_factor`, `log1p`, `sqrt`, `scale`
 - Feature selection: `highly_variable_genes`
 - Convenience workflow: `normalize_and_log1p`
 
 ### Tools: `sap.tl`
 
 - Dimensionality reduction: `pca`, `umap`
-- Clustering: `kmeans`
+- Clustering: `graph_clustering`, `kmeans`
 - Marker analysis: `rank_genes_groups`
 - Annotation: `manual_annotate_clusters`
 
@@ -193,7 +193,7 @@ An Atlas database is a DuckDB file with the `.sasql` extension. scAtlasPy stores
 
 - QC plots: `highest_expr_genes`, `violin_qc_metrics`, `scatter_qc_metrics`
 - Embeddings and model diagnostics: `pca`, `pca_loadings`, `pca_variance_ratio`, `pca_variance_ratio_cumsum`, `umap`
-- Cluster and marker plots: `kmeans_cluster_size`, `rank_genes_groups`, `rank_genes_groups_volcano`, `rank_genes_groups_violin`
+- Cluster and marker plots: `cluster_size`, `rank_genes_groups`, `rank_genes_groups_volcano`, `rank_genes_groups_violin`
 - Expression summaries: `dotplot`, `violin`, `stacked_violin`, `highly_variable_genes`
 
 ## Working With Large Datasets

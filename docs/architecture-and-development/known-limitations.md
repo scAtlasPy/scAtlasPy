@@ -6,59 +6,6 @@ developers should consider when designing workflows or interpreting results.
 The goal is to distinguish currently supported behavior from capabilities that
 are not yet implemented or stabilized.
 
-## KMeans Clustering
-
-`sap.tl.kmeans()` uses a minibatch implementation of KMeans.
-
-It is designed to support clustering on large datasets through bounded-memory
-computation, but it is not equivalent to graph-based clustering methods such as
-Leiden or Louvain.
-
-In particular, `sap.tl.kmeans()`:
-
-- assigns cells to a predefined number of clusters;
-- operates on a numerical representation such as PCA coordinates;
-- does not construct a cell-neighbor graph;
-- does not optimize a graph-community objective;
-- may produce different cluster structures from Leiden or Louvain.
-
-```{important}
-Results from `sap.tl.kmeans()` should be interpreted as KMeans clusters rather
-than as graph communities.
-
-Parameters such as `n_clusters` are therefore not directly comparable to the
-resolution parameters used by graph-based clustering methods.
-```
-
-When graph-based clustering is required, a focused cell population can be
-retrieved as an AnnData object and analyzed with a compatible external method:
-
-```python
-obs = atlas.get_obs_df(
-    columns=[
-        "atlas_cell_id",
-        "cell_type_manual",
-    ]
-)
-
-selected_ids = obs.loc[
-    obs["cell_type_manual"].eq("T cell"),
-    "atlas_cell_id",
-].tolist()
-
-adata = atlas.get_anndata(
-    selected_ids,
-    use_data="data_log1p",
-)
-```
-
-The selected data can then be analyzed with a graph-based workflow in another
-single-cell package.
-
-See
-{doc}`../cross-platform-workflows/use-external-methods-on-atlas-subsets`
-for the complete workflow.
-
 ## Reporting Additional Limitations
 
 This page will be updated as unsupported, experimental, or version-dependent

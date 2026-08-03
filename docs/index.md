@@ -1,4 +1,4 @@
-# scAtlasPy (要检查所有占位的东西，比如占位的链接是否指向最终的公开地址！)
+# scAtlasPy
 
 **A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits**
 

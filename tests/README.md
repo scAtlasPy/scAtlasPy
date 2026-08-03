@@ -12,7 +12,7 @@ Use these layers when adding tests:
 - `test_storage_io.py`: Atlas schema, AnnData import/export, and accessor behavior.
 - `test_preprocessing.py`: filtering, QC metrics, derived expression tables, HVG, and scale.
 - `test_read_index_minibatch.py`: read-index correctness and dense minibatch semantics.
-- `test_tools_workflow.py`: PCA, KMeans, ranking, annotation, and public API smoke tests.
+- `test_tools_workflow.py`: PCA, graph clustering, ranking, annotation, and public API smoke tests.
 - Optional real-data or benchmark tests should be marked `realdata` or `slow` and
   should not run in the default quick suite.
 
@@ -21,4 +21,3 @@ Run the quick suite with:
 ```bash
 python -m pytest -q
 ```
-

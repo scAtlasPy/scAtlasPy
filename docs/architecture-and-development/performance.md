@@ -121,7 +121,7 @@ memory pressure when database operations and Python-side computations run at
 the same time.
 ```
 
-By default, scAtlasPy requests `db_memory_limit="20G"`. The effective DuckDB
+By default, scAtlasPy requests `db_memory_limit="10G"`. The effective DuckDB
 limit is capped at 60% of detected system physical memory, rounded down to an
 integer number of GB. Passing `db_memory_limit=None` explicitly uses that 60%
 system-memory cap directly.
