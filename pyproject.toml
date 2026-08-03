@@ -35,21 +35,21 @@ classifiers = [
 ]
 
 dependencies = [
-    "numpy>=2.2.6",
-    "scipy>=1.15.3",
-    "pandas>=2.3.3",
+    "numpy>=1.26.4",
+    "scipy>=1.11.4",
+    "pandas>=2.0.3",
     "h5py>=3.11.0",
-    "matplotlib>=3.10.0",
-    "tqdm>=4.68.2",
-    "scikit-learn>=1.7.0",
+    "matplotlib>=3.8.4",
+    "tqdm>=4.66.4",
+    "scikit-learn>=1.4.2",
     "igraph>=0.11.0",
     "louvain>=0.8.2",
     "setuptools<81",
-    "umap-learn>=0.5.12",
+    "umap-learn>=0.5.6",
     
     "anndata>=0.11.4",
-    "pyarrow>=24.0.0",
-    "scanpy>=1.11.5",
+    "pyarrow>=15.0.2",
+    "scanpy>=1.10.4",
     "duckdb>=1.5.3",
 ]
 
@@ -60,10 +60,10 @@ parametric = [
 ]
 
 test = [
-    "pytest>=9.0.3",
+    "pytest>=8.4.1",
     "pytest-cov>=7.1.0",
-    "hypothesis>=6.155.2",
-    "psutil>=7.2.2",
+    "hypothesis>=6.112.2",
+    "psutil>=6.1.1",
 ]
 
 docs = [
