@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "scatlaspy"
-version = "0.1.0"
+version = "1.0.0"
 description = "A scalable Python platform for atlas-scale single-cell omics analysis beyond in-memory limits."
 readme = "README.md"
 requires-python = ">=3.10"
