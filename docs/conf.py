@@ -70,7 +70,7 @@ templates_path = ["_templates"]
 html_static_path = ["_static"]
 html_css_files = ["custom.css"]
 html_theme_options = {
-    "repository_url": "https://github.com/scAtlasAnalysis/scAtlas",
+    "repository_url": "https://github.com/scAtlasPy/scAtlasPy",
     "use_repository_button": True,
     "use_issues_button": True,
     "show_navbar_depth": 2,

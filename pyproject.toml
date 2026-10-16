@@ -104,7 +104,7 @@ markers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/GaoLabXDU/scatlaspy"
+Homepage = "https://github.com/scAtlasPy/scAtlasPy"
 Documentation = "https://scatlaspy.readthedocs.io"
-Repository = "https://github.com/GaoLabXDU/scatlaspy"
-Issues = "https://github.com/GaoLabXDU/scatlaspy/issues"
+Repository = "https://github.com/scAtlasPy/scAtlasPy"
+Issues = "https://github.com/scAtlasPy/scAtlasPy/issues"
